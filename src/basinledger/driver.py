@@ -31,6 +31,7 @@ import importlib.util
 import json
 import math
 import shutil
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -107,6 +108,8 @@ class Basin:
             problems = S.coupling_problems(swat_dir, two_way=bool(ex))
             if problems:
                 raise ValueError("SWAT+ isn't set up to be coupled:\n- " + "\n- ".join(problems))
+            for w in ([] if saved else S.start_warnings(swat_dir)):  # a restart's soils are the saved state's
+                warnings.warn(w, S.StartWarning, stacklevel=2)
             self.swat = SwatPlusBmi()
             self.swat.initialize(str(swat_dir))
             if wrap_surface is not None:
