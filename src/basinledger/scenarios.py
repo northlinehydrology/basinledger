@@ -24,7 +24,7 @@ from .coupling.swatplus import StartWarning
 from .driver import Basin
 from .temperature import print_daily
 
-SOIL_SETTLED_SHARE = 0.10  # [A] the most a settled year's soil water changes, as a share of its precipitation
+SOIL_SETTLED_SHARE = 0.12  # [A] above what weather alone moves a settled year (10.4% at the Clam), below a fill (15%)
 
 
 def warm_up(cfg: C.ExampleConfig, days: int, run: str = "warmup", prepare=None, wrap_surface=None,
