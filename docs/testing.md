@@ -26,7 +26,7 @@ across links").
 | 1. The run is a test | invariants the ledger checks every day of every run, which stop the run when broken (below) | the driver | every run, any example |
 | 2. Synthetic integration | each function on the synthetic example (Osu_1hru and small MODFLOW 6 models), end to end | `tests/`, marked `slow` | every push (CI) and nightly |
 | 3. Independent answers | the coupled result against an analytic solution or another closed budget | `tests/` | CI |
-| 4. Faithfulness and settings | each model unchanged but for the coupling's settings; wrong settings refused | `tests/` (and swatplus-bmi's own suite) | CI |
+| 4. Faithfulness and settings | each model unchanged but for the coupling's settings; wrong settings refused; a start that can drift warned of | `tests/` (and swatplus-bmi's own suite) | CI |
 | 5. Real basins | every function on a real coupled model: a scenario matrix from a shared warm-up, each run closing, the effects in the right direction, the numbers recorded | the study repo (`clam-basin-study/functional.py`), not here | on demand, after a change to the engine |
 | 6. Regression | tier 5's recorded summary compared with the last accepted one, with tolerances | the study repo | on demand |
 

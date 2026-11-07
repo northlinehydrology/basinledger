@@ -482,7 +482,8 @@ Rules, each to be built and tested:
    release from storage is within a tolerance of its recharge; `Basin(..., heads=...)` starts the run there. The
    ledger's `groundwater:storage_release` shows any drift that remains.
 7. **Each model is checked for the settings coupling needs, at start-up (built Nov 6, 2026).** Below; a run with a
-   wrong setting stops before its first day.
+   wrong setting stops before its first day. A start that can drift (soils starting empty, a warm-up whose soils
+   haven't settled) is a warning, not a stop (Nov 7, 2026).
 8. **The whole basin closes** (see Balances), from each model's own budget plus the ledger.
 
 Settings the coupling needs, checked when a run starts:
@@ -497,6 +498,27 @@ Settings the coupling needs, checked when a run starts:
   multiplier (an entry's rate is its cell's rate); river and drain entries a map couples are one per cell; packages
   not coupled are reported as boundary flows.
 - **Water users (Water Ledger's models):** to be listed with the first coupled user in a real example.
+
+Warnings, not stops (built Nov 7, 2026). A run starts anyway, but its first years may drift:
+
+- **SWAT+ soils that start empty.** `sw_frac` is 0 in `soil_plant.ini` for the HRUs that use it. Basin Ledger warns
+  at start-up (`start_warnings`, a `StartWarning`). A restart doesn't warn, since its soils come from the saved
+  state.
+- **A warm-up whose soils haven't settled.** `scenarios.warm_up` writes `warm_up.json` beside the saved state. It
+  holds the basin's soil water change over the warm-up's last year (all of it, if shorter) as a share of that
+  time's precipitation, from SWAT+'s `basin_wb_day` (`balance.soil_water_trend`). Above 12% it warns [A]. In
+  settled Clam runs, weather alone moves a year by up to 10.4%. The Clam's one-year warm-up from empty soils moved
+  15%, and the synthetic example's 200 days moved 30%.
+
+This is a coarse screen. It catches a warm-up still filling from empty, but not a slow drift of a few millimetres a
+year. That shows only when the same years run again (clam-basin-study `soil.py`).
+
+The Clam is the case behind both checks. Its 20-year base case wetted for decades: mean soil water rose from 210 to
+470 mm, and flow at the gage rose with it. Stock SWAT+ 62.0.1 alone does the same, and swatplus-bmi with nothing set
+matches it byte for byte, so the cause is the setup, not the tools. The project's soils start empty, and its
+parameters were calibrated over the two years after a one-year warm-up, while the soils were still filling. With
+those parameters the soils settle far above field capacity, and the gage's flow settles at about twice what was
+observed. The fix is the study's: settle the soils before calibrating, then calibrate.
 
 ## Water quality across links (Andrew, Nov 6, 2026; written before the build)
 
