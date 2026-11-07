@@ -1,6 +1,6 @@
 [project]
 name = "basinledger"
-version = "0.1.0"
+version = "0.2.0"
 description = "A basin's water balanced day by day across coupled models (SWAT+, NextGen, MODFLOW 6 and water users) through BMI"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,8 +27,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# water-user models from the open Water Ledger packages (CoolingWaterBmi first). pyyaml: waterledger-models 3.9.0
-# imports it without declaring it (docs/requests.md); 3.10.0 drops the need.
+# water-user models from the open Water Ledger packages (CoolingWaterBmi first). pyyaml: CoolingWaterBmi reads a YAML
+# config with it, and waterledger-models declares it only under its bmi extra (docs/requests.md).
 users = ["waterledger-models>=3.11", "pyyaml>=6"]
 # NextGen as the surface model: reading NGIAB runs (t-route output, forcing). Below 1.7.5, netCDF4 ships wheels for
 # macOS 13 and 14; 1.7.5 and later need macOS 15 or a local netCDF library to build from source.
