@@ -27,17 +27,27 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.1.0).** Built and tested:
+**Status: early (0.2.0).** Built and tested:
 
-- the water-user interface, with controls a rule can set (a withdrawal limit, dry mode);
+- the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
+  (power, time, heat not removed) booked each day;
 - routes: MODFLOW 6 wells, SWAT+ water allocation intakes and point sources, outfalls, water from and to outside the
   basin;
 - the utility chain: sources, losses, sewer, plant outfall;
 - feedback rules: curtailment, dry mode, drawdown limit;
-- SWAT+ recharge into MODFLOW 6 (one-way), and the two-way stream-aquifer exchange through MODFLOW 6's river package;
+- SWAT+ recharge into MODFLOW 6 (one-way), and the two-way stream-aquifer exchange through MODFLOW 6's river and drain
+  packages;
+- conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
+  its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
+- a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
+- the whole-basin balance, the capture of pumping (from storage, the streams and the boundary), and depletion against
+  Glover and Balmer (1954);
+- scenarios from a shared warm-up, and restarts from a saved day that match unbroken runs bit for bit;
+- stream temperature as a reach heat balance, with groundwater inflow and users' returns at their own temperatures;
+- groundwater transport (MODFLOW 6 GWT): each species' mass in the ledger every day, and a user's intake
+  concentration from the aquifer at its well;
 - NextGen as the surface model: a finished NGIAB run replayed day by day, with users on its own hourly forcing;
 - MODFLOW 6 recharge from NextGen (CFE's percolation), used as interim recharge in the Plaster Creek example;
-- restarts from a saved day that match unbroken runs bit for bit;
 - the ledger and the command line;
 - calibration records per model, and the calibration module's structure. An example is a screening run unless every
   model it runs is calibrated.
@@ -52,6 +62,7 @@ Examples:
 
 Still to come ([docs/design.md](docs/design.md)):
 
+- water quality through SWAT+'s streams (stage 2), on swatplus-bmi's next release;
 - SWAT+ built on the NextGen hydrofabric, for water quality on the same catchments;
 - AORC forcing;
 - applying calibration parameters, and PEST++ IES.
@@ -104,7 +115,7 @@ Open problems:
 - fitting the groundwater model to heads and base flow, starting with streambed conductance, which moves the answer
   most;
 - a longer forcing record that includes the 2012 drought;
-- stream temperature from the change in groundwater inflow;
+- stream temperature from the change in groundwater inflow (the heat balance is built, not yet run here);
 - water quality through SWAT+ on the same catchments, against the Plaster Creek TMDL;
 - existing high-capacity wells, and more kinds of water users.
 
@@ -143,7 +154,7 @@ From a source checkout, for development and the tests, with [uv](https://docs.as
 git clone https://github.com/northlinehydrology/basinledger && cd basinledger
 uv sync
 uv run python examples/synthetic/fetch.py --get     # builds SWAT+ (swatplus-bmi build) and fetches libmf6 (get-modflow)
-uv run pytest                                       # about a minute on one core; -m "not slow" takes about 10 s
+uv run pytest                                       # about 2.5 minutes on one core; -m "not slow" takes about 15 s
 uv run --group examples marimo edit examples/synthetic/notebook.py
 ```
 
@@ -242,7 +253,13 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Rules | act on exactly the days after the trigger; a curtailed user takes nothing; dry mode uses less water and more electricity |
 | Two-way exchange | SWAT+'s aquifer returns nothing and stores exactly its recharge; each day's river exchange reaches SWAT+ the next day, whole |
 | Groundwater transport | each species' mass closes every day; uniform recharge concentration reaches every cell at steady state; a column matches Ogata and Banks (1961) within 1% of C0; a well's user takes in the aquifer's concentration a day later |
-| Restarts | saved after a warm-up and carried on, runs match unbroken runs bit for bit |
+| Conservation across links | recharge keeps the surface model's volume; a channel never loses more than it carries; water from outside and the release from storage booked; wrong coupling settings refused at start-up |
+| The whole basin | SWAT+'s land, channel and lake budgets, the links and MODFLOW 6's close together over a run |
+| Capture | a well's pumping equals the extra release from storage, the water the streams lose and the extra boundary inflow, every day |
+| Depletion | MODFLOW 6 through the coupling within 2% of Glover and Balmer (1954) for a well beside a straight river |
+| Stream temperature | each reach's heat balance closes; a return mixes at its own temperature |
+| Restarts and scenarios | saved after a warm-up and carried on, runs match unbroken runs bit for bit; a case with no change matches the baseline |
+| Start-up warnings | soils that start empty, and a warm-up whose soils haven't settled, are warned of, not stopped |
 | Command line, calibration | outputs and status written; statistics on known values; the forward model writes simulated values at observations |
 
 ## Prior work

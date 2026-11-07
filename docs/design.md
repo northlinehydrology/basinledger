@@ -7,19 +7,28 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 4, 2026). Built and tested on synthetic examples:
+Status (Nov 7, 2026, release 0.2.0). Built and tested on synthetic examples:
 
-- the water-user interface;
+- the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
 - feedback rules;
-- the one-way and two-way SWAT+–MODFLOW 6 couplings;
-- restarts;
+- the one-way and two-way SWAT+–MODFLOW 6 couplings, conserving water across every link (Conservation across links):
+  recharge on each aquifer's own area, water from outside as its own account, the exchange limited by what a channel
+  carries, drains' seepage to the streams, and the coupling's settings checked at start-up;
+- a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
+- the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
+- scenarios from a shared warm-up, and restarts;
+- stream temperature as a reach heat balance, with users' returns carrying their heat;
+- water quality's first stage: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users'
+  intake concentrations from the aquifer;
 - the ledger, the command line, and the calibration module's structure.
 
-The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day.
+The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. The
+Clam (clam-basin-study, a study of its own) runs every function on a coupled SWAT+ and MODFLOW 6 model (testing.md,
+tier 5).
 
-Not built yet: the SWAT+ hydrofabric builder, AORC forcing, applying calibration parameters, and PEST++. Each section
-says which parts are built.
+Not built yet: water quality's second stage (through SWAT+'s streams), the SWAT+ hydrofabric builder, AORC forcing,
+applying calibration parameters, and PEST++. Each section says which parts are built.
 
 ## Principles
 
@@ -433,8 +442,10 @@ The ledger enters, every day, each transfer as sent and as received, plus each c
     outfall;
   - the outfall becomes a SWAT+ point source with those loads;
   - temperature is carried as heat (volume × temperature) and becomes a temperature only at the receiving water.
-  - Needs: point source loads settable through swatplus-bmi, and intake concentrations as an input to user components
-    (both in `docs/requests.md`).
+  - Built: intake concentrations as an input to user components
+    (`water_user_intake_water_<species>__mass_concentration`), set each day from the aquifer at a user's well, and a
+    return's heat booked at its point source (`route:<point source>:heat_m3C`). Still
+    needed: point source loads settable through swatplus-bmi (`docs/requests.md`; Water quality across links, stage 2).
 - **Whole basin.** For each example, a basin-wide check closes over the run:
   - precipitation = evapotranspiration + streamflow out + change in soil, aquifer and channel storage + net user
     consumption + transfers out of the basin;
@@ -798,7 +809,8 @@ libmf6 lives in the driver's process. A branch would need MODFLOW 6 restarted fr
     The model's own files for 2010 weren't found in a data release; this needs checking with USGS.
   - **Calibration data for what's next:** Michigan well records for groundwater, and the Plaster Creek TMDL record
     (E. coli, sediment and biota) for water quality. Until those models are calibrated, they are screening.
-- **Private studies** live in the private `northline` repository (`studies/<name>/`), never here. A study:
+- **Studies** live in their own repositories, one per basin (the Clam's is clam-basin-study), never here. A client
+  study is private. A study:
   - depends on `basinledger` at a pinned version;
   - follows the example layout (`basin.toml`, `fetch.py`, `maps/`, `calibration/`, a write-up), with client data in
     its own folders under the client's confidentiality terms;
@@ -819,17 +831,24 @@ Done on the synthetic examples (Nov 4, 2026):
 - MODFLOW 6 restarts;
 - the calibration module's structure.
 
+Done for 0.2.0 (Nov 5 to 7, 2026), each tested on the synthetic examples, and all but transport run on the Clam:
+
+- `CoolingWaterBmi`'s limit and dry-mode inputs (waterledger-models 3.11), with the rules on a real cooling user;
+- intake concentrations on users, and a return's heat at its point source;
+- stage from SWAT+'s channel depth (swatplus-bmi 0.2.0);
+- conservation across links, the whole-basin balance, capture, stream temperature, groundwater transport;
+- scenarios from one saved warm-up (`scenarios.py`; a study runs its cases in parallel processes), with the warm-up's
+  soil check.
+
 Next:
 
-1. `CoolingWaterBmi` limit and dry-mode inputs (asked of `waterledger-models`), then the rules on a real cooling user.
-2. Loads on surface routes: point source constituents and temperature (asked of swatplus-bmi), and intake
-   concentrations on users.
+1. Water quality's stage 2: loads through SWAT+'s streams, on swatplus-bmi 0.5.0 once released (Water quality across
+   links).
+2. Point source loads (asked of swatplus-bmi).
 3. Two-way refinements:
-   - stage from SWAT+'s channel depth (asked of swatplus-bmi);
    - SFR for routed streams;
    - leaks and infiltration in the chain exchanged with MODFLOW 6.
-4. Restarts for MODFLOW 6 models with several stress periods; scenarios in parallel processes from one saved
-   warm-up.
+4. Restarts for MODFLOW 6 models with several stress periods.
 5. Applying calibration parameters (SWAT+ `calibration.cal`, MODFLOW 6 arrays with pyEMU), PEST++ IES files, USGS
    observations.
 6. AORC forcing for SWAT+ and the users; the SWAT+ project builder on the hydrofabric, with outputs at every nexus.
