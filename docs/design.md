@@ -587,6 +587,30 @@ groundwater. Transport settles over decades, not the year a flow warm-up takes, 
 3. In each study, SWAT+'s salt module set up (rain chemistry, fertilizer, road salt), and starting concentrations
    from public samples.
 
+**Stage 2 in swatplus-bmi, and what SWAT+ can't carry (Nov 6, 2026).** The SWAT+ BMI session built swatplus-bmi
+0.5.0 on its branch `chem-050`, not yet merged or released. For each species (the eight salt ions, nitrate and
+soluble P) it has:
+- `channel_water_<sp>__mass_concentration`, the day's outflow, kg m-3;
+- `channel_water_<sp>__groundwater_mass_exchange_rate`, kg s-1, set after the day's gain and read back as the mass
+  in or out. A loss now takes the outflow's nitrate, P and salt at its concentration, counted as seepage;
+- `aquifer_water_<sp>__recharge_mass_rate`, kg s-1;
+- `point_source_water_<sp>__mass_flow_rate`, kg s-1, daily recalls.
+
+But stock SWAT+ 62.0.1's salt module can't run in a project with aquifers or point sources: it stops at start-up or
+on day 1 (soil arrays left unallocated without a pesticide, a double allocation for aquifers, `salt_recall.rec`
+never read). So the salt ions, chloride and dissolved solids, can't come from SWAT+ in a coupled project. Basin
+Ledger carries them in the streams itself, as it carries stream temperature:
+- the surface's load, from a stated or measured concentration on runoff, including road salt [A];
+- the aquifer's discharge at GWT's concentration;
+- users' returns;
+- mixed and routed reach by reach, the mass closed in the ledger.
+
+Nitrate and soluble P can go through SWAT+ once 0.5.0 is released. Two more findings from that session:
+- SWAT+'s aquifer P outflow is the day's recharge volume times `minp`, not the return flow, and recharge P isn't
+  kept (its design.md, item 11).
+- In 0.4.0, a groundwater gain in a project with any constituent on (a pesticide included) hangs SWAT+, because the
+  transfer's constituent arrays are never allocated; fixed in 0.5.0.
+
 ## Stream temperature: a reach heat balance (built Nov 6, 2026)
 
 SWAT+ 62.0.1's `ch_temp.f90` can't give a stream temperature that responds to groundwater: no aquifer routine fills
