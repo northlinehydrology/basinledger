@@ -30,6 +30,10 @@ Two more configs use the same SWAT+ project:
   - SWAT+'s aquifer passes its recharge through. MODFLOW 6's river exchange enters SWAT+'s channel the next day, as a
     point source where the river gains and as a water allocation demand where it loses.
   - A small user pumps a well near the river (`small_user.toml`).
+- **`transport.toml`:** `two_way.toml` with chloride through the aquifer (MODFLOW 6 transport, `coupling/transport.py`).
+  - Porosity 0.25, longitudinal dispersivity 5 m, a start of 0.01 kg/m³, all [A].
+  - Recharge carries 0.03 kg/m³ and the river's losses 0.02 kg/m³ [A], so the aquifer's chloride rises.
+  - The user (`intake_user.toml`) takes in the aquifer's chloride at its well, a day late, and returns all of it.
 
 Run it:
 

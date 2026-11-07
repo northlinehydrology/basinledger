@@ -47,9 +47,13 @@ SMALL_CELL = 1000.0 ** 0.5  # m: 10 x 10 cells of 1,000 m2 make 10 ha, the area 
 SMALL_WELL = (0, 5, 6)
 
 
-def build_small(workspace: str | Path, days: int, start: dt.date) -> Path:
+def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevation: float | None = None,
+                transport: dict | None = None) -> Path:
     """A 10 ha aquifer under Osu_1hru for the two-way exchange: 10 x 10 cells, the river along the west edge.
-    Thinner and less permeable than the large grid so the river can lose water when the well pumps hard."""
+    Thinner and less permeable than the large grid so the river can lose water when the well pumps hard.
+    ``drain_elevation``: seepage cells (a drain) along the second column at that elevation, for the coupled drains'
+    tests. ``transport``: species -> ``add_transport`` settings (porosity, dispersivity, strt, sorption), a transport
+    model per species with recharge and the river as its sources."""
     ws = Path(workspace)
     sim = flopy.mf6.MFSimulation(sim_name="synthetic_small", sim_ws=ws, exe_name="mf6")
     flopy.mf6.ModflowTdis(sim, time_units="days", start_date_time=start.isoformat(),
@@ -66,7 +70,14 @@ def build_small(workspace: str | Path, days: int, start: dt.date) -> Path:
     flopy.mf6.ModflowGwfwel(gwf, stress_period_data={0: [(SMALL_WELL, 0.0)]}, pname="wel")
     flopy.mf6.ModflowGwfriv(gwf, stress_period_data={0: [((0, r, 0), RIVER_STAGE, 20.0, RIVER_STAGE - 2.0)
                                                          for r in range(10)]}, pname="riv")
+    if drain_elevation is not None:
+        flopy.mf6.ModflowGwfdrn(gwf, stress_period_data={0: [((0, r, 1), drain_elevation, 5.0) for r in range(10)]},
+                                pname="drn")
     flopy.mf6.ModflowGwfoc(gwf, budget_filerecord="gwf.cbc", head_filerecord="gwf.hds",
                            saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")], printrecord=[("BUDGET", "ALL")])
+    if transport:
+        from basinledger.coupling.transport import add_transport
+        for species, settings in transport.items():
+            add_transport(sim, gwf, species, sources=[("rch", species), ("riv", species)], **settings)
     sim.write_simulation(silent=True)
     return ws

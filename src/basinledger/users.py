@@ -72,6 +72,7 @@ class DailyUse:
     constituents: dict[str, float] = field(default_factory=dict)  # kg returned
     return_temperature: float | None = None  # flow-weighted mean, degC
     energy: float | None = None  # MWh
+    reported: dict[str, float] = field(default_factory=dict)  # other outputs the example asked for (``report``)
 
     def rate(self, volume: float) -> float:
         """A day's volume as the day's mean rate, m3 s-1."""
@@ -94,11 +95,16 @@ class WaterUser:
     variables: role -> the component's variable name, for components that don't use the common names.
     constituents: constituent name -> the component's variable (default: the common pattern, if the component has it).
     inputs: component input variable -> function of seconds since the run start, set before each step (forcing).
+    report: name -> any other output to book each day, a variable name or {variable, how}: a power (MW or W) is
+    integrated to MWh (``MW``); an amount of time (h or s) is taken as a running total, and the day's increase is
+    booked (``change``: CoolingWaterBmi's ``data_center__setpoint_lost_time`` is summed since initialize); anything
+    else is the day's time-weighted mean (``mean``). The campus's heat it couldn't reject under a limit
+    (``data_center__unremoved_heat_power``) is the first use.
     """
 
     def __init__(self, name: str, component, config: str | None = None, *, variables: dict | None = None,
                  constituents: dict | None = None, inputs: dict[str, Callable[[float], float]] | None = None,
-                 rtol: float = 1e-9):
+                 report: dict[str, str] | None = None, rtol: float = 1e-9):
         self.name = name
         self.bmi = component
         self.bmi.initialize(config)
@@ -127,6 +133,16 @@ class WaterUser:
             for v in outs:
                 if v.startswith("water_user_return_water_") and v.endswith("__mass_flux"):
                     self.constituents[v[len("water_user_return_water_"):-len("__mass_flux")]] = v
+        self.report: dict[str, tuple[str, str]] = {}
+        for name, spec in (report or {}).items():
+            v, how = (spec, None) if isinstance(spec, str) else (spec["variable"], spec.get("how"))
+            if v not in outs:
+                raise KeyError(f"{name}: reported variable {v!r} is not an output of {self.bmi.get_component_name()}")
+            u = self.bmi.get_var_units(v)
+            how = how or ("MW" if u in ("MW", "W") else "change" if u in ("h", "s") else "mean")
+            if how not in ("MW", "change", "mean"):
+                raise ValueError(f"{name}: how = {how!r} (MW, change or mean)")
+            self.report[name] = (v, how)
         self.seconds = U.time_factor(self.bmi.get_time_units())
         self._factor = {}
         for role, v in self.var.items():
@@ -185,6 +201,8 @@ class WaterUser:
         out = DailyUse(day=day)
         energy = 0.0
         heat = 0.0
+        rep = dict.fromkeys(self.report, 0.0)
+        start = {n: float(self._get(v)) for n, (v, how) in self.report.items() if how == "change"}
         s0 = self._role("storage") if "storage" in self.var else 0.0
         eps = 1e-9 * max(1.0, abs(t_end))
         self._apply_controls()
@@ -216,6 +234,15 @@ class WaterUser:
                 heat += r * dt * self._role("temperature")
             if "power" in self.var:
                 energy += self._role("power") * dt / 3600.0
+            for name, (v, how) in self.report.items():
+                x = float(self._get(v))
+                if how == "MW":
+                    rep[name] += x * (1e-6 if self.bmi.get_var_units(v) == "W" else 1.0) * dt / 3600.0
+                elif how == "change":
+                    rep[name] = x - start[name]
+                else:
+                    rep[name] += x * dt / U.DAY
+        out.reported = rep
         if "temperature" in self.var and out.returned > 0:
             out.return_temperature = heat / out.returned
         if "power" in self.var:

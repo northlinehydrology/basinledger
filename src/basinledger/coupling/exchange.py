@@ -16,12 +16,20 @@ SWAT+'s own aquifers are set to pass recharge through (``swatplus.aquifer_pass_t
 deep recharge), so groundwater reaches the streams once, through MODFLOW 6. The ledger holds SWAT+'s aquifer outflow
 at zero every day.
 
-Limits of this first version:
+**Limited by supply** (``[exchange] limit``, on by default): a losing reach can't take more than its channel carries
+that day. The limit works inside MODFLOW 6's solve, on the heads as they are: after each converged outer iteration,
+any coupled channel losing more than its flow that day has its stages lowered by one depth, no entry below its
+bottom, until the loss fits (``limit_to_supply``), and the solve goes on until heads and stages agree. Lowering the
+stage is the smooth form of the river drying: the reach loses less, and gains more where the head is above it.
+Today's loss is taken from tomorrow's flow (the one-day lag), so a small shortfall can remain; it stays in the
+ledger. Each day starts from its own stages. A limit set before the solve, at the day's starting heads, wasn't
+enough: wells and drains beside a river pull its heads down during the day. Without the limit, the Clam's headwater channels, left
+nearly dry once SWAT+'s aquifers pass recharge through, lost 84 million m3 to MODFLOW 6 that they didn't have.
+
+Other limits of this version:
 - MODFLOW 6's river stage is fixed in its input unless the example's ``[rivers]`` section sets it from the surface
   model's channel depth (``stage = "surface_depth"``; SWAT+'s depth needs swatplus-bmi 0.2.0);
-- the lag moves water by a day but keeps its volume; the last day's exchange is reported as in transit;
-- a losing reach SWAT+ can't supply is entered as a shortfall: water MODFLOW 6 took from a stream that, in SWAT+,
-  wasn't there. The next step is to lower the reach's stage for the next day when that happens.
+- the lag moves water by a day but keeps its volume; the last day's exchange is reported as in transit.
 """
 
 from __future__ import annotations
@@ -42,15 +50,19 @@ class ChannelMap:
         self.entry_channel = entry_channel  # per package entry: index into channels, or -1 (not coupled)
 
     @classmethod
-    def from_spec(cls, spec: str, folder: Path, mf6: Modflow6, package: str, swat_channels: list[str]):
+    def from_spec(cls, spec: str, folder: Path, mf6: Modflow6, package: str, swat_channels: list[str],
+                  channels: list[str] | None = None):
+        """``channels``, if given, fixes the channel order (and so the indices), as when rivers and drains share
+        one list of coupled channels."""
         nodes = mf6.package_nodes(package)
         if spec.startswith("all:"):
             ch = spec[4:]
             if ch not in swat_channels:
                 raise KeyError(f"exchange map: {ch!r} is not a SWAT+ channel")
-            return cls([ch], np.zeros(len(nodes), dtype=int))
+            chans = list(channels) if channels else [ch]
+            return cls(chans, np.full(len(nodes), chans.index(ch), dtype=int))
         entry = np.full(len(nodes), -1)
-        chans: list[str] = []
+        chans: list[str] = list(channels) if channels else []
         with open(folder / spec, newline="") as f:
             for r in csv.DictReader(f):
                 ch = r["object"]
@@ -66,6 +78,45 @@ class ChannelMap:
         return cls(chans, entry)
 
 
+STAGE_TOLERANCE_M = 1e-3  # the supply limit's stages agree with the heads when no stage moves more than this
+
+
+def limit_to_supply(stage: np.ndarray, rbot: np.ndarray, cond: np.ndarray, head: np.ndarray, entry_channel: np.ndarray,
+                    available: np.ndarray, iterations: int = 60) -> tuple[np.ndarray, np.ndarray]:
+    """Stages lowered so that no channel's net exchange takes more than it has, at the given heads.
+
+    Per entry, MODFLOW 6's river package exchanges ``cond * (stage - max(head, rbot))`` with the aquifer: into it
+    when positive (a loss), out of it when negative (a gain). A channel's net loss is the sum over its entries
+    (``entry_channel``, -1 for entries not coupled). Where it is more than ``available`` (m3 for the day; a channel's
+    other gains, such as seepage, can be added to it), the channel's stages are lowered by one depth d,
+    ``max(stage - d, rbot)``, with d found by bisection: the losses shrink and the gains grow as d grows, and at
+    d = max(stage - rbot) the channel loses nothing, so a d always exists. Returns the new stages and each
+    channel's d (m, 0 where nothing was lowered)."""
+    stage = np.asarray(stage, float).copy()
+    floor = np.maximum(head, rbot)
+    head = np.asarray(head, float)
+
+    def net_loss(st, sel):
+        lose = np.clip(st[sel] - floor[sel], 0.0, None)
+        gain = np.clip(head[sel] - st[sel], 0.0, None)
+        return float(np.sum(cond[sel] * (lose - gain)))
+
+    lowered = np.zeros(len(available))
+    for i, have in enumerate(np.maximum(available, 0.0)):
+        sel = np.flatnonzero(entry_channel == i)
+        if len(sel) == 0 or net_loss(stage, sel) <= have:
+            continue
+        lo, hi = 0.0, float(np.max(stage[sel] - rbot[sel]))
+        s0 = stage.copy()
+        for _ in range(iterations):
+            mid = 0.5 * (lo + hi)
+            s0[sel] = np.maximum(stage[sel] - mid, rbot[sel])
+            lo, hi = (lo, mid) if net_loss(s0, sel) <= have else (mid, hi)
+        stage[sel] = np.maximum(stage[sel] - hi, rbot[sel])
+        lowered[i] = hi
+    return stage, lowered
+
+
 def requests(due: dict[str, float]) -> dict[str, float]:
     """Yesterday's exchange (m3 per channel, positive to the stream) as today's SWAT+ routes."""
     out = {}
@@ -76,11 +127,79 @@ def requests(due: dict[str, float]) -> dict[str, float]:
 
 
 class StreamExchange:
-    def __init__(self, mf6: Modflow6, package: str, cmap: ChannelMap):
+    """The river package's exchange, plus any drains coupled to the same channels (``drains``: package, map).
+    Drains only take water from the aquifer (seepage at land surface) and give it to their channel the next day,
+    as the rivers' gains do."""
+
+    def __init__(self, mf6: Modflow6, package: str, cmap: ChannelMap, drains: tuple[str, ChannelMap] | None = None):
         self.mf6, self.package, self.map = mf6, package, cmap
+        self.drains = drains
+        if drains is not None and drains[1].channels != cmap.channels:
+            raise ValueError("the drains' channels must be the rivers' channels, in the same order")
+        P = package.upper()
+        self._cond = mf6.get("COND", mf6.model, P).astype(float)
+        self._rbot = mf6.get("RBOT", mf6.model, P).astype(float)
+
+    def limit(self, available: dict[str, float]):
+        """The supply limit for today's solve, as a callback for ``Modflow6.solve_day``: after each converged outer
+        iteration it lowers, from the day's own stages, the stages of any channel whose net exchange (rivers and
+        drains together, at the heads as they are then) takes more than ``available``, and says whether anything
+        changed, so the solve goes on until heads and stages agree. ``available`` (m3 for the day) is the channel's
+        flow without today's exchange: the exchange is taken tomorrow, when today's won't be there. Counting it let
+        a channel lose on alternate days what it gained the day before (the Clam). ``end_day`` puts the day's stages
+        back after the solve."""
+        P = self.package.upper()
+        n = self.mf6.nbound(self.package)
+        self._stage0 = self.mf6.get("STAGE", self.mf6.model, P).astype(float)
+        nodes = self.mf6.package_nodes(self.package)
+        e = self.map.entry_channel[:n]
+        have = np.array([available[c] for c in self.map.channels])
+        self.lowered = dict.fromkeys(self.map.channels, 0.0)
+
+        drains = None
+        if self.drains is not None:
+            dp, dmap = self.drains
+            nd = self.mf6.nbound(dp)
+            D = dp.upper()
+            drains = (self.mf6.package_nodes(dp), self.mf6.get("ELEV", self.mf6.model, D).astype(float)[:nd],
+                      self.mf6.get("COND", self.mf6.model, D).astype(float)[:nd], dmap.entry_channel[:nd])
+
+        def callback() -> bool:
+            stage = self.mf6.get("STAGE", self.mf6.model, P).astype(float)
+            h = self.mf6.head()
+            extra = have.copy()
+            if drains is not None:  # the channel's seepage at these heads
+                dn, elev, dc, de = drains
+                q = dc * np.clip(h[dn] - elev, 0.0, None)
+                extra += np.bincount(de[de >= 0], weights=q[de >= 0], minlength=len(have))
+            new, d = limit_to_supply(self._stage0[:n], self._rbot[:n], self._cond[:n], h[nodes], e, extra)
+            self.lowered = dict(zip(self.map.channels, d.tolist()))
+            if np.max(np.abs(new - stage[:n]), initial=0.0) <= STAGE_TOLERANCE_M:
+                return False
+            stage[:n] = new
+            self.mf6.set_stage(self.package, stage)
+            return True
+
+        return callback
+
+    def end_day(self):
+        """The day's own stages back, so tomorrow starts from them (a fixed stage would otherwise stay lowered)."""
+        if getattr(self, "_stage0", None) is not None:
+            self.mf6.set_stage(self.package, self._stage0)
+            self._stage0 = None
 
     def after_solve(self) -> dict[str, float]:
-        """Today's exchange per channel (m3, positive to the stream), due in SWAT+ tomorrow."""
+        """Today's exchange per channel (m3, positive to the stream), due in SWAT+ tomorrow: the rivers' net
+        exchange plus the drains' seepage."""
         q = self.mf6.simvals(self.package)  # m3 d-1, positive into the aquifer
-        e = self.map.entry_channel
-        return {ch: -float(q[e == i].sum()) for i, ch in enumerate(self.map.channels)}
+        e = self.map.entry_channel[: len(q)]
+        out = {ch: -float(q[e == i].sum()) for i, ch in enumerate(self.map.channels)}
+        self.seepage = {ch: 0.0 for ch in out}
+        if self.drains is not None:
+            pkg, dmap = self.drains
+            qd = self.mf6.simvals(pkg)
+            ed = dmap.entry_channel[: len(qd)]
+            for i, ch in enumerate(dmap.channels):
+                self.seepage[ch] = -float(qd[ed == i].sum())
+                out[ch] += self.seepage[ch]
+        return out

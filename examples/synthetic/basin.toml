@@ -18,6 +18,7 @@ package = "rch"
 # Osu_1hru's one aquifer is 10 ha; its recharge rate is spread over the whole 4.2 km2 grid. A real example maps
 # areas that match (area_rtol), from the same geography.
 map = "all:aqu001"
+area_check = false        # on purpose: 42 times the aquifer's area, booked as recharge:by_the_map
 
 [[wells]]
 name = "pw1"

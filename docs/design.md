@@ -385,10 +385,20 @@ exchange replaces SWAT+'s aquifer return flow.
   SWAT+'s channel balance closes. The ledger enters what SWAT+ reports it actually exchanged.
   - Before 0.2.0, the exchange went through one point source and one water allocation place of use per channel.
   - A negative point source would not work: SWAT+ 62.0.1 records it in full even when the channel can't supply it.
-- **Shortfalls.** Where the channel can't supply a losing reach's demand, the shortfall is entered in the ledger. That
-  is water MODFLOW 6 took from a stream that, in SWAT+, wasn't there. In the synthetic two-way example it is 186 m³
-  over three years, against about 61,000 m³ of exchange. The next step is to lower the reach's stage for the next day
-  when it happens.
+- **Limited by supply (built Nov 6, 2026; `[exchange] limit`, on by default).** A channel's net exchange (its
+  river cells' gains and losses and its drains' seepage) can't take more than the channel has without today's
+  exchange, which won't be there tomorrow when this one is taken. The limit works inside MODFLOW 6's solve: after
+  each outer iteration, a channel taking more than that at the heads as they are has its stages lowered by one
+  depth, no entry below its bottom (`limit_to_supply`), and the day is done when the solve has converged and no
+  stage moves more than 1 mm. The ledger records the depth (`exchange:<channel>:stage_lowered_m`). Two earlier
+  forms failed on the Clam: a limit set before the solve, at the day's starting heads (wells and drains beside a
+  river pull its heads down during the day), and a limit that counted the channel's own gain from the day before,
+  so it lost on alternate days what it had gained.
+- **Shortfalls.** What the channel still can't supply is entered in the ledger: water MODFLOW 6 took from a stream
+  that, in SWAT+, wasn't there. Most of what remains is the one-day lag. Over 120 days at the Clam the shortfall is
+  16.3 million m3 without the limit (35% of the exchange) and 0.2 million m3 with it (0.7%); the run takes about
+  twice as long. In the synthetic two-way example it is 186 m3 over three years without the limit and 76 m3 with
+  it, of about 61,000 m3. Each day starts from its own stages, so a restarted run matches.
 - **Stage.** With `[rivers] stage = "surface_depth"`, MODFLOW 6's river stage on day *d* is the river bottom plus
   the bed thickness plus SWAT+'s channel depth for day *d* (`channel_water__depth`, on SWAT+'s rating curve,
   swatplus-bmi 0.2.0). Otherwise it is fixed in the input. Under a NextGen replay the same setting uses t-route's
@@ -429,6 +439,175 @@ The ledger enters, every day, each transfer as sent and as received, plus each c
   - precipitation = evapotranspiration + streamflow out + change in soil, aquifer and channel storage + net user
     consumption + transfers out of the basin;
   - the same for each constituent's mass, from SWAT+'s and MODFLOW 6's own budgets plus the ledger.
+
+## Conservation across links (Andrew, Nov 6, 2026; written before the fixes)
+
+The models must never fight. Water may enter from outside (a supply, recharge where no surface model runs, a fixed
+head), but every crossing of a model boundary is an account in the ledger, and no link makes or loses water. Sent =
+received is necessary, not sufficient: the Clam's first coupled run (clam-basin-study, stage 3) balanced every pair
+and still had four leaks, each of which the pairs hid:
+
+| Leak | Size at the Clam | Why the pairs passed |
+|---|---|---|
+| Recharge mapped onto more area than the surface model makes it on (lakes in the catchments; a catchment outside SWAT+ given the mean rate) | 28 million m3, 9% of recharge | "sent" was figured on the mapped area, not SWAT+'s |
+| Losing reaches taking water the channel didn't have (headwater channels left nearly dry once SWAT+'s aquifers pass recharge through) | 84 million m3, 30% of recharge | booked as a shortfall, while MODFLOW 6 kept the water |
+| A starting state not consistent with the coupling (a steady state solved with every reach able to lose) | 49 million m3 of storage drained | storage is inside MODFLOW 6's budget, not a link |
+| River cells outside the coupled channels at a fixed stage | an unlimited source or sink | not mapped, so not in the ledger |
+
+Rules, each to be built and tested:
+
+1. **One owner per process.** Each flux is computed by one model. The other models' copy of it is switched off or
+   masked: set through BMI each day to the owner's value or to zero (swatplus-bmi's settable inputs, as the soil
+   temperature in clam-basin-study). SWAT+'s aquifer return flow, revap and deep recharge are MODFLOW 6's once it is
+   coupled; channel transmission loss is the river exchange's. Masking through BMI is preferred to editing inputs,
+   because a later input (`calibration.cal`) can undo an edit.
+2. **Recharge conserves the surface model's volume (built Nov 6, 2026).** A recharge map's area per object equals the
+   object's area in the source model: the area check is on by default (`area_rtol`, 1e-6), and an example that maps
+   more or less on purpose turns it off and says why. What the surface model made is booked beside what was sent;
+   the difference (`recharge:by_the_map`) is water the map added or couldn't place.
+3. **Water from outside is its own account (built Nov 6, 2026).** Each day, every MODFLOW 6 package's flow on entries
+   no link carries (fixed or general heads, drains and rivers not coupled, recharge packages Basin Ledger doesn't
+   set, wells not in the config) is booked as `groundwater:boundary:<package>`, positive into the aquifer. The
+   release from storage (STRGSS + STRGSY) is `groundwater:storage_release`, and the model's closure against the
+   day's gross flow (`groundwater:closure_share`) must be within 1e-6 every day.
+4. **An exchange is limited by what the giver has (built Nov 6, 2026).** A losing reach can't take more than its
+   channel carries that day. The day's river stage is lowered, smoothly, until the predicted loss at the day's
+   starting heads fits the channel's flow. What still can't be supplied after the solve stays a shortfall, and should
+   be small (see The MODFLOW 6 coupling).
+5. **Seepage reaches the streams (built Nov 6, 2026).** Drains (seepage at land surface) are coupled to channels
+   like the rivers' gains (`[exchange] drains`): their discharge joins the channel's exchange the next day and is
+   booked as `exchange:<channel>:seepage`. Without it a drain is a boundary flow, water leaving the basin.
+6. **The start is consistent with the coupling (built Nov 6, 2026).** `Basin.spin_up` runs the first year again and
+   again, SWAT+ from its own start and MODFLOW 6 from the heads the last cycle ended with, until the year's net
+   release from storage is within a tolerance of its recharge; `Basin(..., heads=...)` starts the run there. The
+   ledger's `groundwater:storage_release` shows any drift that remains.
+7. **Each model is checked for the settings coupling needs, at start-up (built Nov 6, 2026).** Below; a run with a
+   wrong setting stops before its first day.
+8. **The whole basin closes** (see Balances), from each model's own budget plus the ledger.
+
+Settings the coupling needs, checked when a run starts:
+
+- **SWAT+, two-way:** aquifers pass recharge through (no return flow, revap or deep recharge), and nothing in
+  `calibration.cal` turns them back on (`flo_min`, `revap_min`, `rchg_dp`, `chk`); channel transmission loss (`k`
+  in `hyd-sed-lte.cha`) is zero. SWAT+ 62.0.1 (`ch_rtmusk.f90`) takes that loss out of the channel, records it as
+  `seep` and sends it nowhere, so in two-way mode it would leave the basin unbooked; Basin Ledger sets it to zero
+  in the run's copy, as it does the aquifers (`no_transmission_loss`). Osu_1hru's channels had it on, so the
+  synthetic two-way example lost water this way until Nov 6, 2026. Daily time step (`time.sim` step 0).
+- **MODFLOW 6:** a one-day time step; a recharge package Basin Ledger sets has one entry per cell and no auxiliary
+  multiplier (an entry's rate is its cell's rate); river and drain entries a map couples are one per cell; packages
+  not coupled are reported as boundary flows.
+- **Water users (Water Ledger's models):** to be listed with the first coupled user in a real example.
+
+## Water quality across links (Andrew, Nov 6, 2026; written before the build)
+
+The coupling's real benefit is that chemistry follows the water through every link, as volume does now. A campus's
+intake is the aquifer's own water at its well, and its return goes into the stream's own water quality, not into
+an analysis after the run. Andrew: "we do need to do the work to get the real benefit of the coupling."
+
+**Constituents, to start:**
+- chloride: conservative, and road salt is Michigan's main source;
+- dissolved solids: the sum of SWAT+'s eight salt ions, conservative as a total;
+- phosphorus: sorbs in the aquifer, by a linear isotherm [A];
+- nitrate: later, since SWAT+ carries it by default.
+
+**Each link, with its mass in the ledger as sent and received:**
+
+| Link | From | To | Needs |
+|---|---|---|---|
+| recharge's mass | SWAT+'s leached mass per aquifer (salt module `perc_*`; soluble P leached) | MODFLOW 6 GWT: the recharge package's concentration (SSM) | swatplus-bmi: recharge mass fluxes readable |
+| the aquifer to the streams | GWT: discharge times the cell's concentration (river and drain cells) | SWAT+'s channel, with the gain | swatplus-bmi: a gain's mass settable |
+| the streams to the aquifer | SWAT+'s channel concentration | GWT: the river package's concentration | swatplus-bmi: channel concentrations readable |
+| a well | GWT: removed at the cell's concentration | the user's intake concentration, set each day | built in Basin Ledger |
+| a return | the user's returned mass | SWAT+'s point source loads (salt recall loads; soluble P) | swatplus-bmi: point-source loads settable (listed already) |
+
+**MODFLOW 6:**
+- a groundwater transport model (GWT) on the flow model's grid, linked by a GWF-GWT exchange;
+- packages: advection; dispersion [A]; mobile storage with porosity [A] and, for phosphorus, sorption [A]; sources
+  and sinks (SSM) reading each boundary's concentration from an auxiliary variable Basin Ledger sets each day;
+- Basin Ledger reads the concentration (GWT's X) at the wells and the river and drain cells.
+
+**Starting concentrations:** a steady-state transport solution under the run's mean recharge concentrations. It is
+checked against public well samples (Water Quality Portal) and the streams' late-summer chemistry, which is mostly
+groundwater. Transport settles over decades, not the year a flow warm-up takes, so the steady state is the start.
+
+**Stages, each with its tests before the next:**
+1. GWT in Basin Ledger with stated recharge concentrations [A]: the mass ledger; the well's intake from GWT; tests
+   that mass closes every day, that a steady state with uniform recharge concentration gives that concentration
+   everywhere, and a one-dimensional transport case against Ogata and Banks (1961).
+2. The streams' side through swatplus-bmi (recharge mass readable, a gain's mass and point-source loads settable,
+   channel concentrations readable): requested of the swatplus-bmi session once stage 1 shows which variables are
+   needed. Until then the return's concentration change is worked out after the run (`analysis.concentration_change`).
+
+**Stage 1, built (Nov 6, 2026).** `coupling/transport.py`, `[transport.<species>]` in an example's config, and
+`examples/synthetic/transport.toml`.
+- **Building:** `add_transport(sim, gwf, species, porosity, dispersivity, sorption, strt, sources)` in an example's
+  builder adds `gwt_<species>` with its own IMS, the GWF6-GWT6 exchange and MST, ADV (TVD by default), DSP
+  (transverse dispersivities a tenth and a hundredth of the longitudinal [A]), IC, SSM and OC. Each source package
+  is given its auxiliary variable if it lacks it.
+- **Each day:** after MODFLOW 6 prepares the day, the recharge's concentration and that of the coupled rivers'
+  losses are set, both stated [A]. They are set on the transport model's copy of the flow package's auxiliary values
+  (`GWT_<NAME>/FMI-FT<n>/AUXVAR`): set on the flow package itself after prepare they do nothing, and before it they
+  act a day late. The solve with the supply limit's callback now solves the transport solutions after the flow's
+  (it had solved only the flow's).
+- **Intake:** after the solve, the concentration at each configured well becomes the next day's
+  `water_user_intake_water_<species>__mass_concentration` of each user withdrawing from it. The users run before
+  MODFLOW 6 each day, so the intake lags the aquifer by a day, as the exchange does; the mass that lag moves is the
+  difference between `transport:<sp>:well:<w>:withdrawn` and the users' `intake:<sp>:kg` (0.03% over two years on
+  the synthetic run). A user on a well through a utility chain isn't given the intake yet.
+- **Ledger (kg):** recharge as sent (stated concentration × the volume sent) and received (the transport model's
+  intake of it); each well's mass withdrawn and its concentration; each coupled channel's mass to the stream (gains
+  and drains) and from it (losses, as sent and received); boundaries not coupled, by package, and GWT's own (CNC,
+  SRC); release from mobile and sorbed storage (MST's rates); and `transport:<sp>:closure_share`, held to 1e-6 of
+  the day's gross mass flow every day (it closes to about 1e-12). Inflow carries the auxiliary value, outflow the
+  cell's concentration at the end of the day, as MODFLOW 6's implicit step has it.
+- **Refused at start-up:** a transport model with no `[transport]` section, a recharge or coupled river package
+  that isn't an AUX source in SSM, a coupled exchange with no stated stream concentration, a constant intake the
+  aquifer would replace, SSM's AUXMIXED and file sources, and decay (not yet in the ledger).
+- **Restarts** save and restore each species' concentrations with the heads, bit for bit.
+- **Not yet:** the steady-state start (the tests start from a stated concentration), concentrations at the river and
+  drain cells reported per channel for stage 2, and the stage 2 links below.
+
+**What stage 2 needs of swatplus-bmi** (SWAT+ 62.0.1's own variables; names to be settled there):
+- recharge mass per aquifer, readable: each salt ion's `obcs(icmd)%hin(1)%salt(m)` (kg a day, kept as
+  `asaltb_d(iaq)%salt(m)%rchrg`; chloride is the sixth of the eight ions), soluble P `ob(icmd)%hin%solp`, nitrate
+  `ob(icmd)%hin%no3`;
+- a gain's mass, settable with the gain's water: the channel's `obcs(icmd)%trans%salt(m)`, which
+  `sd_channel_control3` adds to the inflow's constituents as it adds `ob(icmd)%trans` to its water, and
+  `ob(icmd)%trans%solp`;
+- a loss's mass taken with the loss: `exch_channel` takes the water but not the salts (`hcs2%salt`), and the mass
+  taken should be readable;
+- channel concentrations, readable: `ch_water(ich)%salt(m) / ch_stor(ich)%flo` (or `chsalt_d(ich)%salt(m)%conc`, mg/L
+  at the end of the day) and `ch_stor(ich)%solp / ch_stor(ich)%flo`;
+- point-source loads, settable: the recall's `rec_salt(irec)%hd_salt(day, yr)%salt(m)` (copied to
+  `obcs(icmd)%hd(1)%salt(m)` by `recall_salt`) and `recall(irec)%hd(day, yr)%solp`;
+- the aquifer's salt passed through as its water is: with return flow off, `asaltb_d(iaq)%salt(m)%saltgw` stays zero
+  but `cs_aqu(iaq)%salt(m)` keeps the recharge's mass, a store the ledger would have to hold. SWAT+'s aquifer P
+  outflow is the recharge volume times a fixed concentration (`aqu_d%minp = hin%flo * aqu_dat%minp`), not mass
+  carried from recharge.
+3. In each study, SWAT+'s salt module set up (rain chemistry, fertilizer, road salt), and starting concentrations
+   from public samples.
+
+## Stream temperature: a reach heat balance (built Nov 6, 2026)
+
+SWAT+ 62.0.1's `ch_temp.f90` can't give a stream temperature that responds to groundwater: no aquifer routine fills
+the groundwater term it reads (`hdsep%flo_gwsw`), so aquifer return flow and a gain set through swatplus-bmi both mix
+in at the transfer hydrograph's temperature, and it mixes HRU water yields in mm with flows in m3/s. Andrew's choice
+(Nov 6): a small Basin Ledger component, `temperature.py`, run after a coupled run.
+
+- **Each reach, each day, upstream first:** the water entering is mixed by volume, each source at its temperature
+  [A]: upstream reaches at theirs; lakes at `5 + 0.75 x` air temperature (SWAT+'s value for an inflow that isn't a
+  channel); runoff, lateral flow and snowmelt at `ch_temp`'s lagged air temperatures; groundwater from MODFLOW 6
+  (the ledger's applied exchange, where positive) at a stated temperature, by default the station's mean annual air
+  temperature over the run.
+- **Heat exchange with the air** over the reach's travel time, by `ch_temp`'s equilibrium-temperature method
+  (Edinger and others 1974) and coefficients [A], with a Manning velocity at the Fuller and Peck peak rate [A].
+- **Energy closes:** `reach_heat_balance` returns the heat the sources bring, the heat exchanged (surface flux x
+  the parcel's surface x travel time) and the heat leaving, plus what the 0.001 C floor adds (ice isn't modelled);
+  `tests/test_temperature.py` holds them equal.
+- **Dew point:** `tave - (100 - RH%) / 5` (Lawrence 2005). SWAT+'s `tave - (1 - rhum) / 5` takes RH as a fraction;
+  `ch_temp`'s coefficients were set with it, which is one reason the coefficients need checking against measured
+  temperature in each example.
+- An example asks for it with `[outputs] temperature = true`: SWAT+ then prints `lsunit_wb` daily in the run's copy.
 
 ## Calibration
 
@@ -601,7 +780,6 @@ Next:
    concentrations on users.
 3. Two-way refinements:
    - stage from SWAT+'s channel depth (asked of swatplus-bmi);
-   - lowering the stage after a shortfall;
    - SFR for routed streams;
    - leaks and infiltration in the chain exchanged with MODFLOW 6.
 4. Restarts for MODFLOW 6 models with several stress periods; scenarios in parallel processes from one saved

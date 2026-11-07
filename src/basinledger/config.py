@@ -27,7 +27,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     [recharge]                          # SWAT+ aquifers -> MODFLOW 6 recharge (one-way)
     package = "rch"
     map = "all:aqu001"                  # every top-layer cell to one aquifer, or a CSV (see mapping.py)
-    area_rtol = 0.001                   # optional: mapped area must match SWAT+'s aquifer area
+    area_rtol = 1e-6                    # mapped area must match each object's area in the surface model (default 1e-6);
+    area_check = false                  #   or no check, where an example maps more or less area on purpose (say why)
 
     [[wells]]
     name = "pw1"
@@ -37,6 +38,13 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     [exchange]                          # optional: two-way stream-aquifer exchange (MODFLOW 6 RIV <-> SWAT+)
     package = "riv"
     map = "all:cha01"                   # every RIV entry to one channel, or a CSV: object, layer, row, col
+    limit = true                        # a losing reach takes no more than its channel carries (default)
+    drains = {package = "drn", map = "maps/drains.csv"}   # optional: seepage cells, to their channels the next day
+
+    [transport.chloride]                # optional: a MODFLOW 6 transport model per species (coupling/transport.py),
+    recharge = 0.02                     #   built by the example's builder (add_transport); kg m-3 of recharge [A]
+    stream = 0.03                       #   kg m-3 of water a coupled river loses to the aquifer [A] (with [exchange])
+    # model = "gwt_chloride"            #   the GWT model's name, if not gwt_<species>
 
     [rivers]                            # optional: MODFLOW 6 river cells by flowpath, for stage and base flow out
     package = "riv"
@@ -59,6 +67,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     [outputs]                           # optional: daily series written with the ledger
     channels = ["cha01"]                # outflow, m3 s-1 (default: every channel)
     heads = [{name = "pw1", cell = [0, 20, 28]}]
+    temperature = true                  # SWAT+ prints what the reach heat balance needs (temperature.py)
+    balance = "cha01"                   # the outlet: SWAT+ prints what the whole-basin balance needs (balance.py)
 
     [calibration]                       # optional: the example's calibration record
     record = "calibration/record.toml"  # without one, the example is a screening run
@@ -71,6 +81,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     return = "outfall:creek"            # sink: an outfall account (later: a SWAT+ point source, a sewer)
     # variables = {withdrawal = "...", gain = "..."}   for components without the common names
     # forcing = {source = "nextgen", catchment = "cat-652059"}   hourly weather inputs (forcing.py)
+    # forcing = {source = "swatplus", station = "sta035"}         or from a SWAT+ station's daily files
+    # inputs = {water_user_intake_water_chloride__mass_concentration = 0.012}   constant inputs [A]
+    # report = {unremoved_heat_MWh = "data_center__unremoved_heat_power"}      booked as user:<name>:<key> daily
 
 Routes also include ``offsite:<name>``: water from or to somewhere outside the basin (a Great Lakes intake, a plant on
 another river), entered in the ledger only.
@@ -113,6 +126,8 @@ class UserConfig:
     variables: dict = field(default_factory=dict)
     constituents: dict | None = None
     forcing: dict | None = None
+    inputs: dict = field(default_factory=dict)   # constant inputs, e.g. intake concentrations [A]
+    report: dict = field(default_factory=dict)   # other outputs booked each day (users.WaterUser)
 
 
 @dataclass
@@ -148,6 +163,7 @@ class ExampleConfig:
     nextgen_run: Path | None = None
     rivers: dict | None = None
     mf6_builder_args: dict = field(default_factory=dict)
+    transport: dict[str, dict] = field(default_factory=dict)  # species -> recharge, stream (kg m-3) [A], model
 
     @property
     def surface(self) -> str:
@@ -188,7 +204,7 @@ def load(path: str | Path) -> ExampleConfig:
         c = tomllib.load(f)
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
-             "exchange", "utilities", "rules", "outputs", "nextgen", "rivers"}
+             "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -198,13 +214,24 @@ def load(path: str | Path) -> ExampleConfig:
         raise ValueError(f"{path}: needs one surface model, [swatplus] or [nextgen]")
     sw = c.get("swatplus", {})
     rch = c.get("recharge", {})
+    transport = c.get("transport", {})
+    for sp, t in transport.items():
+        if not isinstance(t, dict) or "recharge" not in t:
+            raise ValueError(f"{path}: [transport.{sp}] needs recharge (kg m-3)")
+        if set(t) - {"recharge", "stream", "model"}:
+            raise ValueError(f"{path}: [transport.{sp}] unknown settings {sorted(set(t) - {'recharge', 'stream'})}")
+        if "stream" in t and "exchange" not in c:
+            raise ValueError(f"{path}: [transport.{sp}] stream needs the two-way [exchange]")
+        if "exchange" in c and "stream" not in t:
+            raise ValueError(f"{path}: [transport.{sp}] needs stream (kg m-3): the coupled rivers' losses carry it")
     users = []
     for u in c.get("users", []):
         users.append(UserConfig(
             name=u["name"], component=u["component"],
             config=_path(base, u["config"]) if u.get("config") else None,
             withdrawal=u["withdrawal"], returns=u["return"],
-            variables=u.get("variables", {}), constituents=u.get("constituents"), forcing=u.get("forcing")))
+            variables=u.get("variables", {}), constituents=u.get("constituents"), forcing=u.get("forcing"),
+            inputs=u.get("inputs", {}), report=u.get("report", {})))
     return ExampleConfig(
         path=path, name=c["name"], description=c.get("description", ""),
         run_folder=_path(base, c.get("run", {}).get("folder", f"runs/{c['name']}")),
@@ -215,7 +242,7 @@ def load(path: str | Path) -> ExampleConfig:
         mf6_model=mf.get("model", "gwf"),
         recharge_package=rch.get("package", "rch"),
         recharge_map=rch.get("map", ""),
-        area_rtol=rch.get("area_rtol"),
+        area_rtol=None if rch.get("area_check", True) is False else float(rch.get("area_rtol", 1e-6)),
         wells=[WellConfig(w["name"], w.get("package", "wel"), tuple(w["cell"])) for w in c.get("wells", [])],
         users=users,
         calibration_record=_path(base, c["calibration"]["record"]) if c.get("calibration", {}).get("record") else None,
@@ -228,4 +255,5 @@ def load(path: str | Path) -> ExampleConfig:
         nextgen_run=_path(base, c["nextgen"]["run"]) if "nextgen" in c else None,
         rivers=c.get("rivers"),
         mf6_builder_args=mf.get("builder_args", {}),
+        transport={sp: dict(t) for sp, t in transport.items()},
     )

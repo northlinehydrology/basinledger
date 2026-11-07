@@ -60,6 +60,8 @@ def add_point_sources(project: Path, sources: list[tuple[str, str]]):
     """Daily point sources (recall objects) into channels, zero flow in the files: [(name, channel), ...]."""
     project = Path(project)
     start, end = _period(project)
+    if not (project / "recall.con").exists():
+        _no_recalls_yet(project, sources[0][1])
     con = (project / "recall.con").read_text().splitlines()
     hdr = con[:2]
     template = con[2].split()
@@ -92,6 +94,33 @@ def add_point_sources(project: Path, sources: list[tuple[str, str]]):
     (project / "recall.rec").write_text("\n".join(rec) + "\n")
 
 
+def _no_recalls_yet(project: Path, channel: str):
+    """A project with no point sources: write recall.con with one template row (at the channel's position and
+    station) and name it in file.cio (the recall line, and recall.con in the connect line's ninth place, as SWAT+
+    62.0.1's readcio_read.f90 reads them)."""
+    lines = (project / "chandeg.con").read_text().splitlines()
+    head = lines[1].split()
+    row = next(ln.split() for ln in lines[2:] if ln.split() and ln.split()[1] == channel)
+    get = dict(zip(head, row))
+    (project / "recall.con").write_text(
+        "recall.con: point sources (Basin Ledger)\n"
+        "      NUMB    NAME    GIS_ID    AREA_HA      LAT     LONG       ELEV    RECALL     WST   CONSTIT  OVERFLOW  "
+        "RULESET OUT_TOT OBTYP_OUT1 HTYPNO_OUT1  HTYP_OUT1  FRAC_OUT1\n"
+        f"         1  template      1        0.000    {get['lat']}   {get['lon']}     {get['elev']}      1    "
+        f"{get['wst']}         0         0        0       1         sdc          {get['id']}        tot     1.0000\n")
+    cio = (project / "file.cio").read_text().splitlines()
+    for i, ln in enumerate(cio):
+        f = ln.split()
+        if f[:1] == ["connect"]:
+            while len(f) < 10:
+                f.append("null")
+            f[9] = "recall.con"
+            cio[i] = "  ".join(f)
+        elif f[:1] == ["recall"]:
+            cio[i] = "recall            recall.rec"
+    (project / "file.cio").write_text("\n".join(cio) + "\n")
+
+
 def aquifer_pass_through(project: Path):
     """SWAT+'s aquifers keep the recharge they get and return none of it (no return flow, revap or deep recharge),
     for two-way coupling, where MODFLOW 6 handles groundwater. SWAT+ 62.0.1 (aqu_1d_control.f90) returns flow when
@@ -109,6 +138,69 @@ def aquifer_pass_through(project: Path):
         f[i_flo] = f[i_rev] = "-1000000.0"
         f[i_dp] = "0.0"
         out.append("  ".join(f))
+    path.write_text("\n".join(out) + "\n")
+
+
+# calibration.cal parameters that would undo aquifer_pass_through once SWAT+ applies them
+PASS_THROUGH_UNDONE = ("flo_min", "revap_min", "rchg_dp", "chk")
+
+
+def coupling_problems(project: Path, two_way: bool) -> list[str]:
+    """What in a SWAT+ project (the run's copy, after its parameters are written) would make it fight MODFLOW 6.
+
+    - a daily time step (``time.sim`` step 0), since Basin Ledger steps one day at a time;
+    - two-way: the aquifers pass recharge through, and nothing in ``calibration.cal`` (applied after aquifer.aqu)
+      turns their return flow, revap or deep recharge back on;
+    - two-way: no channel transmission loss (``k`` in ``hyd-sed-lte.cha``): the stream-aquifer exchange is MODFLOW
+      6's, and SWAT+'s own seepage would go to an aquifer that passes nothing on."""
+    project = Path(project)
+    out = []
+    step = (project / "time.sim").read_text().splitlines()[2].split()[4]
+    if int(step) != 0:
+        out.append(f"time.sim: step {step}; Basin Ledger needs a daily time step (0)")
+    if not two_way:
+        return out
+    lines = (project / "aquifer.aqu").read_text().splitlines()
+    cols = lines[1].split()
+    for ln in lines[2:]:
+        f = ln.split()
+        if f and (float(f[cols.index("flo_min")]) > -1e5 or float(f[cols.index("revap_min")]) > -1e5
+                  or float(f[cols.index("rchg_dp")]) != 0.0):
+            out.append(f"aquifer.aqu: {f[1]} doesn't pass recharge through (flo_min, revap_min, rchg_dp)")
+            break
+    cio = (project / "file.cio").read_text().split()
+    if "calibration.cal" in cio and (project / "calibration.cal").exists():
+        names = {ln.split()[0] for ln in (project / "calibration.cal").read_text().splitlines()[3:] if ln.split()}
+        bad = sorted(names & set(PASS_THROUGH_UNDONE))
+        if bad:
+            out.append(f"calibration.cal sets {', '.join(bad)}, which turns SWAT+'s own groundwater or channel loss "
+                       "back on; MODFLOW 6 owns both in two-way mode, so leave them out")
+    cha = project / "hyd-sed-lte.cha"
+    if cha.exists():
+        lines = cha.read_text().splitlines()
+        cols = lines[1].split()
+        k = [float(ln.split()[cols.index("k")]) for ln in lines[2:] if ln.split()]
+        if any(v != 0.0 for v in k):
+            out.append(f"hyd-sed-lte.cha: {sum(v != 0 for v in k)} channels have transmission loss k > 0; in "
+                       "two-way mode the river exchange is MODFLOW 6's, so set k to 0")
+    return out
+
+
+def no_transmission_loss(project: Path):
+    """No channel transmission loss (``k`` = 0 in hyd-sed-lte.cha), for two-way coupling. SWAT+ 62.0.1
+    (ch_rtmusk.f90) takes the loss out of the channel, records it as ``seep`` and sends it nowhere, so in two-way mode
+    it would leave the basin unbooked; the stream-aquifer exchange is MODFLOW 6's."""
+    path = Path(project) / "hyd-sed-lte.cha"
+    if not path.exists():
+        return
+    lines = path.read_text().splitlines()
+    i = lines[1].split().index("k")
+    out = lines[:2]
+    for ln in lines[2:]:
+        f = ln.split()
+        if f:
+            f[i] = "0.00000"
+            out.append("  ".join(f))
     path.write_text("\n".join(out) + "\n")
 
 

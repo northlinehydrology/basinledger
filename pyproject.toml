@@ -29,7 +29,7 @@ classifiers = [
 [project.optional-dependencies]
 # water-user models from the open Water Ledger packages (CoolingWaterBmi first). pyyaml: waterledger-models 3.9.0
 # imports it without declaring it (docs/requests.md); 3.10.0 drops the need.
-users = ["waterledger-models>=3.9", "pyyaml>=6"]
+users = ["waterledger-models>=3.11", "pyyaml>=6"]
 # NextGen as the surface model: reading NGIAB runs (t-route output, forcing). Below 1.7.5, netCDF4 ships wheels for
 # macOS 13 and 14; 1.7.5 and later need macOS 15 or a local netCDF library to build from source.
 nextgen = ["netCDF4>=1.6,<1.7.5"]
@@ -45,7 +45,7 @@ DOI = "https://doi.org/10.5281/zenodo.23967791"
 basinledger = "basinledger.__main__:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "netCDF4>=1.6,<1.7.5", "waterledger-models>=3.9", "pyyaml>=6"]
+dev = ["pytest>=8", "netCDF4>=1.6,<1.7.5", "waterledger-models>=3.11", "pyyaml>=6"]
 examples = ["marimo>=0.9", "matplotlib>=3.8"]
 # building an example's groundwater model from public data (examples/plaster-creek/groundwater)
 gis = ["shapely>=2", "pyproj>=3.6", "rasterio>=1.3", "scipy>=1.11"]

@@ -9,6 +9,9 @@ A user component's weather inputs are set before each of its steps from a forcin
 Sources:
 - ``nextgen``: an NGIAB run's ``forcings/forcings.nc`` (NWM retrospective or AORC, per catchment, hourly), the
   catchment named in the user's config.
+- ``swatplus``: a SWAT+ weather station's daily files (``<station>.tmp``, ``.hmd``) in the run's project, made
+  hourly [A]: air temperature on a cosine between the day's minimum at 03:00 and maximum at 15:00 (so the day's mean
+  is SWAT+'s), relative humidity the day's value all day (SWAT+ keeps it as a fraction; here in percent).
 
 Relative humidity is the ratio of vapor pressure, e = q p / (0.622 + 0.378 q), to saturation vapor pressure over
 water, es = 611.2 exp(17.67 T / (T + 243.5)) Pa with T in degC (Bolton 1980), capped at 100%.
@@ -64,3 +67,54 @@ def nextgen_inputs(run_folder: Path, catchment: str, run_start: dt.datetime) -> 
     tc = tk - 273.15
     return {TEMPERATURE: HourlySeries(t, tc, run_start),
             HUMIDITY: HourlySeries(t, relative_humidity(q, p, tc), run_start)}
+
+
+class DailyToHourly:
+    """An hourly function of seconds since the run start from daily values keyed by date."""
+
+    def __init__(self, days: dict, run_start: dt.datetime, hourly):
+        self.days, self.start, self.hourly = days, run_start, hourly
+
+    def __call__(self, t_run_s: float) -> float:
+        when = self.start + dt.timedelta(seconds=t_run_s)
+        rec = self.days.get(when.date())
+        if rec is None:
+            raise IndexError(f"the station has no day for {when.date()}")
+        return float(self.hourly(rec, when.hour + when.minute / 60.0))
+
+
+def swatplus_inputs(project: Path, station: str, run_start: dt.datetime) -> dict[str, DailyToHourly]:
+    """Hourly temperature and humidity for a user from a SWAT+ station's daily files, as ``weather-sta.cli`` names
+    them. Where SWAT+ generates a variable (``sim``), there is no series: humidity is then left out, and the user
+    needs it as a constant input."""
+    project = Path(project)
+    lines = (project / "weather-sta.cli").read_text().splitlines()
+    head = lines[1].split()
+    row = next((ln.split() for ln in lines[2:] if ln.split() and ln.split()[0] == station), None)
+    if row is None:
+        raise KeyError(f"no weather station {station!r} in weather-sta.cli")
+    files = dict(zip(head, row))
+
+    def read(kind):
+        name = files.get(kind, "sim")
+        if name in ("sim", "null"):
+            return None
+        out = {}
+        for ln in (project / name).read_text().splitlines()[3:]:
+            f = ln.split()
+            if f:
+                out[dt.date(int(f[0]), 1, 1) + dt.timedelta(days=int(f[1]) - 1)] = [float(x) for x in f[2:]]
+        return out
+
+    tmp, hmd = read("tmp"), read("hmd")
+    if tmp is None:
+        raise ValueError(f"station {station!r}: SWAT+ generates its temperature; a user needs a measured series")
+
+    def temperature(r, hour):
+        mean, amp = 0.5 * (r[0] + r[1]), 0.5 * (r[0] - r[1])
+        return mean + amp * np.cos(2 * np.pi * (hour - 15.0) / 24.0)
+
+    out = {TEMPERATURE: DailyToHourly(tmp, run_start, temperature)}
+    if hmd is not None:
+        out[HUMIDITY] = DailyToHourly(hmd, run_start, lambda r, hour: min(100.0 * r[0], 100.0))
+    return out

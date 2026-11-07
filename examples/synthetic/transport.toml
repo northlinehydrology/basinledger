@@ -1,0 +1,41 @@
+name = "synthetic-transport"
+description = """The two-way synthetic example (two_way.toml) with chloride carried through the aquifer: a MODFLOW 6
+transport model on the 10 ha grid, recharge and the river's losses at stated concentrations, and the well's user taking
+in the aquifer's chloride each day. For the engine's tests only: the concentrations are round numbers, not data."""
+
+[run]
+folder = "../../runs/synthetic-transport"
+
+[swatplus]
+project = "{swatplus_refdata}/Osu_1hru"
+
+[modflow6]
+builder = "model:build_small"
+# porosity 0.25 [A], longitudinal dispersivity 5 m [A], starting at 0.01 kg m-3 [A]
+builder_args = {transport = {chloride = {porosity = 0.25, dispersivity = 5.0, strt = 0.01}}}
+
+[recharge]
+map = "all:aqu001"
+area_rtol = 1e-6
+
+[exchange]
+package = "riv"
+map = "all:cha01"
+
+[transport.chloride]
+recharge = 0.03           # kg m-3 [A]: above the starting concentration, so the aquifer's rises
+stream = 0.02             # kg m-3 [A]
+
+[[wells]]
+name = "pw1"
+cell = [0, 5, 6]
+
+[[users]]
+name = "plant"
+component = "basinledger.testing:SyntheticUser"
+config = "intake_user.toml"
+withdrawal = "well:pw1"
+return = "outfall:offsite"
+
+[outputs]
+heads = [{name = "pw1", cell = [0, 5, 6]}]

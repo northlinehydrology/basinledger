@@ -130,10 +130,47 @@ class Modflow6:
         """River stages, m, one per entry of a river package."""
         self.set("STAGE", package, np.asarray(stage, dtype=float))
 
-    def solve_day(self):
-        self.api.do_time_step()
+    def solve_day(self, callback=None, max_rounds: int = 30):
+        """Solve the day prepared. ``callback()``, if given, runs after each outer iteration and returns whether it
+        changed a boundary; the day is done once the solve has converged and the callback changes nothing (or it
+        has changed something ``max_rounds`` times after convergence). How a coupling sets a boundary from the heads
+        within the day: moving the boundary with the iterations, rather than after each convergence, takes about
+        half as many iterations.
+
+        A simulation with transport models (``coupling/transport.py``) has a solution for each, solved after the
+        flow's: ``do_time_step`` solves them all, and with a callback they are solved here once the flow is done."""
+        if callback is None:
+            self.api.do_time_step()
+        else:
+            self.api.prepare_solve(1)
+            iterations, rounds = 0, 0
+            while True:
+                converged = self.api.solve(1)
+                iterations += 1
+                changed = callback()
+                if converged and not changed:
+                    break
+                if converged:
+                    rounds += 1
+                    if rounds >= max_rounds:
+                        break
+                if iterations >= 2000:
+                    raise RuntimeError(f"MODFLOW 6 didn't converge on day {self.day}")
+            self.api.finalize_solve(1)
+            for sol in range(2, self.api.get_subcomponent_count() + 1):
+                self._solve(sol)
         self.api.finalize_time_step()
         self.day += 1
+
+    def _solve(self, sol: int, max_iterations: int = 2000):
+        """One solution's outer iterations to convergence (as modflowapi's ``do_time_step`` does for each)."""
+        self.api.prepare_solve(sol)
+        for _ in range(max_iterations):
+            if self.api.solve(sol):
+                break
+        else:
+            raise RuntimeError(f"MODFLOW 6 solution {sol} didn't converge on day {self.day}")
+        self.api.finalize_solve(sol)
 
     def simvals(self, package: str) -> np.ndarray:
         """Each entry's simulated flow for the last day, m3 d-1, positive into the aquifer."""

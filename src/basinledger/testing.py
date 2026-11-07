@@ -13,6 +13,8 @@ Config (TOML, all optional):
     dry_withdrawal = 0.1        # in dry mode, the share of withdrawal still taken (staff and process water)
     dry_power = 1.15            # in dry mode, power x this
     time_step = 3600            # s
+    intake_species = []         # e.g. ["chloride"]: an input water_user_intake_water_<c>__mass_concentration (kg m-3)
+                                #   for each, all of it returned (water_user_return_water_<c>__mass_flux)
 """
 
 from __future__ import annotations
@@ -42,6 +44,8 @@ class SyntheticUser(Bmi):
     _name = "Basin Ledger synthetic water user"
 
     def __init__(self):
+        self._outputs, self._inputs = dict(OUTPUTS), dict(INPUTS)
+        self._intake: list[str] = []
         self._v = {k: np.zeros(1) for k in [*OUTPUTS, *INPUTS]}
         self._v["water_user_water__withdrawal_volume_flux_limit"][:] = np.inf
         self._t = 0.0
@@ -56,6 +60,11 @@ class SyntheticUser(Bmi):
             with open(config_file, "rb") as f:
                 cfg = tomllib.load(f)
         self._dt = float(cfg.pop("time_step", 3600.0))
+        self._intake = list(cfg.pop("intake_species", []))
+        for c in self._intake:
+            self._inputs[f"water_user_intake_water_{c}__mass_concentration"] = "kg m-3"
+            self._outputs[f"water_user_return_water_{c}__mass_flux"] = "kg s-1"
+        self._v.update({k: np.zeros(1) for k in [*self._outputs, *self._inputs] if k not in self._v})
         unknown = set(cfg) - set(self.p)
         if unknown:
             raise ValueError(f"unknown parameters: {sorted(unknown)}")
@@ -83,6 +92,9 @@ class SyntheticUser(Bmi):
         self._v["water_user_return_water_dissolved_solids__mass_flux"][0] = w * self.p["intake_tds"]
         self._v["water_user_return_water__temperature"][0] = 25.0 + 5.0 * math.sin(2 * math.pi * (doy - 110) / 365.25)
         self._v["water_user__electric_power"][0] = self.p["power"] * (self.p["dry_power"] if dry else 1.0)
+        for c in self._intake:  # evaporation carries none: what is taken in is returned
+            self._v[f"water_user_return_water_{c}__mass_flux"][0] = \
+                w * self._v[f"water_user_intake_water_{c}__mass_concentration"][0]
 
     def update_until(self, time):
         while self._t + self._dt <= time + 1e-9:
@@ -95,23 +107,23 @@ class SyntheticUser(Bmi):
         return self._name
 
     def get_input_item_count(self):
-        return len(INPUTS)
+        return len(self._inputs)
 
     def get_output_item_count(self):
-        return len(OUTPUTS)
+        return len(self._outputs)
 
     def get_input_var_names(self):
-        return tuple(INPUTS)
+        return tuple(self._inputs)
 
     def get_output_var_names(self):
-        return tuple(OUTPUTS)
+        return tuple(self._outputs)
 
     def get_var_grid(self, name):
         self._units(name)
         return 0
 
     def _units(self, name):
-        return {**OUTPUTS, **INPUTS}[name]
+        return {**self._outputs, **self._inputs}[name]
 
     def get_var_type(self, name):
         return "float64"
@@ -155,7 +167,7 @@ class SyntheticUser(Bmi):
         return dest
 
     def set_value(self, name, src):
-        if name not in INPUTS:
+        if name not in self._inputs:
             raise KeyError(f"{name} is not an input variable")
         self._v[name][:] = src
 

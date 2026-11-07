@@ -22,6 +22,7 @@ package = "rch"
 # catchments to cells by area; buffer cells take their nearest catchment's rate [A], so the mapped areas exceed the
 # catchments' and no area check is made
 map = "maps/catchment_cells.csv"
+area_check = false                     # the buffer cells, as above
 
 [rivers]
 package = "riv"

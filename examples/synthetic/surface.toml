@@ -17,6 +17,7 @@ builder = "model:build"
 
 [recharge]
 map = "all:aqu001"
+area_check = false        # as basin.toml: the 10 ha aquifer over the whole grid
 
 [[wells]]
 name = "pw1"

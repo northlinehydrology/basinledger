@@ -241,6 +241,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Utility chain | production = delivery + losses = the sum of its sources; sewer = plant outfall |
 | Rules | act on exactly the days after the trigger; a curtailed user takes nothing; dry mode uses less water and more electricity |
 | Two-way exchange | SWAT+'s aquifer returns nothing and stores exactly its recharge; each day's river exchange reaches SWAT+ the next day, whole |
+| Groundwater transport | each species' mass closes every day; uniform recharge concentration reaches every cell at steady state; a column matches Ogata and Banks (1961) within 1% of C0; a well's user takes in the aquifer's concentration a day later |
 | Restarts | saved after a warm-up and carried on, runs match unbroken runs bit for bit |
 | Command line, calibration | outputs and status written; statistics on known values; the forward model writes simulated values at observations |
 

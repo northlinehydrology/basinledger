@@ -104,7 +104,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyyaml", marker = "extra == 'users'", specifier = ">=6" },
     { name = "swatplus-bmi", specifier = ">=0.2" },
-    { name = "waterledger-models", marker = "extra == 'users'", specifier = ">=3.9" },
+    { name = "waterledger-models", marker = "extra == 'users'", specifier = ">=3.11" },
 ]
 provides-extras = ["users", "nextgen"]
 
@@ -113,7 +113,7 @@ dev = [
     { name = "netcdf4", specifier = ">=1.6,<1.7.5" },
     { name = "pytest", specifier = ">=8" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "waterledger-models", specifier = ">=3.9" },
+    { name = "waterledger-models", specifier = ">=3.11" },
 ]
 examples = [
     { name = "marimo", specifier = ">=0.9" },
@@ -2571,15 +2571,15 @@ wheels = [
 
 [[package]]
 name = "waterledger-models"
-version = "3.9.0"
+version = "3.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e8/d9/53b8801a10fddf55403c4463619cb8fe421fe70b0dbbd00412be0e3ea804/waterledger_models-3.9.0.tar.gz", hash = "sha256:929c4ebd7a4b0fd07925d74d04ef437b29b6e8e7b4e628d827a43233b1c75400", size = 44101, upload-time = "2026-11-02T16:58:24.125Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f0/71/de4a759da86639a58b4e91da178fde6212cd252547cb3048e56fa5fc2e16/waterledger_models-3.11.0.tar.gz", hash = "sha256:c1ac842c3912b1e5bec9a46ef6db52d50b6ae784899d3c7b9e62a2f34ba2e2a5", size = 54797, upload-time = "2026-11-06T18:47:37.274Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4e/b6/e166fae38ab6717fc131f5cfd83878da20833b6e2fc6d2fe51a6c2f1e4c4/waterledger_models-3.9.0-py3-none-any.whl", hash = "sha256:9dbf5b8194697f2327cc5e76e849c478fd2c504c6c32ea63945f0ac906aa155a", size = 49929, upload-time = "2026-11-02T16:58:22.921Z" },
+    { url = "https://files.pythonhosted.org/packages/50/38/19e27e795a025fdecae68664f6576f3dee84eed9a7f08286b0a5622cc46c/waterledger_models-3.11.0-py3-none-any.whl", hash = "sha256:5854ccb2334ca11732096e443a698314683c968b9dba54475c38b13cd2b070c5", size = 61559, upload-time = "2026-11-06T18:47:35.988Z" },
 ]
 
 [[package]]

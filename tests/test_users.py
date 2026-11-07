@@ -154,3 +154,16 @@ def test_reported_user_replays_its_series(tmp_path):
     (tmp_path / "b.toml").write_text('series = "bad.csv"\nstart = "2020-01-01"\n')
     with pytest.raises(ValueError, match="withdrawal != consumption"):
         WaterUser("bad", ReportedUser(), str(tmp_path / "b.toml"), constituents={})
+
+
+def test_synthetic_user_returns_the_mass_it_takes_in(tmp_path):
+    """With intake_species, the synthetic user takes an intake concentration as an input and returns all of the mass
+    (evaporation carries none), as the transport tests need."""
+    (tmp_path / "u.toml").write_text('intake_species = ["chloride"]\n')
+    var = "water_user_intake_water_chloride__mass_concentration"
+    wu = WaterUser("u", SyntheticUser(), str(tmp_path / "u.toml"))
+    assert var in wu.bmi.get_input_var_names() and "chloride" in wu.constituents
+    wu.inputs = {var: lambda t: 0.012}
+    use = wu.advance_day(0)
+    assert use.constituents["chloride"] == pytest.approx(0.012 * use.withdrawal, rel=1e-12)
+    assert var not in SyntheticUser().get_input_var_names()  # only when asked for
