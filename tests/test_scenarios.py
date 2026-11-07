@@ -63,3 +63,24 @@ def test_a_wrapped_surface_is_what_the_driver_steps(swatplus):
     b.run()
     assert b.swat.days == 30
     b.finalize()
+
+
+def test_the_warm_up_reports_whether_its_soils_settled(swatplus):
+    """warm_up.json holds the soil water's change over the warm-up's last year (here all of it) as a share of its
+    precipitation, from SWAT+'s basin_wb_day; a share above the limit is a warning, and the state is saved either
+    way."""
+    from basinledger.balance import soil_water_trend
+    from basinledger.coupling.swatplus import StartWarning
+    import json
+    import warnings
+    with pytest.warns(StartWarning, match="haven't settled"):
+        state = SC.warm_up(config(), WARM, run="scen-warm-strict", soil_settled_share=0.0)
+    r = json.loads((state / "warm_up.json").read_text())
+    assert r["days"] == WARM and not r["settled"] and r["precipitation_mm"] > 0
+    assert r == soil_water_trend(state.parent / "swatplus", WARM) | {"limit": 0.0, "settled": False}
+    assert (state / "basin.json").exists()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", StartWarning)
+        warnings.filterwarnings("ignore", message=".*empty soils", category=StartWarning)
+        state = SC.warm_up(config(), WARM, run="scen-warm-loose", soil_settled_share=1.0)
+    assert json.loads((state / "warm_up.json").read_text())["settled"]

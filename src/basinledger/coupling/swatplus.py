@@ -186,6 +186,35 @@ def coupling_problems(project: Path, two_way: bool) -> list[str]:
     return out
 
 
+class StartWarning(UserWarning):
+    """A setting or a warm-up that doesn't stop a run but can leave its start drifting."""
+
+
+def start_warnings(project: Path) -> list[str]:
+    """What in a SWAT+ project can leave the run's first years drifting: warnings, not refusals.
+
+    - soils that start empty (``sw_frac`` 0 in ``soil_plant.ini``, for an initialization the HRUs use): SWAT+ then
+      fills the profile from the first day, which can take years where soils are deep or drain slowly. The Clam's
+      took more than 15 years, so a one-year warm-up left soil water, percolation and base flow rising through a
+      20-year run (clam-basin-study AUDIT.md, Nov 7, 2026). Warm up long enough, or start the soils wetter."""
+    project = Path(project)
+    ini, hru = project / "soil_plant.ini", project / "hru-data.hru"
+    if not ini.exists() or not hru.exists():
+        return []
+    lines = ini.read_text().splitlines()
+    i = lines[1].split().index("sw_frac")
+    frac = {f[0]: float(f[i]) for f in (ln.split() for ln in lines[2:]) if f}
+    lines = hru.read_text().splitlines()
+    j = lines[1].split().index("soil_plant_init")
+    used = [f[j] for f in (ln.split() for ln in lines[2:]) if len(f) > j]
+    empty = sum(frac.get(u, 1.0) == 0.0 for u in used)
+    if not empty:
+        return []
+    return [f"soil_plant.ini: {empty} of {len(used)} HRUs start with empty soils (sw_frac 0); SWAT+ fills them from "
+            "the first day, which can take years, so check the warm-up's soil water (scenarios.warm_up reports it) or "
+            "start the soils wetter"]
+
+
 def no_transmission_loss(project: Path):
     """No channel transmission loss (``k`` = 0 in hyd-sed-lte.cha), for two-way coupling. SWAT+ 62.0.1
     (ch_rtmusk.f90) takes the loss out of the channel, records it as ``seep`` and sends it nowhere, so in two-way mode

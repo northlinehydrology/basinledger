@@ -182,3 +182,18 @@ def _table_skip(path: Path) -> list[list[str]]:
         return []
     lines = path.read_text().splitlines()
     return [ln.split() for ln in lines[3:] if ln.split() and ln.split()[0].isdigit()]
+
+
+def soil_water_trend(swat_dir: str | Path, days: int = 365) -> dict[str, float]:
+    """SWAT+'s basin soil water over the last ``days`` days its ``basin_wb_day.txt`` prints (all of them if fewer):
+    the change (mm, final less initial), the precipitation (mm) and the change as a share of the precipitation. A
+    warm-up whose soil water still changes by a sizable share of its last year's precipitation hasn't settled
+    (``scenarios.warm_up``)."""
+    head, rows = _table(Path(swat_dir) / "basin_wb_day.txt")
+    col = {k: head.index(k) for k in head}
+    rows = rows[-days:]
+    change = float(rows[-1][col["sw_final"]]) - float(rows[0][col["sw_init"]])
+    precip = sum(float(r[col["precip"]]) for r in rows)
+    return {"days": len(rows), "soil_water_change_mm": change, "precipitation_mm": precip,
+            "share": abs(change) / precip if precip > 0 else float("nan"),
+            "soil_water_final_mm": float(rows[-1][col["sw_final"]])}

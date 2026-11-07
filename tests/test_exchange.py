@@ -210,6 +210,23 @@ def test_swat_settings_that_would_fight_are_refused(tmp_path, swatplus):
     assert S.coupling_problems(d, two_way=False) == []
 
 
+def test_empty_soils_are_a_warning_not_a_stop(tmp_path, swatplus):
+    """Soils that start empty (sw_frac 0) are warned of at start-up, and the run still starts; wetter ones aren't."""
+    import shutil
+    d = tmp_path / "p"
+    shutil.copytree(swatplus / "Osu_1hru", d)
+    w = S.start_warnings(d)  # Osu_1hru's one HRU starts empty
+    assert len(w) == 1 and "1 of 1 HRUs" in w[0]
+    ini = d / "soil_plant.ini"
+    ini.write_text(ini.read_text().replace("0.00000", "0.50000"))
+    assert S.start_warnings(d) == []
+    cfg = C.load(ROOT / "examples" / "synthetic" / "two_way.toml")
+    cfg.run_folder = RUNS
+    with pytest.warns(S.StartWarning, match="empty soils"):
+        b = Basin(cfg, run="empty-soils", days=1)
+    b.finalize()
+
+
 def test_drains_reach_the_stream(swatplus):
     """Seepage at land surface (a drain) is coupled to the channel like the river's gains: it arrives the next day,
     the drain is no boundary flow, and the aquifer closes with the links."""
