@@ -7,14 +7,16 @@ what, why, and how Basin Ledger copes until then. Written Nov 4, 2026.
 
 1. **Declare pyyaml as a dependency (a bug in 3.9.0).** `waterledger_models/datacenter/bmi.py` imports `yaml`, but
    pyyaml isn't among the package's dependencies, so `from waterledger_models.datacenter.bmi import CoolingWaterBmi`
-   fails in a clean environment. Until fixed, Basin Ledger's dev group installs pyyaml. *Status: fixed for 3.10.0
-   (yaml is imported only when a YAML config file is read). The workaround stays until 3.10.0 is on PyPI.*
+   fails in a clean environment. Until fixed, Basin Ledger's dev group installs pyyaml. *Status: fixed in 3.10.0
+   (yaml is imported only when a YAML config file is read). Basin Ledger still installs pyyaml with `users`, since
+   its examples give `CoolingWaterBmi` a YAML config and waterledger-models declares pyyaml only under its `bmi`
+   extra.*
 2. **A withdrawal limit input on every user component:** `water_user_water__withdrawal_volume_flux_limit` (m3 s-1;
    infinity means no limit). Curtailment and well drawdown rules set it before each day. `CoolingWaterBmi` should
    meet a limit the way a campus would: by running dry or with more assist, using more electricity. Its balance must
    still close, and the electricity must follow. Until then, rules can only be tested on the synthetic user.
-   *Status (requests 2 to 5): built Nov 5, 2026 on waterledger's `water-limits` branch, for the release after 3.10.0;
-   not released. Until it is on PyPI, Basin Ledger's rules are tested on the synthetic user. The design follows realistic
+   *Status (requests 2 to 5): released in waterledger-models 3.11.0 (Nov 6, 2026), which Basin Ledger 0.2.0
+   requires; the Clam's rules case curtails a real `CoolingWaterBmi` campus. The design follows realistic
    operation:*
    - *The heat to remove is fixed, since the campus must hold its temperature. A limit caps the wet share of the heat
      rejected each step, and the heat balance is solved again.*

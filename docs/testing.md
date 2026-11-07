@@ -97,7 +97,7 @@ What it turned up:
 - The driver read a user's input names before the component was initialized; they are now read after, as BMI
   intends (a component's inputs can depend on its config).
 
-The gaps, each to be built with its test:
+The gaps as planned on Nov 6, each now built with its test (the coverage table above):
 
 - **G1. Capture of pumping.** In two-way mode the pumping must equal what it takes from storage, from the streams
   (less discharge and more leakage) and across the boundary: `analysis.capture` from a pair of runs, with and without
