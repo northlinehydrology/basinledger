@@ -392,12 +392,7 @@ profile, the day just done.
   (`recharge:swat_aquifers`) and holds `recharge:made` to it (1e-5, for float32 reads and areas rounded to 1e-5 ha).
   A project whose HRUs send recharge elsewhere would fail that pair, and should say so. A project with no aquifers
   has nothing to hold it to.
-- **What it changes.** Where the water lands within a catchment, not how much. On the Clam (clam-basin-study,
-  `hru_compare.py`, Nov 8, 2026), recharge within a catchment varies eight times as much (median coefficient of
-  variation 0.24, against 0.03); it moves off lakes (none under them), wetlands, row crops and developed land (0.6 to
-  0.8 times the mean) onto forest, grass and shrub (1.2 to 1.3 times). The gage's July to September flow changes by
-  0.3%, but the two trout reaches lose 7% of theirs and a quarter to a half of their base flow, and the well's
-  capture and drawdown barely move. That study's AUDIT.md has the numbers.
+- **What it changes.** Where the water lands within a catchment, not how much.
 - **Not built:** an unsaturated zone between the soil profile and the water table (MODFLOW 6's UZF); SWAT+ 62.0.1
   has none either, with its delay commented out.
 

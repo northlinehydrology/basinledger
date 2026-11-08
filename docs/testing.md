@@ -56,7 +56,7 @@ not the basin.
 | Function | 0 | 1 | 2 | 3 | 4 | 5 |
 |---|---|---|---|---|---|---|
 | recharge, one-way | yes | yes | yes | MODFLOW 6 budget | pass-through storage | Clam |
-| recharge HRU by HRU | yes (pixel overlay, conserving map) | yes (made = SWAT+'s aquifer recharge) | yes (Osu_1hru; Ames_sub1's 12 HRUs, placement) | MODFLOW 6 budget | SWAT+'s aquifer recharge | Clam (hru_compare.py) |
+| recharge HRU by HRU | yes (pixel overlay, conserving map) | yes (made = SWAT+'s aquifer recharge) | yes (Osu_1hru; Ames_sub1's 12 HRUs, placement) | MODFLOW 6 budget | SWAT+'s aquifer recharge | Clam |
 | two-way exchange, supply limit, drains | yes | yes | yes | MODFLOW 6 budget | settings | Clam |
 | boundary flows, storage, closure | | yes | yes | | | Clam |
 | wells and capture of pumping | | yes | yes (G1, two-way and one-way) | Glover and Balmer (G2) | | Clam |
