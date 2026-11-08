@@ -515,7 +515,7 @@ class Basin:
         rt.close_day()
 
         # 6. outputs and checks
-        q = self.sw.get(S.QOUT)
+        q = self.sw.get(S.QOUT) if self._ch_index or self._nexus else None  # a project of HRUs only has no channels
         for c, i in self._ch_index.items():
             self.series[f"flow:{c}"].append(float(q[i]))
         for nx, idx in self._nexus.items():

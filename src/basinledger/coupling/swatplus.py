@@ -202,10 +202,10 @@ def start_warnings(project: Path) -> list[str]:
     if not ini.exists() or not hru.exists():
         return []
     lines = ini.read_text().splitlines()
-    i = lines[1].split().index("sw_frac")
+    i = lines[1].lower().split().index("sw_frac")  # SWAT+ reads by position; some projects' headers are capitals
     frac = {f[0]: float(f[i]) for f in (ln.split() for ln in lines[2:]) if f}
     lines = hru.read_text().splitlines()
-    j = lines[1].split().index("soil_plant_init")
+    j = lines[1].lower().split().index("soil_plant_init")
     used = [f[j] for f in (ln.split() for ln in lines[2:]) if len(f) > j]
     empty = sum(frac.get(u, 1.0) == 0.0 for u in used)
     if not empty:
@@ -242,6 +242,8 @@ def aquifer_areas(project: Path) -> dict[str, float]:
 
 
 def _channels(project: Path) -> list[str]:
+    if not (Path(project) / "chandeg.con").exists():  # a project of HRUs only (Ames_sub1)
+        return []
     lines = (Path(project) / "chandeg.con").read_text().splitlines()
     return [l.split()[1] for l in lines[2:] if l.split()]
 
