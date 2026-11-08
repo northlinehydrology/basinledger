@@ -43,6 +43,7 @@ from .chain import UtilityChain
 from .coupling import swatplus as S
 from .coupling.exchange import ChannelMap, StreamExchange, requests as exchange_requests
 from .coupling.modflow6 import Modflow6, remaining_simulation
+from .coupling import recharge as RC
 from .coupling.recharge import RechargeLink
 from .ledger import FLOAT32, Ledger
 from .mapping import AreaMap
@@ -172,14 +173,30 @@ class Basin:
 
         self.ledger = Ledger()
         L = self.ledger
-        # recharge: SWAT+ aquifers -> MODFLOW 6 cells
+        # recharge: SWAT+ aquifers (or HRUs) -> MODFLOW 6 cells
+        self.aquifer_check = None
         if self.mf6 is not None:
-            aquifers = self.sw.names("soil_water_table__recharge_rate")
-            self.map = self._area_map(cfg.recharge_map, aquifers)
-            areas = S.aquifer_areas(swat_dir) if swat_dir else self.swat.areas
-            source = np.array([areas[a] for a in aquifers])
+            var = RC.SOURCES[cfg.recharge_source]
+            if not self.sw.has(var):
+                raise ValueError(f"[recharge] source = {cfg.recharge_source} needs the surface model's {var} "
+                                 "(swatplus-bmi 0.6.0 for HRU percolation)")
+            objects = self.sw.names(var)
+            self.map = self._area_map(cfg.recharge_map, objects)
+            if cfg.recharge_source == "hru":
+                areas = S.hru_areas(swat_dir)
+            else:
+                areas = S.aquifer_areas(swat_dir) if swat_dir else self.swat.areas
+            source = np.array([areas[a] for a in objects])
             self.map.check(self.mf6.cell_area, source, cfg.area_rtol)
-            self.recharge = RechargeLink(self.swat, self.mf6, self.map, cfg.recharge_package, source)
+            if cfg.recharge_source == "hru":
+                # each HRU's rows scaled to its area in SWAT+: the map places, never adds or loses (mapping.py)
+                self.map = self.map.conserving(source)
+                aquifers = self.sw.names(RC.RECHARGE) if self.sw.has(RC.RECHARGE) else []
+                if aquifers:  # SWAT+'s own aquifer recharge, the same percolation summed by aquifer (recharge.py)
+                    a = S.aquifer_areas(swat_dir)
+                    self.aquifer_check = np.array([a[x] for x in aquifers])
+                    L.pair("recharge:made", "recharge:swat_aquifers", rtol=RC.AQUIFER_RTOL)
+            self.recharge = RechargeLink(self.swat, self.mf6, self.map, cfg.recharge_package, source, var)
             L.pair("recharge:sent", "recharge:received")
             # what the surface model made, and what the map added to it (+) or couldn't place (-): water from outside
             L.pair("recharge:sent", ["recharge:made", "recharge:by_the_map"])
@@ -515,7 +532,7 @@ class Basin:
         rt.close_day()
 
         # 6. outputs and checks
-        q = self.sw.get(S.QOUT)
+        q = self.sw.get(S.QOUT) if self._ch_index or self._nexus else None  # a project of HRUs only has no channels
         for c, i in self._ch_index.items():
             self.series[f"flow:{c}"].append(float(q[i]))
         for nx, idx in self._nexus.items():
@@ -548,6 +565,8 @@ class Basin:
         L.enter("recharge:sent", sent)
         L.enter("recharge:made", self.recharge.made)
         L.enter("recharge:by_the_map", sent - self.recharge.made)
+        if self.aquifer_check is not None:
+            L.enter("recharge:swat_aquifers", float(np.sum(self.sw.get(RC.RECHARGE) * DAY * self.aquifer_check)))
         rt.apply_wells()
         if self.cfg.rivers:
             self._rivers_day()
@@ -715,7 +734,7 @@ class Basin:
         """MODFLOW 6's starting heads under the coupling: the first ``days`` run again and again, SWAT+ from its own
         start each time and MODFLOW 6 from the heads the last cycle ended with, until the cycle's net release from
         storage is within ``tol`` of the recharge it received (or ``cycles`` run). A start that isn't consistent with
-        the coupling drains or fills storage over the run (the Clam's first coupled run drained 49 million m3,
+        the coupling drains or fills storage over the run (a study basin's first coupled run drained 49 million m3,
         15% of its recharge). Returns the heads and each cycle's storage release and recharge, m3."""
         report = []
         for i in range(cycles):

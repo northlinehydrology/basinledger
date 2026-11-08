@@ -194,18 +194,18 @@ def start_warnings(project: Path) -> list[str]:
     """What in a SWAT+ project can leave the run's first years drifting: warnings, not refusals.
 
     - soils that start empty (``sw_frac`` 0 in ``soil_plant.ini``, for an initialization the HRUs use): SWAT+ then
-      fills the profile from the first day, which can take years where soils are deep or drain slowly. The Clam's
-      took more than 15 years, so a one-year warm-up left soil water, percolation and base flow rising through a
-      20-year run (clam-basin-study AUDIT.md, Nov 7, 2026). Warm up long enough, or start the soils wetter."""
+      fills the profile from the first day, which can take years where soils are deep or drain slowly. A study
+      basin's took more than 15 years, so a one-year warm-up left soil water, percolation and base flow rising
+      through a 20-year run (Nov 7, 2026). Warm up long enough, or start the soils wetter."""
     project = Path(project)
     ini, hru = project / "soil_plant.ini", project / "hru-data.hru"
     if not ini.exists() or not hru.exists():
         return []
     lines = ini.read_text().splitlines()
-    i = lines[1].split().index("sw_frac")
+    i = lines[1].lower().split().index("sw_frac")  # SWAT+ reads by position; some projects' headers are capitals
     frac = {f[0]: float(f[i]) for f in (ln.split() for ln in lines[2:]) if f}
     lines = hru.read_text().splitlines()
-    j = lines[1].split().index("soil_plant_init")
+    j = lines[1].lower().split().index("soil_plant_init")
     used = [f[j] for f in (ln.split() for ln in lines[2:]) if len(f) > j]
     empty = sum(frac.get(u, 1.0) == 0.0 for u in used)
     if not empty:
@@ -241,7 +241,17 @@ def aquifer_areas(project: Path) -> dict[str, float]:
     return {f[i]: float(f[a]) * 1e4 for f in (l.split() for l in lines[2:]) if f}
 
 
+def hru_areas(project: Path) -> dict[str, float]:
+    """Each HRU's area in m2, from hru.con (hectares), as SWAT+ reads it into ``ob%area_ha``."""
+    lines = (Path(project) / "hru.con").read_text().splitlines()
+    cols = lines[1].split()
+    i, a = cols.index("name"), cols.index("area")
+    return {f[i]: float(f[a]) * 1e4 for f in (l.split() for l in lines[2:]) if f}
+
+
 def _channels(project: Path) -> list[str]:
+    if not (Path(project) / "chandeg.con").exists():  # a project of HRUs only (Ames_sub1)
+        return []
     lines = (Path(project) / "chandeg.con").read_text().splitlines()
     return [l.split()[1] for l in lines[2:] if l.split()]
 

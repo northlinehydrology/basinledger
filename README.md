@@ -35,8 +35,9 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   basin;
 - the utility chain: sources, losses, sewer, plant outfall;
 - feedback rules: curtailment, dry mode, drawdown limit;
-- SWAT+ recharge into MODFLOW 6 (one-way), and the two-way stream-aquifer exchange through MODFLOW 6's river and drain
-  packages;
+- SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
+  ground, with swatplus-bmi's next release), and the two-way stream-aquifer exchange through MODFLOW 6's river and
+  drain packages;
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
@@ -245,6 +246,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Area maps | volume kept exactly; over-covered cells and mismatched areas refused |
 | MODFLOW 6 control | values set between prepare and solve are the ones MODFLOW 6 uses; daily steps enforced |
 | Recharge | sent = received every day, against MODFLOW 6's budget file and SWAT+'s own printed recharge |
+| Recharge by HRU | pixels split exactly among cells; each HRU's percolation × its SWAT+ area reaches its own cells and no other, every day; the total equals SWAT+'s own aquifer recharge every day |
 | Wells | pumped = requested = the user's withdrawal, every day |
 | MODFLOW 6's budget | closes every day to 1e-7 of the gross flow, with and without pumping |
 | Physics | pumping draws down most at the well, and depletes the river by less than it pumps, more over time |

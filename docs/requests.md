@@ -16,7 +16,7 @@ what, why, and how Basin Ledger copes until then. Written Nov 4, 2026.
    meet a limit the way a campus would: by running dry or with more assist, using more electricity. Its balance must
    still close, and the electricity must follow. Until then, rules can only be tested on the synthetic user.
    *Status (requests 2 to 5): released in waterledger-models 3.11.0 (Nov 6, 2026), which Basin Ledger 0.2.0
-   requires; the Clam's rules case curtails a real `CoolingWaterBmi` campus. The design follows realistic
+   requires; a study's rules case curtails a real `CoolingWaterBmi` campus. The design follows realistic
    operation:*
    - *The heat to remove is fixed, since the campus must hold its temperature. A limit caps the wet share of the heat
      rejected each step, and the heat balance is solved again.*
@@ -50,7 +50,7 @@ what, why, and how Basin Ledger copes until then. Written Nov 4, 2026.
 
 ## swatplus-bmi
 
-*Status: in swatplus-bmi 0.2.0: request 2, channel depth (`channel_water__depth`), and request 4, a channel's groundwater exchange set directly (`channel_water__groundwater_volume_exchange_rate`). Basin Ledger uses both. Still to come: recharge per HRU (1) and point source loads (3).*
+*Status: in swatplus-bmi 0.2.0: request 2, channel depth (`channel_water__depth`), and request 4, a channel's groundwater exchange set directly (`channel_water__groundwater_volume_exchange_rate`). Basin Ledger uses both. Request 1, HRU percolation (`soil_water__percolation_rate`), is on swatplus-bmi's `hru-water` branch for 0.6.0, not released; Basin Ledger's `[recharge] source = "hru"` uses it, and its tests skip without it. Still to come: point source loads (3).*
 
 1. **HRU percolation (recharge) per HRU**, for mapping recharge to cells by HRU area as Bailey et al. (2025) do. Today
    only aquifer recharge is exposed, and SWAT+'s aquifers are lumped per subbasin.
