@@ -16,7 +16,7 @@ what, why, and how Basin Ledger copes until then. Written Nov 4, 2026.
    meet a limit the way a campus would: by running dry or with more assist, using more electricity. Its balance must
    still close, and the electricity must follow. Until then, rules can only be tested on the synthetic user.
    *Status (requests 2 to 5): released in waterledger-models 3.11.0 (Nov 6, 2026), which Basin Ledger 0.2.0
-   requires; the Clam's rules case curtails a real `CoolingWaterBmi` campus. The design follows realistic
+   requires; a study's rules case curtails a real `CoolingWaterBmi` campus. The design follows realistic
    operation:*
    - *The heat to remove is fixed, since the campus must hold its temperature. A limit caps the wet share of the heat
      rejected each step, and the heat balance is solved again.*

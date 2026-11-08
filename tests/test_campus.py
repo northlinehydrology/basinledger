@@ -64,7 +64,7 @@ def test_campus_on_swat_weather(swatplus, tmp_path):
 
 
 def test_point_sources_on_a_project_with_none(swatplus, tmp_path):
-    """A project with no recall objects (the Clam's) gets them: recall.con and file.cio are written, and the
+    """A project with no recall objects (a scripted build's) gets them: recall.con and file.cio are written, and the
     blowdown reaches the channel."""
     import shutil
     proj = tmp_path / "osu"

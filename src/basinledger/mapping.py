@@ -9,7 +9,7 @@ mapped area is what the cells receive. Maps come from an example's config, never
 
 A map from GIS (NextGen catchments or SWAT+ HRU polygons intersected with the grid, e.g. with flopy's GridIntersect)
 is written to the same table, so the coupling code never sees geometry. ``pixel_rows`` writes it from a raster (HRUs
-built from land cover, soil and slope grids, as QSWAT+ and the Clam's script do), splitting each pixel exactly among
+built from land cover, soil and slope grids, as QSWAT+ and scripted builds do), splitting each pixel exactly among
 the cells it overlaps.
 
 HRU by HRU (``[recharge] source = "hru"``), the table gives each HRU's ground in each cell, and ``conserving`` scales

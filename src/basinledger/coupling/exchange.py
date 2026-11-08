@@ -23,8 +23,9 @@ bottom, until the loss fits (``limit_to_supply``), and the solve goes on until h
 stage is the smooth form of the river drying: the reach loses less, and gains more where the head is above it.
 Today's loss is taken from tomorrow's flow (the one-day lag), so a small shortfall can remain; it stays in the
 ledger. Each day starts from its own stages. A limit set before the solve, at the day's starting heads, wasn't
-enough: wells and drains beside a river pull its heads down during the day. Without the limit, the Clam's headwater channels, left
-nearly dry once SWAT+'s aquifers pass recharge through, lost 84 million m3 to MODFLOW 6 that they didn't have.
+enough: wells and drains beside a river pull its heads down during the day. Without the limit, a study basin's headwater
+channels, left nearly dry once SWAT+'s aquifers pass recharge through, lost 84 million m3 to MODFLOW 6 that they didn't
+have.
 
 Other limits of this version:
 - MODFLOW 6's river stage is fixed in its input unless the example's ``[rivers]`` section sets it from the surface
@@ -146,8 +147,8 @@ class StreamExchange:
         drains together, at the heads as they are then) takes more than ``available``, and says whether anything
         changed, so the solve goes on until heads and stages agree. ``available`` (m3 for the day) is the channel's
         flow without today's exchange: the exchange is taken tomorrow, when today's won't be there. Counting it let
-        a channel lose on alternate days what it gained the day before (the Clam). ``end_day`` puts the day's stages
-        back after the solve."""
+        a channel lose on alternate days what it gained the day before (on a study basin). ``end_day`` puts the day's
+        stages back after the solve."""
         P = self.package.upper()
         n = self.mf6.nbound(self.package)
         self._stage0 = self.mf6.get("STAGE", self.mf6.model, P).astype(float)

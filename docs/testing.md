@@ -2,7 +2,7 @@
 
 Basin Ledger is only useful if its couplings move water, heat and mass between models without making or losing any,
 and without the models fighting. Andrew: "It is extremely important that basinledger WORKS." This note says how the
-tests show that, what they cover now, and what is still missing. The Clam (clam-basin-study) found the gaps: its
+tests show that, what they cover now, and what is still missing. A study's coupled model found the gaps: its
 first coupled run passed every ledger pair and still made or lost water at four links (design.md, "Conservation
 across links").
 
@@ -27,11 +27,11 @@ across links").
 | 2. Synthetic integration | each function on the synthetic example (Osu_1hru and small MODFLOW 6 models), end to end | `tests/`, marked `slow` | every push (CI) and nightly |
 | 3. Independent answers | the coupled result against an analytic solution or another closed budget | `tests/` | CI |
 | 4. Faithfulness and settings | each model unchanged but for the coupling's settings; wrong settings refused; a start that can drift warned of | `tests/` (and swatplus-bmi's own suite) | CI |
-| 5. Real basins | every function on a real coupled model: a scenario matrix from a shared warm-up, each run closing, the effects in the right direction, the numbers recorded | the study repo (`clam-basin-study/functional.py`), not here | on demand, after a change to the engine |
+| 5. Real basins | every function on a real coupled model: a scenario matrix from a shared warm-up, each run closing, the effects in the right direction, the numbers recorded | the study's own repository, not here | on demand, after a change to the engine |
 | 6. Regression | tier 5's recorded summary compared with the last accepted one, with tolerances | the study repo | on demand |
 
 Tier 5 lives in the study, not in Basin Ledger, because the models are the study's (Basin Ledger is a tool, not a
-study). Its results are screening runs: the Clam's calibration stopped short of its targets, so it tests the engine,
+study). Its results are screening runs: the study's calibration stopped short of its targets, so it tests the engine,
 not the basin.
 
 ## Tier 1: what every run checks
@@ -55,19 +55,19 @@ not the basin.
 
 | Function | 0 | 1 | 2 | 3 | 4 | 5 |
 |---|---|---|---|---|---|---|
-| recharge, one-way | yes | yes | yes | MODFLOW 6 budget | pass-through storage | Clam |
-| recharge HRU by HRU | yes (pixel overlay, conserving map) | yes (made = SWAT+'s aquifer recharge) | yes (Osu_1hru; Ames_sub1's 12 HRUs, placement) | MODFLOW 6 budget | SWAT+'s aquifer recharge | Clam |
-| two-way exchange, supply limit, drains | yes | yes | yes | MODFLOW 6 budget | settings | Clam |
-| boundary flows, storage, closure | | yes | yes | | | Clam |
-| wells and capture of pumping | | yes | yes (G1, two-way and one-way) | Glover and Balmer (G2) | | Clam |
-| water users (CoolingWaterBmi) on SWAT+'s weather | yes | yes | yes (G7) | user balance | | Clam |
-| return water to a stream, and its loads | yes (G6) | yes | yes (G6, G7) | | | Clam |
-| rules | yes | | yes (one-way) | | | Clam |
+| recharge, one-way | yes | yes | yes | MODFLOW 6 budget | pass-through storage | study |
+| recharge HRU by HRU | yes (pixel overlay, conserving map) | yes (made = SWAT+'s aquifer recharge) | yes (Osu_1hru; Ames_sub1's 12 HRUs, placement) | MODFLOW 6 budget | SWAT+'s aquifer recharge | study |
+| two-way exchange, supply limit, drains | yes | yes | yes | MODFLOW 6 budget | settings | study |
+| boundary flows, storage, closure | | yes | yes | | | study |
+| wells and capture of pumping | | yes | yes (G1, two-way and one-way) | Glover and Balmer (G2) | | study |
+| water users (CoolingWaterBmi) on SWAT+'s weather | yes | yes | yes (G7) | user balance | | study |
+| return water to a stream, and its loads | yes (G6) | yes | yes (G6, G7) | | | study |
+| rules | yes | | yes (one-way) | | | study |
 | utility chain | yes | yes | yes | | | |
 | restarts | | | yes (bit for bit) | | | |
-| scenarios from a shared warm-up | | | yes (G5) | | | Clam |
-| stream temperature | yes (energy closes) | | yes (G4) | energy | | Clam |
-| whole-basin balance | | | yes (G3) | | | Clam |
+| scenarios from a shared warm-up | | | yes (G5) | | | study |
+| stream temperature | yes (energy closes) | | yes (G4) | energy | | study |
+| whole-basin balance | | | yes (G3) | | | study |
 | NextGen replay | yes | yes | yes | | | Plaster Creek |
 | groundwater transport: mass ledger, intake from a well | yes (builder, Ogata and Banks) | yes | yes (coupled two-way, restarts) | Ogata and Banks; uniform steady state | start-up checks | |
 
@@ -107,10 +107,10 @@ The gaps as planned on Nov 6, each now built with its test (the coverage table a
 - **G2. Depletion against Glover and Balmer (1954).** A synthetic aquifer built to match the analytic case (uniform,
   one straight stream with little streambed resistance, far boundaries); MODFLOW 6's depletion through Basin Ledger
   within a stated tolerance of `analytic.glover_depletion`.
-- **G3. The whole basin closes.** `balance.basin_balance` (from the Clam's study code) in Basin Ledger: SWAT+'s land,
+- **G3. The whole basin closes.** `balance.basin_balance` (from a study's code) in Basin Ledger: SWAT+'s land,
   lake and channel budgets, the links and MODFLOW 6's budget; tested on the synthetic two-way run.
 - **G4. Stream temperature on a run.** The reach heat balance on a synthetic run's outputs (energy closing over the
-  run) and, on the Clam, the change with and without a well.
+  run) and, on a study's coupled model, the change with and without a well.
 - **G5. Scenarios from a shared warm-up.** One warm-up saved, cases run from it; a test that a case with no change
   matches the unbroken baseline, and that cases differ only after the warm-up.
 - **G6. What the return water carries.** A user's constituents and heat reach the receiving reach's ledger as
@@ -120,14 +120,14 @@ The gaps as planned on Nov 6, each now built with its test (the coverage table a
   goes through `swat:point_source`. Documented in the routes; a real example that uses `outfall:` for a stream return
   is wrong.
 
-## Tier 5 on the Clam
+## Tier 5 on a study basin
 
-`clam-basin-study/functional.py` runs, from one warm-up (Oct 2001 to Sep 2002) at stage 3's parameters:
+A study's coupled model (a 600 km2 glacial-drift basin) runs, from one warm-up year at its calibrated parameters:
 
 | Case | What it adds |
 |---|---|
 | base | nothing |
-| well | the step 2 well (920 gal/min, all of it leaving the basin) |
+| well | a high-capacity well (920 gal/min, all of it leaving the basin) |
 | campus | a data center on that well (CoolingWaterBmi), its blowdown back to the well's reach |
 | rules | the campus, curtailed when the cold-transitional reach's flow is low, with a drawdown limit at the well |
 
@@ -141,10 +141,9 @@ Each run must close (tier 1); and across the runs:
 
 The summary (`functional.json`) is recorded, and later runs are compared with it (tier 6).
 
-### Tier 5 on the Clam, first results (Nov 6, 2026)
+### Tier 5, first results (Nov 6, 2026)
 
-19 checks, all passing on the second run (/Users/andrew/repos/clam-basin-study/functional.json; the study's
-AUDIT.md has the numbers). The first run failed six, each a defect here, fixed with a test:
+19 checks, all passing on the second run (the study keeps the numbers). The first run failed six, each a defect here, fixed with a test:
 
 - point sources couldn't be added to a SWAT+ project with none (`_no_recalls_yet`);
 - the whole-basin balance counted a losing channel's loss as water from elsewhere, and left out lake and channel
@@ -153,5 +152,5 @@ AUDIT.md has the numbers). The first run failed six, each a defect here, fixed w
   (`route:<point source>:heat_m3C`);
 - (the study's own) a rule threshold that never bound.
 
-A study can wrap the surface model (`Basin(..., wrap_surface=...)`), which the Clam uses for its soil hold through
-the scenarios; tested on the synthetic example.
+A study can wrap the surface model (`Basin(..., wrap_surface=...)`), as one does for a soil hold through the
+scenarios; tested on the synthetic example.

@@ -194,9 +194,9 @@ def start_warnings(project: Path) -> list[str]:
     """What in a SWAT+ project can leave the run's first years drifting: warnings, not refusals.
 
     - soils that start empty (``sw_frac`` 0 in ``soil_plant.ini``, for an initialization the HRUs use): SWAT+ then
-      fills the profile from the first day, which can take years where soils are deep or drain slowly. The Clam's
-      took more than 15 years, so a one-year warm-up left soil water, percolation and base flow rising through a
-      20-year run (clam-basin-study AUDIT.md, Nov 7, 2026). Warm up long enough, or start the soils wetter."""
+      fills the profile from the first day, which can take years where soils are deep or drain slowly. A study
+      basin's took more than 15 years, so a one-year warm-up left soil water, percolation and base flow rising
+      through a 20-year run (Nov 7, 2026). Warm up long enough, or start the soils wetter."""
     project = Path(project)
     ini, hru = project / "soil_plant.ini", project / "hru-data.hru"
     if not ini.exists() or not hru.exists():

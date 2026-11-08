@@ -734,7 +734,7 @@ class Basin:
         """MODFLOW 6's starting heads under the coupling: the first ``days`` run again and again, SWAT+ from its own
         start each time and MODFLOW 6 from the heads the last cycle ended with, until the cycle's net release from
         storage is within ``tol`` of the recharge it received (or ``cycles`` run). A start that isn't consistent with
-        the coupling drains or fills storage over the run (the Clam's first coupled run drained 49 million m3,
+        the coupling drains or fills storage over the run (a study basin's first coupled run drained 49 million m3,
         15% of its recharge). Returns the heads and each cycle's storage release and recharge, m3."""
         report = []
         for i in range(cycles):

@@ -23,9 +23,8 @@ Status (Nov 7, 2026, release 0.2.0). Built and tested on synthetic examples:
   intake concentrations from the aquifer;
 - the ledger, the command line, and the calibration module's structure.
 
-The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. The
-Clam (clam-basin-study, a study of its own) runs every function on a coupled SWAT+ and MODFLOW 6 model (testing.md,
-tier 5).
+The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. A
+study's coupled SWAT+ and MODFLOW 6 model, kept in its own repository, runs every function (testing.md, tier 5).
 
 Not built yet: water quality's second stage (through SWAT+'s streams), the SWAT+ hydrofabric builder, AORC forcing,
 applying calibration parameters, and PEST++. Each section says which parts are built.
@@ -422,11 +421,12 @@ exchange replaces SWAT+'s aquifer return flow.
   each outer iteration, a channel taking more than that at the heads as they are has its stages lowered by one
   depth, no entry below its bottom (`limit_to_supply`), and the day is done when the solve has converged and no
   stage moves more than 1 mm. The ledger records the depth (`exchange:<channel>:stage_lowered_m`). Two earlier
-  forms failed on the Clam: a limit set before the solve, at the day's starting heads (wells and drains beside a
+  forms failed on a study basin: a limit set before the solve, at the day's starting heads (wells and drains beside a
   river pull its heads down during the day), and a limit that counted the channel's own gain from the day before,
   so it lost on alternate days what it had gained.
 - **Shortfalls.** What the channel still can't supply is entered in the ledger: water MODFLOW 6 took from a stream
-  that, in SWAT+, wasn't there. Most of what remains is the one-day lag. Over 120 days at the Clam the shortfall is
+  that, in SWAT+, wasn't there. Most of what remains is the one-day lag. Over 120 days on a 600 km2 glacial-drift
+  basin the shortfall is
   16.3 million m3 without the limit (35% of the exchange) and 0.2 million m3 with it (0.7%); the run takes about
   twice as long. In the synthetic two-way example it is 186 m3 over three years without the limit and 76 m3 with
   it, of about 61,000 m3. Each day starts from its own stages, so a restarted run matches.
@@ -477,10 +477,10 @@ The ledger enters, every day, each transfer as sent and as received, plus each c
 
 The models must never fight. Water may enter from outside (a supply, recharge where no surface model runs, a fixed
 head), but every crossing of a model boundary is an account in the ledger, and no link makes or loses water. Sent =
-received is necessary, not sufficient: the Clam's first coupled run (clam-basin-study, stage 3) balanced every pair
-and still had four leaks, each of which the pairs hid:
+received is necessary, not sufficient: the first coupled run of a study basin (600 km2 of glacial drift) balanced
+every pair and still had four leaks, each of which the pairs hid:
 
-| Leak | Size at the Clam | Why the pairs passed |
+| Leak | Size in that run | Why the pairs passed |
 |---|---|---|
 | Recharge mapped onto more area than the surface model makes it on (lakes in the catchments; a catchment outside SWAT+ given the mean rate) | 28 million m3, 9% of recharge | "sent" was figured on the mapped area, not SWAT+'s |
 | Losing reaches taking water the channel didn't have (headwater channels left nearly dry once SWAT+'s aquifers pass recharge through) | 84 million m3, 30% of recharge | booked as a shortfall, while MODFLOW 6 kept the water |
@@ -491,7 +491,7 @@ Rules, each to be built and tested:
 
 1. **One owner per process.** Each flux is computed by one model. The other models' copy of it is switched off or
    masked: set through BMI each day to the owner's value or to zero (swatplus-bmi's settable inputs, as the soil
-   temperature in clam-basin-study). SWAT+'s aquifer return flow, revap and deep recharge are MODFLOW 6's once it is
+   temperature in a study's soil hold). SWAT+'s aquifer return flow, revap and deep recharge are MODFLOW 6's once it is
    coupled; channel transmission loss is the river exchange's. Masking through BMI is preferred to editing inputs,
    because a later input (`calibration.cal`) can undo an edit.
 2. **Recharge conserves the surface model's volume (built Nov 6, 2026).** A recharge map's area per object equals the
@@ -540,13 +540,13 @@ Warnings, not stops (built Nov 7, 2026). A run starts anyway, but its first year
 - **A warm-up whose soils haven't settled.** `scenarios.warm_up` writes `warm_up.json` beside the saved state. It
   holds the basin's soil water change over the warm-up's last year (all of it, if shorter) as a share of that
   time's precipitation, from SWAT+'s `basin_wb_day` (`balance.soil_water_trend`). Above 12% it warns [A]. In
-  settled Clam runs, weather alone moves a year by up to 10.4%. The Clam's one-year warm-up from empty soils moved
-  15%, and the synthetic example's 200 days moved 30%.
+  settled runs of a study basin, weather alone moves a year by up to 10.4%. Its one-year warm-up from empty soils
+  moved 15%, and the synthetic example's 200 days moved 30%.
 
 This is a coarse screen. It catches a warm-up still filling from empty, but not a slow drift of a few millimetres a
-year. That shows only when the same years run again (clam-basin-study `soil.py`).
+year. That shows only when the same years run again.
 
-The Clam is the case behind both checks. Its 20-year base case wetted for decades: mean soil water rose from 210 to
+A study basin's model is the case behind both checks. Its 20-year base case wetted for decades: mean soil water rose from 210 to
 470 mm, and flow at the gage rose with it. Stock SWAT+ 62.0.1 alone does the same, and swatplus-bmi with nothing set
 matches it byte for byte, so the cause is the setup, not the tools. The project's soils start empty, and its
 parameters were calibrated over the two years after a one-year warm-up, while the soils were still filling. With
@@ -831,8 +831,7 @@ libmf6 lives in the driver's process. A branch would need MODFLOW 6 restarted fr
     The model's own files for 2010 weren't found in a data release; this needs checking with USGS.
   - **Calibration data for what's next:** Michigan well records for groundwater, and the Plaster Creek TMDL record
     (E. coli, sediment and biota) for water quality. Until those models are calibrated, they are screening.
-- **Studies** live in their own repositories, one per basin (the Clam's is clam-basin-study), never here. A client
-  study is private. A study:
+- **Studies** live in their own repositories, one per basin, never here. A client study is private. A study:
   - depends on `basinledger` at a pinned version;
   - follows the example layout (`basin.toml`, `fetch.py`, `maps/`, `calibration/`, a write-up), with client data in
     its own folders under the client's confidentiality terms;
@@ -853,7 +852,8 @@ Done on the synthetic examples (Nov 4, 2026):
 - MODFLOW 6 restarts;
 - the calibration module's structure.
 
-Done for 0.2.0 (Nov 5 to 7, 2026), each tested on the synthetic examples, and all but transport run on the Clam:
+Done for 0.2.0 (Nov 5 to 7, 2026), each tested on the synthetic examples, and all but transport run on a study's
+coupled model:
 
 - `CoolingWaterBmi`'s limit and dry-mode inputs (waterledger-models 3.11), with the rules on a real cooling user;
 - intake concentrations on users, and a return's heat at its point source;
