@@ -293,8 +293,9 @@ geometry, and nothing is hard-coded.
 | `flowpath_cells.csv` | flowpath, layer, row, col, length_m | stream-aquifer exchange (base flow) out, and in for losing reaches |
 | wells in `basin.toml` | name, cell (or MAW connections) | pumping in; heads at wells out |
 
-- **Recharge in.** Each catchment's recharge from SWAT+ (from its aquifer now; from its HRUs once swatplus-bmi exposes
-  HRU percolation) spreads over cells by area of overlap. Volume is kept exactly (built: `mapping.py`).
+- **Recharge in.** Each catchment's recharge from SWAT+ spreads over cells by area of overlap, from its aquifer or,
+  with `[recharge] source = "hru"`, from each HRU on the cells under its ground. Volume is kept exactly (built:
+  `mapping.py`, `coupling/recharge.py`).
 - **Base flow out.** Each day, MODFLOW 6's stream-aquifer exchange (RIV or SFR `SIMVALS`) is summed per flowpath
   through the length map. That gives groundwater discharge to each flowpath, reported under its `wb-` id. In two-way
   mode this is what enters SWAT+'s channel (see The MODFLOW 6 coupling).
@@ -358,7 +359,8 @@ ways:
 
 **One-way: recharge and wells (built).**
 
-- After SWAT+'s day, the driver reads each aquifer's recharge (`soil_water_table__recharge_rate`, m s-1).
+- After SWAT+'s day, the driver reads each aquifer's recharge (`soil_water_table__recharge_rate`, m s-1), or each
+  HRU's percolation (Recharge from HRUs, below).
 - The area map spreads it over cells. A cell's rate is the sum over the objects covering it of rate × overlap area,
   divided by the cell's area. Volume is kept exactly.
 - The rate goes into MODFLOW 6's recharge package for the same day.
@@ -370,9 +372,34 @@ In one-way mode SWAT+ keeps its own aquifer and baseflow, and MODFLOW 6 is a rea
 heads and to stream leakage. Each model keeps its own calibration. This is enough to show drawdown at a utility's wells
 and when depletion reaches a stream. It is not enough to change the streamflow SWAT+ reports.
 
-**Recharge from HRUs.** SWAT+'s aquifer is lumped per subbasin, so mapping aquifers to cells spreads recharge evenly
-within each subbasin. Bailey et al. (2025) map HRU recharge to cells by area. That needs HRU percolation through BMI,
-which swatplus-bmi doesn't expose yet (`docs/requests.md`). The map format already takes any object type.
+**Recharge from HRUs (built Nov 8, 2026; `[recharge] source = "hru"`).** SWAT+'s aquifer is lumped per subbasin, so
+mapping aquifers to cells spreads recharge evenly within each subbasin: a cell under row crops on outwash takes the
+same rate as one under forest on till. Bailey et al. (2025) map HRU recharge to cells by area. Basin Ledger does the
+same with swatplus-bmi 0.6.0's `soil_water__percolation_rate`: each HRU's percolation out of the bottom of its soil
+profile, the day just done.
+
+- **The map** gives each HRU's ground in each cell (object, layer, row, col, area_m2), from HRU polygons (flopy's
+  GridIntersect) or, where HRUs are raster classes, from their pixels (`mapping.pixel_rows`, which splits each pixel
+  exactly among the cells it overlaps and takes a pixel shared by several HRUs in their shares).
+- **Volume.** Each HRU's rows are scaled to add to its area in SWAT+ (`hru.con`; `AreaMap.conserving`), so a cell
+  takes each HRU's percolation by its share of that HRU's ground, and the volume sent is percolation times HRU area,
+  exactly. The map places water; it never adds or loses any, so `recharge:by_the_map` is zero. The area check
+  (`area_rtol`) compares the map's ground with SWAT+'s areas before scaling.
+- **Against SWAT+'s aquifers.** SWAT+ 62.0.1 puts the same day's percolation into the HRU's aquifer: the HRU's
+  recharge hydrograph is percolation times its area (`hru_hyds.f90`), and the aquifer takes the sum of what reaches
+  it (`aqu_1d_control.f90`; the recharge delay is commented out in 62.0.1). Where every HRU recharges an aquifer, the
+  two paths carry the same water each day, so the driver books SWAT+'s own aquifer recharge
+  (`recharge:swat_aquifers`) and holds `recharge:made` to it (1e-5, for float32 reads and areas rounded to 1e-5 ha).
+  A project whose HRUs send recharge elsewhere would fail that pair, and should say so. A project with no aquifers
+  has nothing to hold it to.
+- **What it changes.** Where the water lands within a catchment, not how much. On the Clam (clam-basin-study,
+  `hru_compare.py`, Nov 8, 2026), recharge within a catchment varies eight times as much (median coefficient of
+  variation 0.24, against 0.03); it moves off lakes (none under them), wetlands, row crops and developed land (0.6 to
+  0.8 times the mean) onto forest, grass and shrub (1.2 to 1.3 times). The gage's July to September flow changes by
+  0.3%, but the two trout reaches lose 7% of theirs and a quarter to a half of their base flow, and the well's
+  capture and drawdown barely move. That study's AUDIT.md has the numbers.
+- **Not built:** an unsaturated zone between the soil profile and the water table (MODFLOW 6's UZF); SWAT+ 62.0.1
+  has none either, with its delay commented out.
 
 **Two-way: stream-aquifer exchange (built with RIV; `coupling/exchange.py`, `examples/synthetic/two_way.toml`).**
 MODFLOW 6 computes the exchange between streams and the aquifer (RIV now, SFR for routed streams later), and that

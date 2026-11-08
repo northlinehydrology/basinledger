@@ -36,7 +36,8 @@ not the basin.
 
 ## Tier 1: what every run checks
 
-- every ledger pair (sent = received), each day, to its tolerance: recharge; routes (requested = delivered +
+- every ledger pair (sent = received), each day, to its tolerance: recharge (and, HRU by HRU, the percolation sent
+  against SWAT+'s own aquifer recharge); routes (requested = delivered +
   shortfall); the exchange (due = applied + shortfall); each user's balance (withdrawal + gain = consumption +
   return + storage change); the utility chain;
 - accounts that must stay zero: SWAT+'s aquifer outflow in two-way mode;
@@ -55,6 +56,7 @@ not the basin.
 | Function | 0 | 1 | 2 | 3 | 4 | 5 |
 |---|---|---|---|---|---|---|
 | recharge, one-way | yes | yes | yes | MODFLOW 6 budget | pass-through storage | Clam |
+| recharge HRU by HRU | yes (pixel overlay, conserving map) | yes (made = SWAT+'s aquifer recharge) | yes (Osu_1hru; Ames_sub1's 12 HRUs, placement) | MODFLOW 6 budget | SWAT+'s aquifer recharge | Clam (hru_compare.py) |
 | two-way exchange, supply limit, drains | yes | yes | yes | MODFLOW 6 budget | settings | Clam |
 | boundary flows, storage, closure | | yes | yes | | | Clam |
 | wells and capture of pumping | | yes | yes (G1, two-way and one-way) | Glover and Balmer (G2) | | Clam |

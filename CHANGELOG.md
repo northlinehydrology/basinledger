@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Recharge HRU by HRU (`[recharge] source = "hru"`): each HRU's percolation out of its soil profile (swatplus-bmi
+  0.6.0's `soil_water__percolation_rate`) on the cells under its ground, in place of one rate per aquifer. Each HRU's
+  map rows are scaled to its area in SWAT+ (`AreaMap.conserving`), so the volume sent is percolation times HRU area,
+  exactly, and the driver holds it to SWAT+'s own aquifer recharge every day (`recharge:swat_aquifers`). The aquifer
+  path stays the default.
+- `mapping.pixel_rows`: raster HRUs (land cover, soil and slope classes) on a structured grid, each pixel split
+  exactly among the cells it overlaps.
+- A SWAT+ project with no channels runs (Ames_sub1), and the empty-soil warning reads `soil_plant.ini` headers in
+  capitals.
+
 ## 0.2.0 (2026-11-07)
 
 Conservation across every link, the checks that hold a coupled run to it, stream temperature and groundwater
