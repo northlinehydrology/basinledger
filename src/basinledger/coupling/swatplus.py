@@ -241,6 +241,14 @@ def aquifer_areas(project: Path) -> dict[str, float]:
     return {f[i]: float(f[a]) * 1e4 for f in (l.split() for l in lines[2:]) if f}
 
 
+def hru_areas(project: Path) -> dict[str, float]:
+    """Each HRU's area in m2, from hru.con (hectares), as SWAT+ reads it into ``ob%area_ha``."""
+    lines = (Path(project) / "hru.con").read_text().splitlines()
+    cols = lines[1].split()
+    i, a = cols.index("name"), cols.index("area")
+    return {f[i]: float(f[a]) * 1e4 for f in (l.split() for l in lines[2:]) if f}
+
+
 def _channels(project: Path) -> list[str]:
     if not (Path(project) / "chandeg.con").exists():  # a project of HRUs only (Ames_sub1)
         return []

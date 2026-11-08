@@ -24,9 +24,11 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     # workspace = "mf6"                 # or an existing simulation folder, copied into the run
     model = "gwf"
 
-    [recharge]                          # SWAT+ aquifers -> MODFLOW 6 recharge (one-way)
+    [recharge]                          # SWAT+ -> MODFLOW 6 recharge (one-way)
     package = "rch"
-    map = "all:aqu001"                  # every top-layer cell to one aquifer, or a CSV (see mapping.py)
+    source = "aquifer"                  # each aquifer's recharge (default), or "hru": each HRU's percolation, placed
+                                        #   on the cells under its ground (swatplus-bmi 0.6.0; coupling/recharge.py)
+    map = "all:aqu001"                  # every top-layer cell to one aquifer (or HRU), or a CSV (see mapping.py)
     area_rtol = 1e-6                    # mapped area must match each object's area in the surface model (default 1e-6);
     area_check = false                  #   or no check, where an example maps more or less area on purpose (say why)
 
@@ -164,6 +166,7 @@ class ExampleConfig:
     rivers: dict | None = None
     mf6_builder_args: dict = field(default_factory=dict)
     transport: dict[str, dict] = field(default_factory=dict)  # species -> recharge, stream (kg m-3) [A], model
+    recharge_source: str = "aquifer"   # or "hru"
 
     @property
     def surface(self) -> str:
@@ -214,6 +217,10 @@ def load(path: str | Path) -> ExampleConfig:
         raise ValueError(f"{path}: needs one surface model, [swatplus] or [nextgen]")
     sw = c.get("swatplus", {})
     rch = c.get("recharge", {})
+    if rch.get("source", "aquifer") not in ("aquifer", "hru"):
+        raise ValueError(f"{path}: [recharge] source must be aquifer or hru")
+    if rch.get("source") == "hru" and "nextgen" in c:
+        raise ValueError(f"{path}: [recharge] source = hru needs SWAT+'s HRUs; a NextGen run gives catchments")
     transport = c.get("transport", {})
     for sp, t in transport.items():
         if not isinstance(t, dict) or "recharge" not in t:
@@ -256,4 +263,5 @@ def load(path: str | Path) -> ExampleConfig:
         rivers=c.get("rivers"),
         mf6_builder_args=mf.get("builder_args", {}),
         transport={sp: dict(t) for sp, t in transport.items()},
+        recharge_source=rch.get("source", "aquifer"),
     )
