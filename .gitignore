@@ -6,3 +6,4 @@ tests/runs/
 __marimo__/
 .pytest_cache/
 dist/
+.DS_Store
