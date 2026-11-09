@@ -111,6 +111,9 @@ class Basin:
                 raise ValueError("SWAT+ isn't set up to be coupled:\n- " + "\n- ".join(problems))
             for w in ([] if saved else S.start_warnings(swat_dir)):  # a restart's soils are the saved state's
                 warnings.warn(w, S.StartWarning, stacklevel=2)
+            if cfg.weather and not saved:  # the days SWAT+ reads before it first pauses, into its files (weather.py)
+                from . import weather as W
+                W.write_first_days(swat_dir, cfg.weather, S._period(swat_dir)[0])
             self.swat = SwatPlusBmi()
             self.swat.initialize(str(swat_dir))
             if wrap_surface is not None:
@@ -131,13 +134,15 @@ class Basin:
         if saved:
             self.swat.load_state(str(Path(restart) / "surface"))
             self.day = saved["day"]
-        # weather into SWAT+'s gage records, from the first day it hasn't read (weather.py); a restart keeps the
-        # warm-up's records up to then
+        # weather into SWAT+'s gage records, from the first day it hasn't read (weather.py): a fresh run's first days
+        # are already in its files; a restart keeps the warm-up's records up to then. A change is on the project's
+        # own records, not the run's copy, whose first days hold it already
         self.weather = {}
         if cfg.weather:
             from . import weather as W
             last = self.start + dt.timedelta(days=min(self.days, int(self.swat.get_end_time())) - 1)
-            self.weather = W.apply(self.swat, swat_dir, cfg.weather, last)
+            self.weather = W.apply(self.swat, cfg.swat_project, cfg.weather, last,
+                                   written=None if saved else self.start)
 
         # MODFLOW 6 (optional): built (or copied) for the run, or for the days left after a restart
         self.mf6 = None

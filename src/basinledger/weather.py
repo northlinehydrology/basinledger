@@ -19,11 +19,15 @@ Where a series comes from is a study's business (station records, ERA5, a climat
 gridded daily values to gages, by the nearest cell to each gage or, for each gage, the area-weighted mean of the
 cells nearest the HRUs that use it (``hru_points``).
 
-Limits (swatplus-bmi 0.6):
-- SWAT+ reads a day's weather before the pause that comes before it, and precipitation a day earlier still. So the
-  first day of a run (two for precipitation) comes from the files, and a case started from a saved warm-up takes
-  its own weather from the day after its first (two days after, for precipitation). ``apply`` returns the first day
-  set for each variable.
+SWAT+ reads a day's weather before the pause that comes before it, and precipitation a day earlier still, so the
+first day of a run (two for precipitation) can't be set through the BMI. A fresh run writes those days into the run's
+copy of the gage files before SWAT+ starts (``write_first_days``, swatplus-bmi 0.7's ``project.write_weather``) and
+sets the rest (``apply``), so the run is the series from its first day.
+
+Limits:
+- A case started from a saved warm-up takes its own weather from the day after its first (two days after, for
+  precipitation): SWAT+ has read those days, and the saved state holds the warm-up's. ``apply`` returns each
+  variable's first day of weather.
 - Only inside the period each gage's file covers (SWAT+ generates the days outside it), and only daily gages.
 - Gages are per file, not per HRU: a series changes a gage's values, not which gage a station uses. Finer weather
   needs more gages in the project's files, one per cell for gridded data.
@@ -57,6 +61,10 @@ KINDS = {
 }
 FACTORS = {"precipitation", "solar", "humidity", "wind"}     # a change multiplies these
 CHANGES = FACTORS | {"temperature"}                          # and shifts temperature
+# days SWAT+ reads before a run first pauses: two of precipitation, one of the rest
+READ_FIRST = {"pcp": 2, "tmp": 1, "slr": 1, "hmd": 1, "wnd": 1}
+# each gage kind's list of files on file.cio's climate line (weather-sta, weather-wgn, pet, pcp, tmp, slr, hmd, wnd)
+CIO_COLUMN = {"pcp": 4, "tmp": 5, "slr": 6, "hmd": 7, "wnd": 8}
 
 
 @dataclass
@@ -147,30 +155,88 @@ def changed(kind: str, s: Series, change: dict) -> Series:
     return Series(s.start, s.gages, v)
 
 
-def apply(model, project: str | Path, spec: dict, last: dt.date) -> dict[str, dict]:
-    """Write ``spec``'s series and change into a SWAT+ model's gage records, from the first day each can be set to
-    ``last`` or the series' end, whichever comes first; returns, for each variable set, the first and last days set
-    and the series written (file units), for the users' weather, the run's check that it has weather for each day
-    (``Basin.step``) and its summary."""
-    names = model.get_output_var_names()
+def wanted(spec: dict) -> list[str]:
+    """The variables a ``[weather]`` section sets: those given a series or changed."""
     change = spec.get("change", {})
-    out = {}
-    for kind, (var, factor, _, _) in KINDS.items():
-        if kind not in spec and not (change and ("temperature" if kind.startswith("temperature") else kind) in change):
+    return [k for k in KINDS if k in spec or ("temperature" if k.startswith("temperature") else k) in change]
+
+
+def gage_files(project: str | Path, gage_kind: str) -> list[str]:
+    """The gage files of a kind ("pcp", "tmp", ...) the project reads, in order (its pcp.cli and the like); none
+    where file.cio gives no list (SWAT+ generates that variable)."""
+    project = Path(project)
+    climate = next(ln.split() for ln in (project / "file.cio").read_text().splitlines()
+                   if ln.split() and ln.split()[0] == "climate")
+    name = climate[CIO_COLUMN[gage_kind]]
+    if name == "null":
+        return []
+    return [ln.split()[0] for ln in (project / name).read_text().splitlines()[2:] if ln.split()]
+
+
+def _series(project, spec: dict, kind: str, gages: list[str]) -> Series:
+    """A variable's series for its gages, with the scenario's change, in the file's units."""
+    base = read_csv(spec[kind]) if kind in spec else project_series(project, kind, gages)
+    return changed(kind, base.columns(gages), spec.get("change", {}))
+
+
+def _no_gaps(kind: str, s: Series):
+    if np.isnan(s.values).any():
+        raise ValueError(f"[weather] {kind}: missing values (-99) between {s.start} and {s.end}; SWAT+ generates "
+                         "those days, so give a series that has them")
+
+
+def write_first_days(project: str | Path, spec: dict, start: dt.date):
+    """Before SWAT+ starts a fresh run: write the days it reads before it first pauses (the run's first, and its
+    second for precipitation) into the run's copy of the gage files, from ``spec``'s series and change, so the run is
+    the series from its first day; ``apply`` sets the rest. In the files' units, through swatplus-bmi 0.7's
+    ``project.write_weather``; a temperature file's other column keeps its records."""
+    try:
+        from swatplus_bmi.project import write_weather
+    except ImportError as e:
+        raise ImportError("[weather] needs swatplus-bmi 0.7 (project.write_weather)") from e
+    kinds = wanted(spec)
+    for gk, n in READ_FIRST.items():
+        here = [k for k in kinds if KINDS[k][2] == gk]
+        if not here:
             continue
+        gages = gage_files(project, gk)
+        if not gages:
+            raise ValueError(f"[weather] {here[0]}: the project reads no daily gage file for it (SWAT+ generates it)")
+        last = start + dt.timedelta(days=n - 1)
+        series = {k: _series(project, spec, k, gages).between(start, last) for k in here}
+        for k, s in series.items():
+            _no_gaps(k, s)
+        for j, g in enumerate(gages):
+            cols = [gage_records(project, g, c).between(start, last).values[:, 0] for c in range(2 if gk == "tmp" else 1)]
+            for k, s in series.items():
+                cols[KINDS[k][3]] = s.values[:, j]
+            write_weather(project, g, start, np.column_stack(cols))
+
+
+def apply(model, project: str | Path, spec: dict, last: dt.date, written: dt.date | None = None) -> dict[str, dict]:
+    """Write ``spec``'s series and change into a SWAT+ model's gage records, from the first day each can be set to
+    ``last`` or the series' end, whichever comes first; returns, for each variable set, the first and last days of its
+    weather and the series (file units), for the users' weather, the run's check that it has weather for each day
+    (``Basin.step``) and its summary. ``written``: a fresh run's first day, whose first days ``write_first_days`` put
+    in the files, so the variable's weather is the series from then."""
+    names = model.get_output_var_names()
+    out = {}
+    for kind in wanted(spec):
+        var, factor = KINDS[kind][:2]
         if var not in names:
             raise ValueError(f"[weather] {kind}: the project reads no daily gage file for it (SWAT+ generates it)")
         gages = model.get_grid_object_names(model.get_var_grid(var))
-        base = read_csv(spec[kind]) if kind in spec else project_series(project, kind, gages)
+        full = _series(project, spec, kind, gages)
         first = model.first_weather_day(var)
+        if written is not None and first != written + dt.timedelta(days=READ_FIRST[KINDS[kind][2]]):
+            raise RuntimeError(f"[weather] {kind}: SWAT+ read up to {first}, not the days written from {written}")
         if first > last:  # a restart at the run's end
             continue
-        s = changed(kind, base.columns(gages), change).between(first, min(last, base.end))
-        if np.isnan(s.values).any():
-            raise ValueError(f"[weather] {kind}: missing values (-99) between {first} and {last}; SWAT+ generates "
-                             "those days, so give a series that has them")
+        s = full.between(first, min(last, full.end))
+        _no_gaps(kind, s)
         model.set_weather(var, first, s.values * factor)
-        out[kind] = {"from": first, "to": s.end, "series": s}
+        start = written if written is not None else first
+        out[kind] = {"from": start, "to": s.end, "series": full.between(start, s.end)}
     return out
 
 

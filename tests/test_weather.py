@@ -1,12 +1,14 @@
-"""Weather written into SWAT+'s gage records (``[weather]``, weather.py; swatplus-bmi 0.6's ``set_weather``).
+"""Weather written into SWAT+'s gage records (``[weather]``, weather.py; swatplus-bmi's ``set_weather``, and 0.7's
+``project.write_weather`` for a run's first days).
 
 Units: CSV series, a scenario's change (factors, shifts, monthly values, humidity capped), gridded values to gages
 (nearest cell; the cells under each gage's HRUs, by area), the config's checks. On Osu_1hru (one gage per variable,
 SWAT+ alone):
 
 - a series equal to the project's own records gives the run the files give, bit for bit;
-- a change reaches SWAT+: the gage's record read back each day is the changed value from the first day that can be
-  set (the third for precipitation, the second for the rest), the files' before;
+- the days SWAT+ reads before it first pauses are written into the run's copy of the gage files, a temperature file's
+  other column kept;
+- a change reaches SWAT+: the gage's record read back each day is the changed value from the run's first day;
 - a case from a saved warm-up takes its own weather from two days after its first (precipitation), the warm-up's
   before, and a case with the warm-up's weather matches the unbroken run;
 - a user reading the station's weather gets the series, not the files;
@@ -28,6 +30,13 @@ from basinledger.scenarios import run_case
 from conftest import RUNS
 
 DAY = 86400.0
+
+
+def need_write_weather():
+    try:
+        from swatplus_bmi.project import write_weather  # noqa: F401
+    except ImportError:
+        pytest.skip("needs swatplus-bmi 0.7's project.write_weather")
 
 
 # --- units ---------------------------------------------------------------------------------------------------------
@@ -136,6 +145,7 @@ def test_the_projects_own_records_give_the_files_run(swatplus, tmp_path):
         W.write_csv(tmp_path / f"{kind}.csv", W.project_series(swatplus / "Osu_1hru", kind,
                                                                [PCP_FILE if kind == "precipitation" else TMP_FILE]))
     spec = {k: tmp_path / f"{k}.csv" for k in ("precipitation", "temperature_max", "temperature_min")} | {"change": {}}
+    need_write_weather()
     b0, _, q0 = run_days(osu_config(tmp_path, swatplus, "wx-files"), days)
     b0.finalize()
     b1, _, q1 = run_days(osu_config(tmp_path, swatplus, "wx-series", spec), days)
@@ -143,29 +153,33 @@ def test_the_projects_own_records_give_the_files_run(swatplus, tmp_path):
     b1.finalize()
     np.testing.assert_array_equal(q1, q0)
     s = json.loads((b1.folder / "outputs" / "summary.json").read_text())["weather"]
-    assert s["precipitation"]["from"] == "2010-01-03" and s["temperature_max"]["from"] == "2010-01-02"
+    assert s["precipitation"]["from"] == "2010-01-01" and s["temperature_max"]["from"] == "2010-01-01"
     assert s["precipitation"]["to"] == "2010-04-30" and s["precipitation"]["gages"] == [PCP_FILE]
 
 
 @pytest.mark.slow
 def test_a_change_reaches_swat(swatplus, tmp_path):
+    need_write_weather()
     days = 120
     start = dt.date(2010, 1, 1)
     cfg = osu_config(tmp_path, swatplus, "wx-wetter", {"change": {"precipitation": 1.5, "temperature": 2.0}})
     b, got, q = run_days(cfg, days, read=(W.PCP, W.TMAX))
     b.finalize()
     pcp, tmax = file_values(swatplus, PCP_FILE, start, days), file_values(swatplus, TMP_FILE, start, days)
-    np.testing.assert_allclose(got[W.PCP][:2], pcp[:2], rtol=1e-6, atol=1e-6)       # read before any set
-    np.testing.assert_allclose(got[W.PCP][2:], 1.5 * pcp[2:], rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(got[W.TMAX][:1], tmax[:1], atol=1e-5)
-    np.testing.assert_allclose(got[W.TMAX][1:], tmax[1:] + 2.0, atol=1e-5)
+    np.testing.assert_allclose(got[W.PCP], 1.5 * pcp, rtol=1e-6, atol=1e-5)         # from the first day
+    np.testing.assert_allclose(got[W.TMAX], tmax + 2.0, atol=1e-5)
+    assert b.weather["precipitation"]["from"] == start and b.weather["temperature_max"]["from"] == start
+    # the series users read is changed once, its first days too (the run's copy holds them changed)
+    np.testing.assert_allclose(b.weather["precipitation"]["series"].values[:, 0], 1.5 * pcp, atol=1e-9)
+    np.testing.assert_allclose(b.weather["temperature_max"]["series"].values[:, 0], tmax + 2.0, atol=1e-9)
     b0, _, q0 = run_days(osu_config(tmp_path, swatplus, "wx-base"), days)
     b0.finalize()
-    assert pcp[2:].sum() > 0 and q.sum() > q0.sum()
+    assert pcp[:2].sum() > 0 and q.sum() > q0.sum()
 
 
 @pytest.mark.slow
 def test_a_case_from_a_warm_up_takes_its_own_weather(swatplus, tmp_path):
+    need_write_weather()
     days, warm = 90, 40
     start = dt.date(2010, 1, 1)
     from basinledger.scenarios import warm_up
@@ -221,10 +235,39 @@ def test_hru_points_name_each_gages_hrus(swatplus):
     lon, lat, area = pts[PCP_FILE]
     assert len(area) == 1 and area[0] > 0 and -180 <= lon[0] <= 180 and -90 <= lat[0] <= 90
     assert W.hru_points(swatplus / "Osu_1hru", "hmd") == {}           # humidity is generated
+    assert W.gage_files(swatplus / "Osu_1hru", "pcp") == [PCP_FILE] and W.gage_files(swatplus / "Osu_1hru", "hmd") == []
+
+
+def test_the_first_days_go_into_the_runs_files(swatplus, tmp_path):
+    """Two days of precipitation and one of temperature, changed, written into a copy of the project; the minimum
+    temperature, not set, keeps its records, and later days are the files'."""
+    need_write_weather()
+    import shutil
+    run = tmp_path / "run"
+    shutil.copytree(swatplus / "Osu_1hru", run)
+    start = dt.date(2010, 1, 1)
+    W.write_first_days(run, {"change": {"precipitation": 1.5}, "temperature_max": _tmax_csv(swatplus, tmp_path)},
+                       start)
+    old = {g: [W.gage_records(swatplus / "Osu_1hru", g, c).between(start, start + dt.timedelta(2)).values[:, 0]
+               for c in (0, 1)[:2 if g == TMP_FILE else 1]] for g in (PCP_FILE, TMP_FILE)}
+    new = {g: [W.gage_records(run, g, c).between(start, start + dt.timedelta(2)).values[:, 0]
+               for c in (0, 1)[:2 if g == TMP_FILE else 1]] for g in (PCP_FILE, TMP_FILE)}
+    np.testing.assert_allclose(new[PCP_FILE][0][:2], 1.5 * old[PCP_FILE][0][:2], atol=1e-5)
+    assert new[PCP_FILE][0][2] == old[PCP_FILE][0][2]
+    assert new[TMP_FILE][0][0] == pytest.approx(old[TMP_FILE][0][0] + 1.0, abs=1e-5)  # the CSV's +1 degC
+    assert new[TMP_FILE][0][1] == old[TMP_FILE][0][1]
+    np.testing.assert_array_equal(new[TMP_FILE][1], old[TMP_FILE][1])               # the minimum, not set
+
+
+def _tmax_csv(swatplus, tmp_path):
+    s = W.project_series(swatplus / "Osu_1hru", "temperature_max", [TMP_FILE])
+    W.write_csv(tmp_path / "tmax.csv", W.changed("temperature_max", s, {"temperature": 1.0}))
+    return tmp_path / "tmax.csv"
 
 
 @pytest.mark.slow
 def test_a_series_that_ends_early_stops_the_run(swatplus, tmp_path):
+    need_write_weather()
     s = W.project_series(swatplus / "Osu_1hru", "precipitation", [PCP_FILE])
     W.write_csv(tmp_path / "short.csv", s.between(dt.date(2010, 1, 1), dt.date(2010, 1, 20)))
     cfg = osu_config(tmp_path, swatplus, "wx-short", {"precipitation": tmp_path / "short.csv", "change": {}})
