@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.2.0).** Built and tested:
+**Status: early (0.3.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -36,7 +36,7 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - the utility chain: sources, losses, sewer, plant outfall;
 - feedback rules: curtailment, dry mode, drawdown limit;
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
-  ground, with swatplus-bmi's next release), and the two-way stream-aquifer exchange through MODFLOW 6's river and
+  ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river and
   drain packages;
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
@@ -63,7 +63,7 @@ Examples:
 
 Still to come ([docs/design.md](docs/design.md)):
 
-- water quality through SWAT+'s streams (stage 2), on swatplus-bmi's next release;
+- water quality through SWAT+'s streams (stage 2), on swatplus-bmi 0.5.0's species variables;
 - SWAT+ built on the NextGen hydrofabric, for water quality on the same catchments;
 - AORC forcing;
 - applying calibration parameters, and PEST++ IES.
