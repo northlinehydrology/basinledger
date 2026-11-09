@@ -439,6 +439,10 @@ and book both.
   closing. On Ames_sub1, a water table under one HRU's ground only: only that HRU gets water. A water table below
   every profile: nothing moves, and the run is the run without the link, bit for bit.
 
+Built so far (`coupling/gwsoil.py`, unit tests only): a cell's water split among the HRUs over it, each HRU's share among
+its layers below the cell's water table, and the drain's elevation at the profile's bottom under each cell. Volume
+is kept exactly; water whose table is below the HRU's profile is returned unplaced.
+
 Choices for Andrew:
 1. **The rule.**
    - (a) Proposed: a drain at the profile's bottom, head-dependent and implicit in MODFLOW 6's solve. One parameter,
