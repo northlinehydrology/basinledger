@@ -103,7 +103,7 @@ requires-dist = [
     { name = "netcdf4", marker = "extra == 'nextgen'", specifier = ">=1.6,<1.7.5" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyyaml", marker = "extra == 'users'", specifier = ">=6" },
-    { name = "swatplus-bmi", specifier = ">=0.6" },
+    { name = "swatplus-bmi", specifier = ">=0.6.1" },
     { name = "waterledger-models", marker = "extra == 'users'", specifier = ">=3.11" },
 ]
 provides-extras = ["users", "nextgen"]
@@ -2516,7 +2516,7 @@ wheels = [
 
 [[package]]
 name = "swatplus-bmi"
-version = "0.6.0"
+version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bmipy" },
@@ -2524,9 +2524,9 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/19/53/7650a0a701a6060fd6637c865ea078257f0946da4fd337c99e46a249e633/swatplus_bmi-0.6.0.tar.gz", hash = "sha256:57ae8e4cc3874840d386fdb49b4b6ca5a0e910fb40c7252a772698faf5f78132", size = 655495, upload-time = "2026-11-09T00:15:54.455Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a1/72/51f1f327113136128b600516bc91f12b80275a759746057068f0674daf1b/swatplus_bmi-0.6.1.tar.gz", hash = "sha256:848fd5f4556c0a20339952c6cd3f9e33b588044142845fafc835476ade22fe68", size = 656376, upload-time = "2026-11-09T02:28:02.495Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/eb/57/92554762d7664fe56af3f2466548354231167e1a0316a49caa251d01aa04/swatplus_bmi-0.6.0-py3-none-any.whl", hash = "sha256:4efea9e2fa76830006eaec29c3c23a2430cd67ec5c6d3dfc6f9eab4261c6abd5", size = 84279, upload-time = "2026-11-09T00:15:52.997Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/b9/260395612505e15926c2898966d757d5fdb9563cc0c5c491f898b7e8e794/swatplus_bmi-0.6.1-py3-none-any.whl", hash = "sha256:e8e1b1c6d885df249444af47e22934926670eb5eaa408d92662fa904d477652f", size = 84799, upload-time = "2026-11-09T02:28:00.993Z" },
 ]
 
 [[package]]
