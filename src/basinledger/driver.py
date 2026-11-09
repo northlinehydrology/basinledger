@@ -131,6 +131,13 @@ class Basin:
         if saved:
             self.swat.load_state(str(Path(restart) / "surface"))
             self.day = saved["day"]
+        # weather into SWAT+'s gage records, from the first day it hasn't read (weather.py); a restart keeps the
+        # warm-up's records up to then
+        self.weather = {}
+        if cfg.weather:
+            from . import weather as W
+            last = self.start + dt.timedelta(days=min(self.days, int(self.swat.get_end_time())) - 1)
+            self.weather = W.apply(self.swat, swat_dir, cfg.weather, last)
 
         # MODFLOW 6 (optional): built (or copied) for the run, or for the days left after a restart
         self.mf6 = None
@@ -351,7 +358,7 @@ class Basin:
                 series = nextgen_inputs(self.cfg.nextgen_run, u.forcing["catchment"], start)
             elif src == "swatplus" and self.cfg.surface == "swatplus":
                 from .forcing import swatplus_inputs
-                series = swatplus_inputs(self.folder / "swatplus", u.forcing["station"], start)
+                series = swatplus_inputs(self.folder / "swatplus", u.forcing["station"], start, self.weather)
             else:
                 raise NotImplementedError(f"user {u.name}: forcing from {src!r} with a {self.cfg.surface} surface "
                                           "model (nextgen with NextGen, swatplus with SWAT+; AORC is planned)")
@@ -468,6 +475,10 @@ class Basin:
         d = self.day
         L = self.ledger
         rt = self.router
+        for wx, w in self.weather.items():  # a series that ends before the run would leave SWAT+ on its files
+            if self.start + dt.timedelta(days=d) > w["to"]:
+                raise ValueError(f"[weather] {wx}: the series ends {w['to']}; the run needs "
+                                 f"{self.start + dt.timedelta(days=d)}")
 
         # 1. rules
         if self.rules:
@@ -718,6 +729,9 @@ class Basin:
             "totals": {k: v for k, v in self.ledger.totals().items() if not math.isnan(v)},
             "in_transit": self.due,
         }
+        if self.weather:
+            summary["weather"] = {k: {"from": w["from"].isoformat(), "to": w["to"].isoformat(), "gages": w["series"].gages}
+                                  for k, w in self.weather.items()}
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
         return out
 

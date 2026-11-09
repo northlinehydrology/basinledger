@@ -83,10 +83,12 @@ class DailyToHourly:
         return float(self.hourly(rec, when.hour + when.minute / 60.0))
 
 
-def swatplus_inputs(project: Path, station: str, run_start: dt.datetime) -> dict[str, DailyToHourly]:
+def swatplus_inputs(project: Path, station: str, run_start: dt.datetime,
+                    weather: dict | None = None) -> dict[str, DailyToHourly]:
     """Hourly temperature and humidity for a user from a SWAT+ station's daily files, as ``weather-sta.cli`` names
-    them. Where SWAT+ generates a variable (``sim``), there is no series: humidity is then left out, and the user
-    needs it as a constant input."""
+    them, with the days a ``[weather]`` series replaced (``weather``: what ``weather.apply`` returned), so the user
+    has SWAT+'s weather. Where SWAT+ generates a variable (``sim``), there is no series: humidity is then left out,
+    and the user needs it as a constant input."""
     project = Path(project)
     lines = (project / "weather-sta.cli").read_text().splitlines()
     head = lines[1].split()
@@ -104,6 +106,12 @@ def swatplus_inputs(project: Path, station: str, run_start: dt.datetime) -> dict
             f = ln.split()
             if f:
                 out[dt.date(int(f[0]), 1, 1) + dt.timedelta(days=int(f[1]) - 1)] = [float(x) for x in f[2:]]
+        for key, col in {"tmp": (("temperature_max", 0), ("temperature_min", 1)), "hmd": (("humidity", 0),)}[kind]:
+            s = (weather or {}).get(key, {}).get("series")
+            if s is not None and name in s.gages:
+                k = s.gages.index(name)
+                for day, v in zip(s.dates(), s.values[:, k]):
+                    out[day][col] = float(v)
         return out
 
     tmp, hmd = read("tmp"), read("hmd")

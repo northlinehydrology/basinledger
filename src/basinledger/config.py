@@ -32,6 +32,11 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     area_rtol = 1e-6                    # mapped area must match each object's area in the surface model (default 1e-6);
     area_check = false                  #   or no check, where an example maps more or less area on purpose (say why)
 
+    [weather]                           # optional, SWAT+ only: series written into its gage records (weather.py)
+    precipitation = "weather/pcp.csv"   # a date column, then one column per gage file, mm/day (temperature_max,
+    change = {temperature = 2.0}        #   temperature_min, solar, humidity, wind); a scenario's change, on the
+                                        #   series or the project's own records
+
     [[wells]]
     name = "pw1"
     package = "wel"
@@ -167,6 +172,7 @@ class ExampleConfig:
     mf6_builder_args: dict = field(default_factory=dict)
     transport: dict[str, dict] = field(default_factory=dict)  # species -> recharge, stream (kg m-3) [A], model
     recharge_source: str = "aquifer"   # or "hru"
+    weather: dict | None = None        # kind -> CSV path, and change (weather.py)
 
     @property
     def surface(self) -> str:
@@ -207,7 +213,7 @@ def load(path: str | Path) -> ExampleConfig:
         c = tomllib.load(f)
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
-             "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport"}
+             "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -221,6 +227,19 @@ def load(path: str | Path) -> ExampleConfig:
         raise ValueError(f"{path}: [recharge] source must be aquifer or hru")
     if rch.get("source") == "hru" and "nextgen" in c:
         raise ValueError(f"{path}: [recharge] source = hru needs SWAT+'s HRUs; a NextGen run gives catchments")
+    weather = None
+    if "weather" in c:
+        from .weather import CHANGES, KINDS
+        wx = c["weather"]
+        if "nextgen" in c:
+            raise ValueError(f"{path}: [weather] writes SWAT+'s gage records; a replayed NextGen run has its own forcing")
+        if set(wx) - set(KINDS) - {"change"}:
+            raise ValueError(f"{path}: [weather] unknown settings {sorted(set(wx) - set(KINDS) - {'change'})}")
+        if set(wx.get("change", {})) - CHANGES:
+            raise ValueError(f"{path}: [weather.change] unknown settings {sorted(set(wx['change']) - CHANGES)} "
+                             f"(one of {sorted(CHANGES)})")
+        weather = {k: _path(base, v) for k, v in wx.items() if k != "change"}
+        weather["change"] = dict(wx.get("change", {}))
     transport = c.get("transport", {})
     for sp, t in transport.items():
         if not isinstance(t, dict) or "recharge" not in t:
@@ -264,4 +283,5 @@ def load(path: str | Path) -> ExampleConfig:
         mf6_builder_args=mf.get("builder_args", {}),
         transport={sp: dict(t) for sp, t in transport.items()},
         recharge_source=rch.get("source", "aquifer"),
+        weather=weather,
     )
