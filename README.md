@@ -44,8 +44,9 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - the whole-basin balance, the capture of pumping (from storage, the streams and the boundary), and depletion against
   Glover and Balmer (1954);
 - scenarios from a shared warm-up, and restarts from a saved day that match unbroken runs bit for bit;
-- weather written into SWAT+'s gage records (swatplus-bmi 0.6): a series per gage from a CSV, gridded data mapped to
-  gages, and a scenario's change (wetter, drier, warmer; monthly factors and shifts);
+- weather written into SWAT+'s gage records from a run's first day (needs swatplus-bmi 0.7, not yet released): a
+  series per gage from a CSV, gridded data mapped to gages, and a scenario's change (wetter, drier, warmer; monthly
+  factors and shifts);
 - stream temperature as a reach heat balance, with groundwater inflow and users' returns at their own temperatures;
 - groundwater transport (MODFLOW 6 GWT): each species' mass in the ledger every day, and a user's intake
   concentration from the aquifer at its well;
@@ -278,7 +279,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Capture | a well's pumping equals the extra release from storage, the water the streams lose and the extra boundary inflow, every day |
 | Depletion | MODFLOW 6 through the coupling within 2% of Glover and Balmer (1954) for a well beside a straight river |
 | Stream temperature | each reach's heat balance closes; a return mixes at its own temperature |
-| Weather | a series equal to the files' records gives the files' run bit for bit; a change reaches SWAT+'s records from the first day that can be set; a case from a warm-up takes its own weather from then; users read the series; a series that ends early stops the run |
+| Weather | a series equal to the files' records gives the files' run bit for bit; a run's first days are written into its files, other columns kept; a change reaches SWAT+'s records from the run's first day; a case from a warm-up takes its own weather from the first day that can be set; users read the series; a series that ends early stops the run |
 | Restarts and scenarios | saved after a warm-up and carried on, runs match unbroken runs bit for bit; a case with no change matches the baseline |
 | Start-up warnings | soils that start empty, and a warm-up whose soils haven't settled, are warned of, not stopped |
 | Command line, calibration | outputs and status written; statistics on known values; the forward model writes simulated values at observations |
