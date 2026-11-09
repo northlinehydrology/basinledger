@@ -2,13 +2,13 @@
 
 Over the area the surface model covers:
 
-- **land** (SWAT+'s ``basin_wb_day``, summed over the run): precipitation + irrigation = ET + runoff to the channels
-  + percolation + the gain in soil water and snow + a residual, which is SWAT+'s own (wetland storage, for one, isn't
+- **land** (SWAT+'s ``basin_wb_day``, summed over the run): precipitation + irrigation + groundwater into the soil
+  (``gwsoilq``) = ET + runoff to the channels + percolation + the gain in soil water and snow + a residual, which is SWAT+'s own (wetland storage, for one, isn't
   in it). Irrigation is counted as water from outside [A]: where a project irrigates from its own channels or
   aquifers, that is a transfer inside the basin, and the example should say so;
 - **the link** (the ledger): what SWAT+'s aquifers recharged, what MODFLOW 6 received, and what the map added;
 - **groundwater** (the ledger): recharge + boundary inflow + release from storage = discharge to the coupled streams
-  + pumping, which closes by MODFLOW 6's budget;
+  + pumping + water up into the soil (``gw_soil:sent``), which closes by MODFLOW 6's budget;
 - **channels and lakes**: runoff + groundwater SWAT+'s channels received (the exchange as applied, gains less
   losses) + precipitation on lakes and channels + water users' returns to the streams + inflow from elsewhere =
   evaporation from lakes and channels + withdrawals from the streams + outflow at the outlet + the gain in lake and
@@ -96,6 +96,8 @@ def basin_balance(run: str | Path, outlet: str) -> dict[str, float]:
         "returns_to_streams": float(np.nansum(_sum(t, "route:swat:point_source:", ":delivered"))),
         "withdrawals_from_streams": float(np.nansum(_sum(t, "route:swat:place_of_use:", ":delivered"))),
         "irrigation": to_m3(mm("irr")) if "irr" in col else 0.0,
+        "groundwater_into_soil": to_m3(mm("gwsoilq")) if "gwsoilq" in col else 0.0,
+        "groundwater_to_soil_sent": float(np.nansum(_sum(t, "gw_soil:sent"))),
         "inflow_from_elsewhere": _other_inflow(sw, t),
         "outflow": out_gage,
         "max_daily_closure_share": float(np.nanmax(np.abs(t.get("groundwater:closure_share", np.zeros(1))))),
@@ -103,10 +105,11 @@ def basin_balance(run: str | Path, outlet: str) -> dict[str, float]:
     # with the exchange's point sources (swatplus-bmi before 0.2.0), the exchange is in the routes; don't count twice
     b["returns_to_streams"] -= float(np.nansum(_sum(t, "route:swat:point_source:gw_", ":delivered")))
     b["withdrawals_from_streams"] -= float(np.nansum(_sum(t, "route:swat:place_of_use:seep_", ":delivered")))
-    b["land_residual"] = (b["precipitation_land"] + b["irrigation"] - b["et_land"] - b["runoff_to_channels"] - b["percolation"]
+    b["land_residual"] = (b["precipitation_land"] + b["irrigation"] + b["groundwater_into_soil"] - b["et_land"] - b["runoff_to_channels"] - b["percolation"]
                           - b["soil_water_gain"] - b["snow_gain"])
     b["groundwater_residual"] = (b["recharge_received"] + b["groundwater_boundary_in"]
-                                 + b["groundwater_storage_release"] - b["groundwater_to_streams"] - b["pumping"])
+                                 + b["groundwater_storage_release"] - b["groundwater_to_streams"] - b["pumping"]
+                                 - b["groundwater_to_soil_sent"])
     b["lake_storage_gain"] = _storage_gain(sw / "reservoir_day.txt")
     b["channel_storage_gain"] = _storage_gain(sw / "channel_sd_day.txt")
     b["channels_residual"] = (- b["lake_storage_gain"] - b["channel_storage_gain"]

@@ -32,6 +32,13 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     area_rtol = 1e-6                    # mapped area must match each object's area in the surface model (default 1e-6);
     area_check = false                  #   or no check, where an example maps more or less area on purpose (say why)
 
+    [groundwater_to_soil]               # optional: MODFLOW 6's water up into SWAT+'s HRU soil layers (coupling/gwsoil.py;
+    rule = "drain"                      #   swatplus-bmi 0.7.0). Required, no default: "drain" (a drain at the profile's
+    cap = "none"                        #   bottom, solved by MODFLOW 6) or "gwflow" (SWAT+ gwflow's rule, a well);
+    package = "soil"                    #   cap "none" or "room" (no more than the layers' room). The package (DRN for
+                                        #   drain, WEL for gwflow) has one entry on each mapped cell. Needs recharge by
+                                        #   HRU and the two-way [exchange]
+
     [[wells]]
     name = "pw1"
     package = "wel"
@@ -167,6 +174,7 @@ class ExampleConfig:
     mf6_builder_args: dict = field(default_factory=dict)
     transport: dict[str, dict] = field(default_factory=dict)  # species -> recharge, stream (kg m-3) [A], model
     recharge_source: str = "aquifer"   # or "hru"
+    groundwater_to_soil: dict | None = None  # rule, cap, package (coupling/gwsoil.py)
 
     @property
     def surface(self) -> str:
@@ -207,7 +215,7 @@ def load(path: str | Path) -> ExampleConfig:
         c = tomllib.load(f)
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
-             "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport"}
+             "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "groundwater_to_soil"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -221,6 +229,19 @@ def load(path: str | Path) -> ExampleConfig:
         raise ValueError(f"{path}: [recharge] source must be aquifer or hru")
     if rch.get("source") == "hru" and "nextgen" in c:
         raise ValueError(f"{path}: [recharge] source = hru needs SWAT+'s HRUs; a NextGen run gives catchments")
+    gs = c.get("groundwater_to_soil")
+    if gs is not None:
+        from .coupling.gwsoil import CAPS, RULES
+        missing = [k for k in ("rule", "cap", "package") if k not in gs]
+        if missing:
+            raise ValueError(f"{path}: [groundwater_to_soil] needs {missing}: the rule and the cap have no default")
+        if set(gs) - {"rule", "cap", "package"}:
+            raise ValueError(f"{path}: [groundwater_to_soil] unknown settings {sorted(set(gs) - {'rule', 'cap', 'package'})}")
+        if gs["rule"] not in RULES or gs["cap"] not in CAPS:
+            raise ValueError(f"{path}: [groundwater_to_soil] rule is one of {RULES}, cap one of {CAPS}")
+        if rch.get("source") != "hru" or "exchange" not in c or "modflow6" not in c or "swatplus" not in c:
+            raise ValueError(f"{path}: [groundwater_to_soil] needs SWAT+, MODFLOW 6, [recharge] source = \"hru\" (the "
+                             "HRU map) and the two-way [exchange] (SWAT+'s aquifers passing recharge through)")
     transport = c.get("transport", {})
     for sp, t in transport.items():
         if not isinstance(t, dict) or "recharge" not in t:
@@ -264,4 +285,5 @@ def load(path: str | Path) -> ExampleConfig:
         mf6_builder_args=mf.get("builder_args", {}),
         transport={sp: dict(t) for sp, t in transport.items()},
         recharge_source=rch.get("source", "aquifer"),
+        groundwater_to_soil=dict(gs) if gs is not None else None,
     )
