@@ -48,12 +48,15 @@ SMALL_WELL = (0, 5, 6)
 
 
 def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevation: float | None = None,
-                transport: dict | None = None) -> Path:
+                transport: dict | None = None, top: float = 100.0, soil: str | None = None,
+                soil_conductance: float = 10.0) -> Path:
     """A 10 ha aquifer under Osu_1hru for the two-way exchange: 10 x 10 cells, the river along the west edge.
     Thinner and less permeable than the large grid so the river can lose water when the well pumps hard.
     ``drain_elevation``: seepage cells (a drain) along the second column at that elevation, for the coupled drains'
     tests. ``transport``: species -> ``add_transport`` settings (porosity, dispersivity, strt, sorption), a transport
-    model per species with recharge and the river as its sources."""
+    model per species with recharge and the river as its sources. ``top`` and ``soil``: land surface (m) and a
+    package named "soil" on every cell for groundwater up into the soil, a drain ("drn", conductance
+    ``soil_conductance`` m2 d-1 [A], elevation set by Basin Ledger each day) or a well ("wel", gwflow's rule)."""
     ws = Path(workspace)
     sim = flopy.mf6.MFSimulation(sim_name="synthetic_small", sim_ws=ws, exe_name="mf6")
     flopy.mf6.ModflowTdis(sim, time_units="days", start_date_time=start.isoformat(),
@@ -62,7 +65,7 @@ def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevatio
                          rcloserecord=[1e-8, "strict"])
     gwf = flopy.mf6.ModflowGwf(sim, modelname="gwf", save_flows=True)
     flopy.mf6.ModflowGwfdis(gwf, length_units="meters", nlay=1, nrow=10, ncol=10, delr=SMALL_CELL, delc=SMALL_CELL,
-                            top=100.0, botm=70.0)
+                            top=top, botm=70.0)
     flopy.mf6.ModflowGwfnpf(gwf, icelltype=0, k=2.0)
     flopy.mf6.ModflowGwfsto(gwf, iconvert=1, sy=0.15, ss=1e-5, transient={0: True})
     flopy.mf6.ModflowGwfic(gwf, strt=RIVER_STAGE)
@@ -73,6 +76,13 @@ def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevatio
     if drain_elevation is not None:
         flopy.mf6.ModflowGwfdrn(gwf, stress_period_data={0: [((0, r, 1), drain_elevation, 5.0) for r in range(10)]},
                                 pname="drn")
+    cells = [(0, r, c) for r in range(10) for c in range(10)]
+    if soil == "drn":
+        flopy.mf6.ModflowGwfdrn(gwf, stress_period_data={0: [(x, top, soil_conductance) for x in cells]}, pname="soil",
+                                filename="gwf.soil.drn")
+    elif soil == "wel":
+        flopy.mf6.ModflowGwfwel(gwf, stress_period_data={0: [(x, 0.0) for x in cells]}, pname="soil",
+                                filename="gwf.soil.wel")
     flopy.mf6.ModflowGwfoc(gwf, budget_filerecord="gwf.cbc", head_filerecord="gwf.hds",
                            saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")], printrecord=[("BUDGET", "ALL")])
     if transport:

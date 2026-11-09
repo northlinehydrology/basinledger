@@ -42,6 +42,7 @@ from . import rules as R
 from .chain import UtilityChain
 from .coupling import swatplus as S
 from .coupling.exchange import ChannelMap, StreamExchange, requests as exchange_requests
+from .coupling.gwsoil import GroundwaterToSoil
 from .coupling.modflow6 import Modflow6, remaining_simulation
 from .coupling import recharge as RC
 from .coupling.recharge import RechargeLink
@@ -187,6 +188,7 @@ class Basin:
         L = self.ledger
         # recharge: SWAT+ aquifers (or HRUs) -> MODFLOW 6 cells
         self.aquifer_check = None
+        self.gw_soil = None
         if self.mf6 is not None:
             var = RC.SOURCES[cfg.recharge_source]
             if not self.sw.has(var):
@@ -201,6 +203,7 @@ class Basin:
             source = np.array([areas[a] for a in objects])
             self.map.check(self.mf6.cell_area, source, cfg.area_rtol)
             if cfg.recharge_source == "hru":
+                self.ground_map = self.map  # each HRU's ground in each cell, for groundwater up into the soil
                 # each HRU's rows scaled to its area in SWAT+: the map places, never adds or loses (mapping.py)
                 self.map = self.map.conserving(source)
                 aquifers = self.sw.names(RC.RECHARGE) if self.sw.has(RC.RECHARGE) else []
@@ -209,6 +212,12 @@ class Basin:
                     self.aquifer_check = np.array([a[x] for x in aquifers])
                     L.pair("recharge:made", "recharge:swat_aquifers", rtol=RC.AQUIFER_RTOL)
             self.recharge = RechargeLink(self.swat, self.mf6, self.map, cfg.recharge_package, source, var)
+            # groundwater up into the soil: SWAT+'s side now, MODFLOW 6's on the first day (coupling/gwsoil.py)
+            if cfg.groundwater_to_soil:
+                gs = cfg.groundwater_to_soil
+                self.gw_soil = GroundwaterToSoil(self.sw, self.ground_map, source, gs["rule"], gs["cap"],
+                                                 gs["package"], saved.get("gw_soil_due") if saved else None)
+                L.pair("gw_soil:due", "gw_soil:received", rtol=FLOAT32)
             L.pair("recharge:sent", "recharge:received")
             # what the surface model made, and what the map added to it (+) or couldn't place (-): water from outside
             L.pair("recharge:sent", ["recharge:made", "recharge:by_the_map"])
@@ -533,11 +542,16 @@ class Basin:
 
         # 4. the surface model (SWAT+ live, or the next day of a NextGen run)
         rt.apply_swat()
+        gw_soil = getattr(self, "gw_soil", None)
+        if gw_soil is not None:  # yesterday's groundwater, into the soil layers today
+            L.enter("gw_soil:due", gw_soil.before_swat())
         if self.direct_exchange:
             names = self.sw.names(S.GW_EXCHANGE)
             self.sw.set(S.GW_EXCHANGE, np.array([self.due.get(c, 0.0) / DAY for c in names]))
         self.swat.update()
         rt.read_swat()
+        if gw_soil is not None:
+            L.enter("gw_soil:received", gw_soil.received())
         if self.direct_exchange:
             got = dict(zip(self.sw.names(S.GW_EXCHANGE), self.sw.get(S.GW_EXCHANGE) * DAY))
             self._exchanged = {c: got[c] for c in self.due}
@@ -597,12 +611,22 @@ class Basin:
                 applied = {c: L.today(f"route:swat:point_source:gw_{c}:delivered")
                            - L.today(f"route:swat:place_of_use:seep_{c}:delivered") for c in self.due}
             limit = self.exchange.limit({c: max(flow[c] - applied[c], 0.0) for c in self.due})
+        if self.gw_soil is not None:
+            if self.gw_soil.mf6 is None:
+                self.gw_soil.attach(self.mf6)
+            self.gw_soil.before_solve()
         self.mf6.solve_day(limit)
         if limit is not None:
             for c, d in self.exchange.lowered.items():
                 L.enter(f"exchange:{c}:stage_lowered_m", d)
             self.exchange.end_day()
         L.enter("recharge:received", self.recharge.received())
+        if self.gw_soil is not None:
+            sent, at_bottom = self.gw_soil.after_solve()
+            L.enter("gw_soil:sent", sent)                  # out of MODFLOW 6 today, into SWAT+'s soil tomorrow
+            L.enter("gw_soil:to_bottom_layer", at_bottom)  # of it, from cells whose water table is below the HRU's profile
+            if self.gw_soil.rule == "drain" and self.gw_soil.cap == "room":
+                L.enter("gw_soil:drains_raised", float(self.gw_soil.raised))
         rt.read_wells()
         if self.cfg.rivers:
             self._rivers_out()
@@ -633,6 +657,8 @@ class Basin:
                     m |= self.exchange.map.entry_channel[:n] >= 0
                 if self.exchange is not None and self.exchange.drains and p == self.exchange.drains[0].upper():
                     m |= self.exchange.drains[1].entry_channel[:n] >= 0
+                if self.gw_soil is not None and p == self.gw_soil.package.upper():
+                    m[:] = True
                 for w in self.cfg.wells:
                     if w.package.upper() == p:
                         m[mf.entry(p, mf.node(*w.cell))] = True
@@ -698,6 +724,7 @@ class Basin:
             "day": self.day, "ledger": self.ledger.state(), "series": self.series,
             "rule_memory": self.rule_memory,
             "exchange_due": self.due,
+            "gw_soil_due": self.gw_soil.due.tolist() if getattr(self, "gw_soil", None) is not None else None,
         }))
 
     # ---------- outputs ----------
@@ -737,6 +764,8 @@ class Basin:
         if self.weather:
             summary["weather"] = {k: {"from": w["from"].isoformat(), "to": w["to"].isoformat(), "gages": w["series"].gages}
                                   for k, w in self.weather.items()}
+        if getattr(self, "gw_soil", None) is not None:
+            summary["in_transit_gw_soil"] = self.gw_soil.due_volume()
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
         return out
 

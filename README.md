@@ -38,6 +38,9 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
   ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river and
   drain packages;
+- groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
+  profile's bottom (chosen) or SWAT+ gwflow's rule, with or without a cap at the layers' room (none chosen; needs
+  swatplus-bmi 0.7.0, not yet released);
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
@@ -280,6 +283,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Depletion | MODFLOW 6 through the coupling within 2% of Glover and Balmer (1954) for a well beside a straight river |
 | Stream temperature | each reach's heat balance closes; a return mixes at its own temperature |
 | Weather | a series equal to the files' records gives the files' run bit for bit; a run's first days are written into its files, other columns kept; a change reaches SWAT+'s records from the run's first day; a case from a warm-up takes its own weather from the first day that can be set; users read the series; a series that ends early stops the run |
+| Groundwater into the soil | for each rule and cap, what leaves MODFLOW 6's cells is what SWAT+'s layers receive the next day; the whole basin closes; a restart carries what is due; a water table below every profile changes nothing, bit for bit |
 | Restarts and scenarios | saved after a warm-up and carried on, runs match unbroken runs bit for bit; a case with no change matches the baseline |
 | Start-up warnings | soils that start empty, and a warm-up whose soils haven't settled, are warned of, not stopped |
 | Command line, calibration | outputs and status written; statistics on known values; the forward model writes simulated values at observations |

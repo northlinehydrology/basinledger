@@ -58,6 +58,7 @@ not the basin.
 | recharge, one-way | yes | yes | yes | MODFLOW 6 budget | pass-through storage | study |
 | recharge HRU by HRU | yes (pixel overlay, conserving map) | yes (made = SWAT+'s aquifer recharge) | yes (Osu_1hru; Ames_sub1's 12 HRUs, placement) | MODFLOW 6 budget | SWAT+'s aquifer recharge | study |
 | two-way exchange, supply limit, drains | yes | yes | yes | MODFLOW 6 budget | settings | study |
+| groundwater up into the soil | yes (cell to HRU to layer split, drain elevation) | yes (sent, due, received) | yes (Osu_1hru, each rule and cap, restarts) | MODFLOW 6 budget, SWAT+'s gwsoilq | the config names a rule and a cap | |
 | boundary flows, storage, closure | | yes | yes | | | study |
 | wells and capture of pumping | | yes | yes (G1, two-way and one-way) | Glover and Balmer (G2) | | study |
 | water users (CoolingWaterBmi) on SWAT+'s weather | yes | yes | yes (G7) | user balance | | study |
