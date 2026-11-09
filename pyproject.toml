@@ -1,6 +1,6 @@
 [project]
 name = "basinledger"
-version = "0.2.0"
+version = "0.3.0"
 description = "A basin's water balanced day by day across coupled models (SWAT+, NextGen, MODFLOW 6 and water users) through BMI"
 readme = "README.md"
 requires-python = ">=3.11"
