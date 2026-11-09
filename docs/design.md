@@ -394,7 +394,71 @@ profile, the day just done.
   has nothing to hold it to.
 - **What it changes.** Where the water lands within a catchment, not how much.
 - **Not built:** an unsaturated zone between the soil profile and the water table (MODFLOW 6's UZF); SWAT+ 62.0.1
-  has none either, with its delay commented out.
+  has none either, with its delay commented out. Water back up from the water table into the soil is designed below.
+
+**Groundwater up into the soil (designed Nov 8, 2026; not built: waits for swatplus-bmi 0.7.0).** Recharge HRU by HRU
+sends water down. Where MODFLOW 6's water table rises into an HRU's soil profile (wetlands, low ground beside streams,
+outwash with a shallow water table), water should also come back up, so the soil and its plants can use it and a
+saturated profile sheds it as runoff. On the Michigan glacial-drift basins this is likely the larger effect: a
+shallow water table supplies wetland ET through the summer, and one-way recharge can't represent it.
+
+swatplus-bmi's `gw-soil` branch (0.7.0) adds `soil_layer_water__groundwater_inflow_rate`: per HRU soil layer, m s-1
+over the HRU's area, set for the next day, at least zero, and refused in a project that runs SWAT+'s own gwflow. SWAT+
+adds it to the layers where gwflow puts its own (`gwflow_soil`, before the day's infiltration and percolation) and
+counts it in `gwsoilq` (`hru_wb`). Then SWAT+ moves it as any soil water: to the plants, out as lateral flow, down as
+percolation, or to the surface where the profile can't hold it. Read back after the day, it is what went in, and
+`soil_water__groundwater_inflow_rate` is each HRU's total. Per-layer read-only variables (layer bottom depth, water,
+saturation and field capacity) are coming on the same branch.
+
+Basin Ledger's side: decide each HRU layer's inflow from MODFLOW 6's heads, take exactly that water out of MODFLOW 6,
+and book both.
+
+- **The water table under each HRU.** The HRU map recharge uses (`[recharge] source = "hru"`; object, layer, row,
+  col, area) gives each HRU's ground in each cell. Depth to water in a cell is MODFLOW 6's top of layer 1 less its
+  head. The water table is inside an HRU's profile where that depth is less than the profile's bottom depth
+  (SWAT+'s, from the per-layer variables). MODFLOW 6's top, not the HRU's elevation in SWAT+, so the depth and the
+  head come from the same model.
+- **How much (choice 1, below).** Proposed: a drain at the bottom of the profile. Each mapped cell gets a MODFLOW 6
+  drain (its own DRN package, apart from the drains coupled to channels) at the top of layer 1 less the profile's
+  depth, area-weighted over the HRUs in the cell, with a conductance [A]. MODFLOW 6 computes the outflow inside its
+  solve, at the heads as they converge, so it can't overshoot or oscillate, and its budget books it. The next day
+  that outflow goes to the HRUs over the cell, by their share of the cell's ground. This is how the drains coupled
+  to channels already work (seepage to the streams the next day).
+- **Which layers.** gwflow's split: the layers below the water table, each in proportion to its thickness below it,
+  at the heads of the day the water left MODFLOW 6.
+- **Ledger.** `gw_soil:sent` (the soil drains' outflow, from MODFLOW 6's budget) and `gw_soil:received` (what SWAT+
+  reports went in, read back × HRU area), the same water a day apart; the last day's outflow is in transit, as the
+  stream exchange's is. The whole-basin balance gets the term on both sides: out of MODFLOW 6's storage, into SWAT+'s
+  soil (`gwsoilq` is already in `basin_wb`).
+- **Settings checked at start-up:** SWAT+'s gwflow off (swatplus-bmi refuses it too); no MODFLOW 6 EVT or UZF
+  package in the flow model, since SWAT+'s soil now takes ET from groundwater and a second ET would count it twice;
+  the HRU map, since an aquifer map can't say which HRU is over a cell.
+- **Tests (planned).** Units: the layer split, and the cell-to-HRU shares adding to each cell's outflow. On Osu_1hru
+  with the synthetic MODFLOW 6 model, a head held inside the profile: `gw_soil:sent` = `gw_soil:received` every day,
+  MODFLOW 6's budget closing with the soil drains, SWAT+'s `gwsoilq` equal to what was set, and the whole-basin balance
+  closing. On Ames_sub1, a water table under one HRU's ground only: only that HRU gets water. A water table below
+  every profile: nothing moves, and the run is the run without the link, bit for bit.
+
+Choices for Andrew:
+1. **The rule.**
+   - (a) Proposed: a drain at the profile's bottom, head-dependent and implicit in MODFLOW 6's solve. One parameter,
+     the conductance [A], calibrated with the rest; stable at any time step.
+   - (b) SWAT+'s own rule, from its gwflow module (`gwflow_soil`): each day, specific yield × the water table's height
+     above the profile's bottom × the cell's area under the HRU moves into the soil and out of the cell. No new
+     parameter, and what SWAT+ users know, but explicit: it moves the whole saturated storage inside the profile every day,
+     and with a one-day lag the cell can swing between full and empty. Basin Ledger would have to take it out of
+     MODFLOW 6 as a well, at the start of the day's solve.
+   - (c) A capped head-dependent flux set from outside (q = C × the height above the bottom, no more than the cell
+     holds above it): (a)'s form without MODFLOW 6 computing it, so less stable. Not recommended.
+2. **Cap by the layers' room** (saturation less water, `ul - st`)? Proposed: no cap. SWAT+ sends what the profile
+   can't hold to the surface, which is saturation-excess runoff, the process that matters at seeps and wetlands. A
+   cap would leave the water in MODFLOW 6, where it reaches the streams through RIV instead, later and as base flow.
+   Both close the balance; they differ in timing and path.
+3. **Lag.** The drains' outflow goes to SWAT+ the next day, as the stream exchange does. Same-day would need SWAT+ to
+   run after MODFLOW 6, which the day's order (SWAT+ first, its recharge into MODFLOW 6) doesn't allow.
+4. **Cycling.** Water that comes up and percolates back down returns to MODFLOW 6 as recharge the same day (SWAT+
+   adds it before percolation). The ledger shows both directions, gross. Net is what changes the heads; gross is
+   what a wetland's ET draws on. Report both.
 
 **Two-way: stream-aquifer exchange (built with RIV; `coupling/exchange.py`, `examples/synthetic/two_way.toml`).**
 MODFLOW 6 computes the exchange between streams and the aquifer (RIV now, SFR for routed streams later), and that
