@@ -39,8 +39,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river and
   drain packages;
 - groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
-  profile's bottom or SWAT+ gwflow's rule, with or without a cap at the layers' room (needs swatplus-bmi 0.7.0,
-  not yet released);
+  profile's bottom (chosen) or SWAT+ gwflow's rule, with or without a cap at the layers' room (none chosen; needs
+  swatplus-bmi 0.7.0, not yet released);
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;

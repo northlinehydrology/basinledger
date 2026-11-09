@@ -1,6 +1,7 @@
 """Groundwater up into the soil: MODFLOW 6's water to SWAT+'s HRU soil layers (docs/design.md, Groundwater up into the
-soil). Designed Nov 8, 2026; the parts here don't depend on the rule still to be chosen (how much water leaves each
-cell) or on swatplus-bmi 0.7.0 (``soil_layer_water__groundwater_inflow_rate``):
+soil). Built Nov 8-9, 2026 on swatplus-bmi 0.7.0's ``soil_layer_water__groundwater_inflow_rate``. Two rules for how
+much water leaves each cell (``rule = "drain"``, chosen Nov 9, or ``"gwflow"``) and an optional cap (``cap = "none"``,
+chosen, or ``"room"``), both required in a config. The pieces:
 
 - ``cell_shares``: each HRU's share of a cell's mapped ground, which splits a cell's water among the HRUs over it;
 - ``to_layers``: water from each (cell, HRU) row into that HRU's layers below the cell's water table, each in

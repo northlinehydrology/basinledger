@@ -415,14 +415,14 @@ places the transfer.
 
 ```toml
 [groundwater_to_soil]
-rule = "drain"        # or "gwflow"; no default
-cap = "none"          # or "room"; no default
+rule = "drain"        # chosen Nov 9, 2026; or "gwflow". Required, no default
+cap = "none"          # chosen Nov 9, 2026; or "room". Required, no default
 package = "soil"      # a DRN (drain) or WEL (gwflow) package with one entry on each mapped cell
 ```
 
 It needs SWAT+, MODFLOW 6, the HRU map (`[recharge] source = "hru"`) and the two-way `[exchange]`, so SWAT+'s
 aquifers pass recharge through and groundwater is MODFLOW 6's alone. The rule and the cap have no default: they are
-choices with consequences (below), so an example states them.
+choices with consequences (below), so a config states them; the examples use the ones chosen, `drain` and `none`.
 
 - **The water table under each HRU.** The HRU map gives each HRU's ground in each cell. Depth to water is MODFLOW 6's
   top less its head, so the depth and the head come from one model. A layer is below the water table where its
@@ -458,7 +458,11 @@ Tested on Osu_1hru over the small aquifer with its land surface 0.5 m above the 
 - a restart carries what is due, and matches the unbroken run bit for bit;
 - a water table below every profile moves nothing, and the run matches the one without the link bit for bit.
 
-What each choice does (for Andrew):
+What each choice does, and what was chosen. Decided Nov 9, 2026 (Andrew): `rule = "drain"` and `cap = "none"`. The
+examples use them; the config still requires both, and `gwflow` and `room` stay as options. The drain departs from
+SWAT+ gwflow's published rule (Bailey et al. 2020, `docs/prior-art.md`), which takes the whole saturated thickness
+inside the profile each day by specific yield; the drain's conductance is a new parameter [A], calibrated with the
+rest. With no cap, water the profile can't hold runs off at the surface.
 1. **The rule.**
    - `drain`: head-dependent and implicit in MODFLOW 6's solve, so it is stable at a daily step. Its one parameter,
      the conductance, decides how fast the water table is held at the profile's bottom: high, and the cell can't rise

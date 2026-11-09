@@ -6,7 +6,8 @@
   `soil_layer_water__groundwater_inflow_rate`, not yet released): where MODFLOW 6's water table rises into an HRU's
   soil profile, water leaves the cell by a drain at the profile's bottom (`rule = "drain"`) or by SWAT+ gwflow's rule
   (`rule = "gwflow"`), optionally no more than the layers' room (`cap = "room"`), and goes into the HRUs' layers below
-  the water table the next day. The rule and the cap have no default. Booked as `gw_soil:sent`, `due` and
+  the water table the next day. The rule and the cap have no default; the examples use `drain` and `none`, chosen
+  Nov 9, 2026 (the drain departs from gwflow's published rule; its conductance is calibrated [A]). Booked as `gw_soil:sent`, `due` and
   `received`; the whole-basin balance and the capture of pumping count it.
 
 ## 0.3.0 (2026-11-08)
