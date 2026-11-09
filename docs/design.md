@@ -22,6 +22,7 @@ Status (Nov 8, 2026, release 0.3.0). Built and tested on synthetic examples:
 - stream temperature as a reach heat balance, with users' returns carrying their heat;
 - water quality's first stage: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users'
   intake concentrations from the aquifer;
+- weather written into SWAT+'s gage records from a series or a scenario's change (`[weather]`);
 - the ledger, the command line, and the calibration module's structure.
 
 The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. A
@@ -340,10 +341,48 @@ same hours. For SWAT+ examples, NOAA's Analysis of Record for Calibration (AORC)
 chosen for this engine on its own merits, independently of Water Ledger's weather (ERA5).
 
 - SWAT+ gets daily precipitation, minimum and maximum temperature, solar radiation, humidity and wind, aggregated from
-  AORC over each catchment, in SWAT+'s weather files.
+  AORC over each catchment, through `[weather]` (below).
 - Water users get hourly air temperature and relative humidity (from AORC's specific humidity, temperature and
   pressure) at their site, through the `inputs` hook.
 - MODFLOW 6 needs weather only if an example uses its ET or unsaturated zone packages.
+
+**Weather into SWAT+ (built Nov 8, 2026; `[weather]`, `weather.py`).** swatplus-bmi writes a series into a
+gage's daily records ahead of the day SWAT+ reads them (`set_weather`, 0.6), and into a run's files before it starts
+(`project.write_weather`, 0.7, not yet released). The run is then the one a weather file with
+those values would give: SWAT+ makes the mean temperature, PET, heat units and stream temperature's air lag from it,
+as it always does. Basin Ledger's side:
+
+- **Series.** A CSV per variable (precipitation, maximum and minimum temperature, solar radiation, humidity, wind): a
+  date column, then one column per gage, named as the gage's file in the project, in the file's units (mm/day, degC,
+  MJ m-2 day-1, a fraction, m s-1). SWAT+ reads a day's weather before the pause that comes before it, and
+  precipitation a day earlier still, so a run's first day (two for precipitation) can't be set through the BMI.
+  For a fresh run the driver writes those days into the run's copy of the gage files before SWAT+ starts (decided
+  Nov 9, 2026), then sets the rest after it starts, to the run's end, so the run is the series from its first day.
+  It stops the run on a day past the series' end rather than leave SWAT+ on its files (decided Nov 9, 2026: a
+  silent fallback to the files would mix two sources in one run).
+- **Changes** (`[weather.change]`): a factor for precipitation, solar radiation, humidity (capped at 1) and wind, a
+  shift for both temperatures, each one value or 12 monthly values (the delta-change method). A change applies to
+  the series, or to the project's own records where no series is given, so a wetter or warmer case needs no files.
+- **Scenarios.** A case from a saved warm-up keeps the warm-up's records up to its restart and writes its own from
+  the first day it can (`run_case(..., change=...)` editing `cfg.weather`). A case with the warm-up's weather matches
+  the unbroken run bit for bit.
+- **Water users** on a SWAT+ station's weather (`forcing = {source = "swatplus"}`) read the series where it replaced
+  the files, so the campus and SWAT+ see the same days.
+- **Gridded data to gages** (`from_grid`): each gage takes its nearest cell, or the area-weighted mean of the cells
+  nearest the HRUs whose station reads it (`hru_points`, from `hru.con` and `weather-sta.cli`). Fetching ERA5, AORC
+  or a climate model's output belongs in a study; Basin Ledger takes the daily grid.
+
+Limits, all SWAT+'s or swatplus-bmi's:
+- A case from a warm-up takes its own weather from the day after its first (two days after, for precipitation):
+  SWAT+ has read those days, and the saved state holds the warm-up's. The summary gives each variable's first and
+  last day of weather.
+- Only inside each gage file's period (SWAT+ generates the days outside it) and only for daily gages; missing days
+  (-99) in a changed record are refused, since SWAT+ generates them.
+- Gages are per file, not per HRU. A series changes a gage's values, not which gage a station uses, so finer weather
+  needs more gages in the project's files (one per grid cell, say), with stations and HRUs pointing at them. Editing
+  a project's stations isn't built: it is the project builder's job (the hydrofabric builder, or QSWAT+).
+- Not built: weather from a model stepped with the basin (a component setting each day's record a day or two
+  ahead through `set_value`).
 
 ## The MODFLOW 6 coupling
 
@@ -789,6 +828,8 @@ source). All of them start from one warm-up:
   need their period data re-keyed, which isn't built yet. Advanced packages will need their own state saved.
 - **Water users:** a component's state, if any, is saved through `get_state`/`set_state` where the component offers
   them (CSDMS bmi PR #112). `CoolingWaterBmi` keeps no state between hours.
+- **Weather:** SWAT+'s gage records are part of its state, so a case keeps the warm-up's weather up to its restart
+  and writes its own (`[weather]`) from the first day SWAT+ hasn't read.
 - **Driver:** the ledger, the series, the rules' memory and the exchange due are saved with the rest
   (`Basin.save`, `Basin(..., restart=...)`, `--save-at`/`--restart` on the command line). The users are stepped
   forward to the restart day, which reproduces a deterministic component exactly.
