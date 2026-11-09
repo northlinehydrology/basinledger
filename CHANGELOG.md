@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Weather into SWAT+'s gage records (`[weather]`, `weather.py`; swatplus-bmi 0.6's `set_weather`): a series per gage
+  from a CSV per variable (precipitation, temperatures, solar radiation, humidity, wind), and a scenario's change
+  (`[weather.change]`: factors and temperature shifts, one value or 12 monthly) on the series or the project's own
+  records. Written from the first day SWAT+ hasn't read, after a start or a restart, so a case from a warm-up takes
+  its own weather; a series that ends before the run stops it. Water users on a SWAT+ station's weather read the
+  series. `from_grid` maps gridded daily values to gages, by nearest cell or by the cells under each gage's HRUs.
+
 ## 0.3.0 (2026-11-08)
 
 Recharge HRU by HRU. Needs swatplus-bmi 0.6.1, whose `finalize` waits for a branched run's SWAT+ to exit, so its

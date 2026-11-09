@@ -65,6 +65,7 @@ not the basin.
 | rules | yes | | yes (one-way) | | | study |
 | utility chain | yes | yes | yes | | | |
 | restarts | | | yes (bit for bit) | | | |
+| weather into SWAT+'s records | yes (series, changes, grid to gages) | | yes (Osu_1hru: the files' run from their own records, changes read back, cases from a warm-up) | | | |
 | scenarios from a shared warm-up | | | yes (G5) | | | study |
 | stream temperature | yes (energy closes) | | yes (G4) | energy | | study |
 | whole-basin balance | | | yes (G3) | | | study |
