@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-08)
+
+Recharge HRU by HRU. Needs swatplus-bmi 0.6.1, whose `finalize` waits for a branched run's SWAT+ to exit, so its
+summary files, which the whole-basin balance reads, are written before it returns. A SWAT+ built with a
+swatplus-bmi before 0.6 has to be built again (`uv run swatplus-bmi build --jobs 2`): 0.6's exchange protocol is 4.
 
 - Recharge HRU by HRU (`[recharge] source = "hru"`): each HRU's percolation out of its soil profile (swatplus-bmi
   0.6.0's `soil_water__percolation_rate`) on the cells under its ground, in place of one rate per aquifer. Each HRU's

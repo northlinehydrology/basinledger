@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 7, 2026, release 0.2.0). Built and tested on synthetic examples:
+Status (Nov 8, 2026, release 0.3.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -15,6 +15,7 @@ Status (Nov 7, 2026, release 0.2.0). Built and tested on synthetic examples:
 - the one-way and two-way SWAT+–MODFLOW 6 couplings, conserving water across every link (Conservation across links):
   recharge on each aquifer's own area, water from outside as its own account, the exchange limited by what a channel
   carries, drains' seepage to the streams, and the coupling's settings checked at start-up;
+- recharge HRU by HRU, each HRU's percolation on the cells under its ground and held to SWAT+'s own aquifer recharge;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
 - the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
 - scenarios from a shared warm-up, and restarts;
@@ -862,10 +863,13 @@ coupled model:
 - scenarios from one saved warm-up (`scenarios.py`; a study runs its cases in parallel processes), with the warm-up's
   soil check.
 
+Done for 0.3.0 (Nov 8, 2026): recharge HRU by HRU on swatplus-bmi 0.6.0's HRU percolation (Recharge from HRUs), tested
+on Osu_1hru and Ames_sub1 and run on a study's coupled model.
+
 Next:
 
-1. Water quality's stage 2: loads through SWAT+'s streams, on swatplus-bmi 0.5.0 once released (Water quality across
-   links).
+1. Water quality's stage 2: loads through SWAT+'s streams, on swatplus-bmi 0.5.0's species variables (Water quality
+   across links).
 2. Point source loads (asked of swatplus-bmi).
 3. Two-way refinements:
    - SFR for routed streams;
