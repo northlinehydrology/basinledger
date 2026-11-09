@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 (2026-11-09)
+
+Weather from a run's first day, and groundwater up into the soil. Needs swatplus-bmi 0.7.0; a SWAT+ built with an
+earlier swatplus-bmi has to be built again (`uv run swatplus-bmi build --jobs 2`).
+
+- Weather into SWAT+'s gage records (`[weather]`, `weather.py`; swatplus-bmi's `set_weather`, and 0.7.0's
+  `project.write_weather`): a series per gage from a CSV per variable (precipitation, temperatures, solar radiation,
+  humidity, wind), and a scenario's change (`[weather.change]`: factors and temperature shifts, one value or 12
+  monthly) on the series or the project's own records. A fresh run's first day (two for precipitation), which SWAT+
+  reads before it first pauses, is written into the run's copy of the gage files before it starts, and the rest set
+  through the BMI, so the run is the series from its first day; after a restart, the series is set from the first day
+  SWAT+ hasn't read, so a case from a warm-up takes its own weather a day later (two for precipitation). A series that
+  ends before the run stops it, rather than falling back to the files (decided Nov 9, 2026, as was writing the first
+  days). Water users on a SWAT+ station's weather read the series. `from_grid` maps gridded daily values to gages, by
+  nearest cell or by the cells under each gage's HRUs.
+- Groundwater up into the soil (`[groundwater_to_soil]`, `coupling/gwsoil.py`; swatplus-bmi 0.7.0's
+  `soil_layer_water__groundwater_inflow_rate`): where MODFLOW 6's water table rises into an HRU's soil profile, water
+  leaves the cell by a drain at the profile's bottom (`rule = "drain"`) or by SWAT+ gwflow's rule (`rule = "gwflow"`),
+  optionally no more than the layers' room (`cap = "room"`), and goes into the HRUs' layers below the water table the
+  next day. The rule and the cap have no default; the examples use `drain` and `none`, chosen Nov 9, 2026 (the drain
+  departs from gwflow's published rule; its conductance is calibrated [A]). Booked as `gw_soil:sent`, `due` and
+  `received`; the whole-basin balance and the capture of pumping count it.
+
 ## 0.3.0 (2026-11-08)
 
 Recharge HRU by HRU. Needs swatplus-bmi 0.6.1, whose `finalize` waits for a branched run's SWAT+ to exit, so its

@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.3.0).** Built and tested:
+**Status: early (0.4.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -38,12 +38,18 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
   ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river and
   drain packages;
+- groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
+  profile's bottom (chosen) or SWAT+ gwflow's rule, with or without a cap at the layers' room (none chosen;
+  swatplus-bmi 0.7.0);
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
 - the whole-basin balance, the capture of pumping (from storage, the streams and the boundary), and depletion against
   Glover and Balmer (1954);
 - scenarios from a shared warm-up, and restarts from a saved day that match unbroken runs bit for bit;
+- weather written into SWAT+'s gage records from a run's first day (swatplus-bmi 0.7.0): a
+  series per gage from a CSV, gridded data mapped to gages, and a scenario's change (wetter, drier, warmer; monthly
+  factors and shifts);
 - stream temperature as a reach heat balance, with groundwater inflow and users' returns at their own temperatures;
 - groundwater transport (MODFLOW 6 GWT): each species' mass in the ledger every day, and a user's intake
   concentration from the aquifer at its well;
@@ -221,6 +227,27 @@ user = "plant"
 cell = [0, 20, 28]
 head_min = 88.3
 limit = 0.002
+
+[weather]                      # optional: series written into SWAT+'s gage records, a CSV per variable
+precipitation = "weather/pcp.csv"
+change = {temperature = 2.0}   # a scenario's change, on the series or the project's own records
+
+[groundwater_to_soil]          # optional: MODFLOW 6's water up into SWAT+'s soil layers (needs [recharge] source =
+rule = "drain"                 #   "hru" and [exchange]); rule ("drain" or "gwflow") and cap ("none" or "room") have
+cap = "none"                   #   no default
+package = "soil"               # a DRN package with one entry on each mapped cell
+```
+
+A scenario changes the weather from a shared warm-up:
+
+```python
+from basinledger import config as C
+from basinledger.scenarios import run_case, warm_up
+
+cfg = C.load("examples/synthetic/basin.toml")
+state = warm_up(cfg, 365)
+dry = run_case(cfg, state, "dry", change=lambda c: setattr(c, "weather", {"change": {"precipitation": 0.8}}))
+dry.finalize()
 ```
 
 ![Drawdown in the synthetic example](https://raw.githubusercontent.com/northlinehydrology/basinledger/main/docs/figures/synthetic-drawdown.png)
@@ -260,6 +287,8 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Capture | a well's pumping equals the extra release from storage, the water the streams lose and the extra boundary inflow, every day |
 | Depletion | MODFLOW 6 through the coupling within 2% of Glover and Balmer (1954) for a well beside a straight river |
 | Stream temperature | each reach's heat balance closes; a return mixes at its own temperature |
+| Weather | a series equal to the files' records gives the files' run bit for bit; a run's first days are written into its files, other columns kept; a change reaches SWAT+'s records from the run's first day; a case from a warm-up takes its own weather from the first day that can be set; users read the series; a series that ends early stops the run |
+| Groundwater into the soil | for each rule and cap, what leaves MODFLOW 6's cells is what SWAT+'s layers receive the next day; the whole basin closes; a restart carries what is due; a water table below every profile changes nothing, bit for bit |
 | Restarts and scenarios | saved after a warm-up and carried on, runs match unbroken runs bit for bit; a case with no change matches the baseline |
 | Start-up warnings | soils that start empty, and a warm-up whose soils haven't settled, are warned of, not stopped |
 | Command line, calibration | outputs and status written; statistics on known values; the forward model writes simulated values at observations |

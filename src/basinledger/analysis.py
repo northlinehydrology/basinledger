@@ -49,13 +49,15 @@ def groundwater_terms(t: dict) -> dict[str, np.ndarray]:
         "storage_release": _sum(t, "groundwater:storage_release"),
         "to_streams": _sum(t, "exchange:", ":to_stream"),
         "pumping": _sum(t, "route:well:", ":delivered"),
+        "to_soil": _sum(t, "gw_soil:sent"),
     }
 
 
 def capture(base: dict, case: dict) -> dict:
     """Where a case's extra pumping came from, against a baseline over the same days. Returns daily arrays (m3) and
     totals: ``pumping`` (extra), ``from_storage``, ``from_streams`` (less discharge and more leakage),
-    ``from_boundary``, ``from_recharge`` and ``residual`` (pumping less the rest), and each part's share."""
+    ``from_boundary``, ``from_recharge``, ``from_soil`` (less water up into the soil, where the water table rises
+    into it) and ``residual`` (pumping less the rest), and each part's share."""
     b, c = groundwater_terms(base), groundwater_terms(case)
     if len(b["pumping"]) != len(c["pumping"]):
         raise ValueError("the runs cover different days")
@@ -65,6 +67,7 @@ def capture(base: dict, case: dict) -> dict:
         "from_streams": b["to_streams"] - c["to_streams"],
         "from_boundary": c["boundary"] - b["boundary"],
         "from_recharge": c["recharge"] - b["recharge"],
+        "from_soil": b["to_soil"] - c["to_soil"],
     }
     parts["residual"] = parts["pumping"] - sum(v for k, v in parts.items() if k.startswith("from_"))
     total = {k: float(np.sum(v)) for k, v in parts.items()}

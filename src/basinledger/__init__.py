@@ -4,4 +4,4 @@ SWAT+ (through swatplus-bmi), MODFLOW 6 (through libmf6 and modflowapi) and wate
 waterledger-models) are stepped one day at a time by one Python driver, on NextGen geography. See docs/design.md.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

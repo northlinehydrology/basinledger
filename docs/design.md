@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 8, 2026, release 0.3.0). Built and tested on synthetic examples:
+Status (Nov 9, 2026, release 0.4.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -16,12 +16,16 @@ Status (Nov 8, 2026, release 0.3.0). Built and tested on synthetic examples:
   recharge on each aquifer's own area, water from outside as its own account, the exchange limited by what a channel
   carries, drains' seepage to the streams, and the coupling's settings checked at start-up;
 - recharge HRU by HRU, each HRU's percolation on the cells under its ground and held to SWAT+'s own aquifer recharge;
+- groundwater up into the soil where the water table rises into it, by a drain at the profile's bottom or SWAT+
+  gwflow's rule (swatplus-bmi 0.7.0; the drain chosen);
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
 - the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
 - scenarios from a shared warm-up, and restarts;
 - stream temperature as a reach heat balance, with users' returns carrying their heat;
 - water quality's first stage: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users'
   intake concentrations from the aquifer;
+- weather written into SWAT+'s gage records from a run's first day, from a series or a scenario's change
+  (`[weather]`, swatplus-bmi 0.7.0);
 - the ledger, the command line, and the calibration module's structure.
 
 The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. A
@@ -340,10 +344,48 @@ same hours. For SWAT+ examples, NOAA's Analysis of Record for Calibration (AORC)
 chosen for this engine on its own merits, independently of Water Ledger's weather (ERA5).
 
 - SWAT+ gets daily precipitation, minimum and maximum temperature, solar radiation, humidity and wind, aggregated from
-  AORC over each catchment, in SWAT+'s weather files.
+  AORC over each catchment, through `[weather]` (below).
 - Water users get hourly air temperature and relative humidity (from AORC's specific humidity, temperature and
   pressure) at their site, through the `inputs` hook.
 - MODFLOW 6 needs weather only if an example uses its ET or unsaturated zone packages.
+
+**Weather into SWAT+ (built Nov 8, 2026; `[weather]`, `weather.py`).** swatplus-bmi writes a series into a
+gage's daily records ahead of the day SWAT+ reads them (`set_weather`, 0.6), and into a run's files before it starts
+(`project.write_weather`, 0.7.0). The run is then the one a weather file with
+those values would give: SWAT+ makes the mean temperature, PET, heat units and stream temperature's air lag from it,
+as it always does. Basin Ledger's side:
+
+- **Series.** A CSV per variable (precipitation, maximum and minimum temperature, solar radiation, humidity, wind): a
+  date column, then one column per gage, named as the gage's file in the project, in the file's units (mm/day, degC,
+  MJ m-2 day-1, a fraction, m s-1). SWAT+ reads a day's weather before the pause that comes before it, and
+  precipitation a day earlier still, so a run's first day (two for precipitation) can't be set through the BMI.
+  For a fresh run the driver writes those days into the run's copy of the gage files before SWAT+ starts (decided
+  Nov 9, 2026), then sets the rest after it starts, to the run's end, so the run is the series from its first day.
+  It stops the run on a day past the series' end rather than leave SWAT+ on its files (decided Nov 9, 2026: a
+  silent fallback to the files would mix two sources in one run).
+- **Changes** (`[weather.change]`): a factor for precipitation, solar radiation, humidity (capped at 1) and wind, a
+  shift for both temperatures, each one value or 12 monthly values (the delta-change method). A change applies to
+  the series, or to the project's own records where no series is given, so a wetter or warmer case needs no files.
+- **Scenarios.** A case from a saved warm-up keeps the warm-up's records up to its restart and writes its own from
+  the first day it can (`run_case(..., change=...)` editing `cfg.weather`). A case with the warm-up's weather matches
+  the unbroken run bit for bit.
+- **Water users** on a SWAT+ station's weather (`forcing = {source = "swatplus"}`) read the series where it replaced
+  the files, so the campus and SWAT+ see the same days.
+- **Gridded data to gages** (`from_grid`): each gage takes its nearest cell, or the area-weighted mean of the cells
+  nearest the HRUs whose station reads it (`hru_points`, from `hru.con` and `weather-sta.cli`). Fetching ERA5, AORC
+  or a climate model's output belongs in a study; Basin Ledger takes the daily grid.
+
+Limits, all SWAT+'s or swatplus-bmi's:
+- A case from a warm-up takes its own weather from the day after its first (two days after, for precipitation):
+  SWAT+ has read those days, and the saved state holds the warm-up's. The summary gives each variable's first and
+  last day of weather.
+- Only inside each gage file's period (SWAT+ generates the days outside it) and only for daily gages; missing days
+  (-99) in a changed record are refused, since SWAT+ generates them.
+- Gages are per file, not per HRU. A series changes a gage's values, not which gage a station uses, so finer weather
+  needs more gages in the project's files (one per grid cell, say), with stations and HRUs pointing at them. Editing
+  a project's stations isn't built: it is the project builder's job (the hydrofabric builder, or QSWAT+).
+- Not built: weather from a model stepped with the basin (a component setting each day's record a day or two
+  ahead through `set_value`).
 
 ## The MODFLOW 6 coupling
 
@@ -394,7 +436,94 @@ profile, the day just done.
   has nothing to hold it to.
 - **What it changes.** Where the water lands within a catchment, not how much.
 - **Not built:** an unsaturated zone between the soil profile and the water table (MODFLOW 6's UZF); SWAT+ 62.0.1
-  has none either, with its delay commented out.
+  has none either, with its delay commented out. Water back up from the water table into the soil is below.
+
+**Groundwater up into the soil (built Nov 8–9, 2026, on swatplus-bmi 0.7.0;
+`[groundwater_to_soil]`, `coupling/gwsoil.py`).** Recharge HRU by HRU sends water down. Where MODFLOW 6's water table
+rises into an HRU's soil profile (wetlands, low ground beside streams, outwash with a shallow water table), water
+should also come back up, so the soil and its plants can use it and a saturated profile sheds it as runoff. On
+glacial-drift basins this is likely the larger effect: a shallow water table supplies wetland ET through the summer,
+and one-way recharge can't represent it.
+
+swatplus-bmi's `gw-soil` branch adds `soil_layer_water__groundwater_inflow_rate`: per HRU soil layer, m s-1 over the
+HRU's area, set for the next day, at least zero, and refused in a project that runs SWAT+'s own gwflow. SWAT+ adds it
+to the layers where gwflow puts its own (`gwflow_soil`, before the day's infiltration and percolation) and counts it
+in `gwsoilq` (`hru_wb`, `basin_wb`). Then SWAT+ moves it as any soil water: to the plants, out as lateral flow, down
+as percolation, or to the surface where the profile can't hold it. Read back after the day, it is what went in. The
+same branch reads each layer as SWAT+ keeps it (bottom depth, water, saturation, field capacity), which sizes and
+places the transfer.
+
+```toml
+[groundwater_to_soil]
+rule = "drain"        # chosen Nov 9, 2026; or "gwflow". Required, no default
+cap = "none"          # chosen Nov 9, 2026; or "room". Required, no default
+package = "soil"      # a DRN (drain) or WEL (gwflow) package with one entry on each mapped cell
+```
+
+It needs SWAT+, MODFLOW 6, the HRU map (`[recharge] source = "hru"`) and the two-way `[exchange]`, so SWAT+'s
+aquifers pass recharge through and groundwater is MODFLOW 6's alone. The rule and the cap have no default: they are
+choices with consequences (below), so a config states them; the examples use the ones chosen, `drain` and `none`.
+
+- **The water table under each HRU.** The HRU map gives each HRU's ground in each cell. Depth to water is MODFLOW 6's
+  top less its head, so the depth and the head come from one model. A layer is below the water table where its
+  bottom is deeper than that.
+- **How much leaves a cell** (`rule`):
+  - `drain`: a drain at the bottom of the soil profile under the cell (MODFLOW 6's top less the profile depths of the
+    HRUs over it, by their shares of the cell), at the conductance in the package's input [A]. MODFLOW 6 computes the
+    outflow inside its solve, at the heads as they converge, and books it in its budget.
+  - `gwflow`: SWAT+ gwflow's rule. Each day, specific yield × the water table's height above each HRU's profile
+    bottom × that HRU's ground in the cell, at the day's starting heads, taken by a well.
+- **The cap** (`cap = "room"`): no cell gives more than the room left (saturation less water, as SWAT+ had it at the
+  end of its day) in its HRUs' layers below the water table. For `gwflow` the well's rate is cut. For `drain` the
+  drain's elevation is raised before the solve so its outflow at the day's starting heads fits. A head that rises
+  during the day takes a little more, which SWAT+ sends to the surface. Raising the elevation between MODFLOW 6's
+  outer iterations, as the exchange's supply limit moves stages, was tried first: the elevations crept by fractions
+  of a millimetre each iteration, MODFLOW 6 stopped converging, and on some runs it aborted.
+- **Into the layers.** What left a cell is split among the HRUs over it by their ground, and each HRU's part among
+  its layers below the cell's water table by their thickness below it (gwflow's split). Water from a cell whose
+  water table is below one HRU's profile (the drain sits at the cells' share-weighted profile bottom) goes to that
+  HRU's bottom layer, and the ledger says how much (`gw_soil:to_bottom_layer`). The next day it goes to SWAT+.
+- **Ledger.** `gw_soil:sent` (out of MODFLOW 6 today, the soil package's budget), `gw_soil:due` (into SWAT+ the next
+  day, the same water) and `gw_soil:received` (what SWAT+ reports went in), with `due` = `received` checked every
+  day to SWAT+'s 4-byte reals. The last day's water is in transit (`in_transit_gw_soil` in the summary) and is saved
+  with a state, so a restart carries it. The soil package is a coupled link, not a boundary. The whole-basin balance
+  counts it on both sides: out of MODFLOW 6, and into SWAT+'s land budget as `gwsoilq`. Capture
+  (`analysis.capture`) has a `from_soil` part: pumping can draw the water table out of the soil.
+
+Tested on Osu_1hru over the small aquifer with its land surface 0.5 m above the starting water table (the profile is
+0.75 m), for a year, with each rule and each cap:
+- what leaves the cells, by MODFLOW 6's budget, is what SWAT+'s layers receive the next day;
+- the whole basin closes, and SWAT+'s printed `gwsoilq` matches what was received;
+- the cap holds water back under both rules;
+- a restart carries what is due, and matches the unbroken run bit for bit;
+- a water table below every profile moves nothing, and the run matches the one without the link bit for bit.
+
+What each choice does, and what was chosen. Decided Nov 9, 2026 (Andrew): `rule = "drain"` and `cap = "none"`. The
+examples use them; the config still requires both, and `gwflow` and `room` stay as options. The drain departs from
+SWAT+ gwflow's published rule (Bailey et al. 2020, `docs/prior-art.md`), which takes the whole saturated thickness
+inside the profile each day by specific yield; the drain's conductance is a new parameter [A], calibrated with the
+rest. With no cap, water the profile can't hold runs off at the surface.
+1. **The rule.**
+   - `drain`: head-dependent and implicit in MODFLOW 6's solve, so it is stable at a daily step. Its one parameter,
+     the conductance, decides how fast the water table is held at the profile's bottom: high, and the cell can't rise
+     above it; low, and water stays in MODFLOW 6 and reaches the streams instead. It is calibrated with the rest
+     [A]. On the test, a year moved 71,300 m3 from 10 ha at a conductance of 10 m2 d-1 per cell.
+   - `gwflow`: no new parameter, and what SWAT+ users know. It is explicit, though: it takes the whole saturated
+     thickness inside the profile every day, at the day's starting heads, so a cell's head can swing between days.
+     On the test it moved 89,300 m3, and its first day took 3,750 m3, the storage above the profile's bottom
+     that had built up before the link.
+2. **The cap.** `none` lets SWAT+ decide: what the profile can't hold runs off at the surface (saturation-excess
+   runoff, the process at seeps and wetlands). `room` leaves that water in MODFLOW 6, where it reaches the streams as
+   base flow, later. Both close the balance; they differ in timing and path. On the test the cap cut a year's water
+   by about a quarter (drain) and four tenths (gwflow).
+3. **Lag.** The water reaches SWAT+ the next day, as the stream exchange's does. Same-day would need SWAT+ to run
+   after MODFLOW 6, which the day's order (SWAT+ first, its recharge into MODFLOW 6) doesn't allow.
+4. **Cycling.** Water that comes up and percolates back down returns to MODFLOW 6 as recharge the same day (SWAT+
+   adds it before percolation). The ledger shows both directions, gross: net changes the heads, gross is what a
+   wetland's ET draws on.
+
+Not built: a check at start-up that the flow model has no EVT or UZF package (SWAT+'s soil now takes ET from
+groundwater, and a second ET would count it twice); an example should leave them out.
 
 **Two-way: stream-aquifer exchange (built with RIV; `coupling/exchange.py`, `examples/synthetic/two_way.toml`).**
 MODFLOW 6 computes the exchange between streams and the aquifer (RIV now, SFR for routed streams later), and that
@@ -789,6 +918,8 @@ source). All of them start from one warm-up:
   need their period data re-keyed, which isn't built yet. Advanced packages will need their own state saved.
 - **Water users:** a component's state, if any, is saved through `get_state`/`set_state` where the component offers
   them (CSDMS bmi PR #112). `CoolingWaterBmi` keeps no state between hours.
+- **Weather:** SWAT+'s gage records are part of its state, so a case keeps the warm-up's weather up to its restart
+  and writes its own (`[weather]`) from the first day SWAT+ hasn't read.
 - **Driver:** the ledger, the series, the rules' memory and the exchange due are saved with the rest
   (`Basin.save`, `Basin(..., restart=...)`, `--save-at`/`--restart` on the command line). The users are stepped
   forward to the restart day, which reproduces a deterministic component exactly.
@@ -865,6 +996,10 @@ coupled model:
 
 Done for 0.3.0 (Nov 8, 2026): recharge HRU by HRU on swatplus-bmi 0.6.0's HRU percolation (Recharge from HRUs), tested
 on Osu_1hru and Ames_sub1 and run on a study's coupled model.
+
+Done for 0.4.0 (Nov 9, 2026), on swatplus-bmi 0.7.0: weather into SWAT+'s gage records from a run's first day (Weather
+into SWAT+), and groundwater up into the soil, with the drain and no cap chosen (Groundwater up into the soil). Not
+built: the start-up check refusing EVT or UZF alongside groundwater into the soil.
 
 Next:
 
