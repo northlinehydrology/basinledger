@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 8, 2026, release 0.3.0). Built and tested on synthetic examples:
+Status (Nov 9, 2026, release 0.4.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -17,14 +17,15 @@ Status (Nov 8, 2026, release 0.3.0). Built and tested on synthetic examples:
   carries, drains' seepage to the streams, and the coupling's settings checked at start-up;
 - recharge HRU by HRU, each HRU's percolation on the cells under its ground and held to SWAT+'s own aquifer recharge;
 - groundwater up into the soil where the water table rises into it, by a drain at the profile's bottom or SWAT+
-  gwflow's rule (on swatplus-bmi's unreleased 0.7.0);
+  gwflow's rule (swatplus-bmi 0.7.0; the drain chosen);
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
 - the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
 - scenarios from a shared warm-up, and restarts;
 - stream temperature as a reach heat balance, with users' returns carrying their heat;
 - water quality's first stage: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users'
   intake concentrations from the aquifer;
-- weather written into SWAT+'s gage records from a series or a scenario's change (`[weather]`);
+- weather written into SWAT+'s gage records from a run's first day, from a series or a scenario's change
+  (`[weather]`, swatplus-bmi 0.7.0);
 - the ledger, the command line, and the calibration module's structure.
 
 The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. A
@@ -350,7 +351,7 @@ chosen for this engine on its own merits, independently of Water Ledger's weathe
 
 **Weather into SWAT+ (built Nov 8, 2026; `[weather]`, `weather.py`).** swatplus-bmi writes a series into a
 gage's daily records ahead of the day SWAT+ reads them (`set_weather`, 0.6), and into a run's files before it starts
-(`project.write_weather`, 0.7, not yet released). The run is then the one a weather file with
+(`project.write_weather`, 0.7.0). The run is then the one a weather file with
 those values would give: SWAT+ makes the mean temperature, PET, heat units and stream temperature's air lag from it,
 as it always does. Basin Ledger's side:
 
@@ -437,7 +438,7 @@ profile, the day just done.
 - **Not built:** an unsaturated zone between the soil profile and the water table (MODFLOW 6's UZF); SWAT+ 62.0.1
   has none either, with its delay commented out. Water back up from the water table into the soil is below.
 
-**Groundwater up into the soil (built Nov 8–9, 2026, on swatplus-bmi's unreleased `gw-soil` branch, to be 0.7.0;
+**Groundwater up into the soil (built Nov 8–9, 2026, on swatplus-bmi 0.7.0;
 `[groundwater_to_soil]`, `coupling/gwsoil.py`).** Recharge HRU by HRU sends water down. Where MODFLOW 6's water table
 rises into an HRU's soil profile (wetlands, low ground beside streams, outwash with a shallow water table), water
 should also come back up, so the soil and its plants can use it and a saturated profile sheds it as runoff. On
@@ -995,6 +996,10 @@ coupled model:
 
 Done for 0.3.0 (Nov 8, 2026): recharge HRU by HRU on swatplus-bmi 0.6.0's HRU percolation (Recharge from HRUs), tested
 on Osu_1hru and Ames_sub1 and run on a study's coupled model.
+
+Done for 0.4.0 (Nov 9, 2026), on swatplus-bmi 0.7.0: weather into SWAT+'s gage records from a run's first day (Weather
+into SWAT+), and groundwater up into the soil, with the drain and no cap chosen (Groundwater up into the soil). Not
+built: the start-up check refusing EVT or UZF alongside groundwater into the soil.
 
 Next:
 

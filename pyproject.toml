@@ -1,6 +1,6 @@
 [project]
 name = "basinledger"
-version = "0.3.0"
+version = "0.4.0"
 description = "A basin's water balanced day by day across coupled models (SWAT+, NextGen, MODFLOW 6 and water users) through BMI"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ dependencies = [
     "bmipy>=2.0",
     "flopy>=3.9",
     "modflowapi>=0.2",
-    "swatplus-bmi>=0.6.1",
+    "swatplus-bmi>=0.7.0",
 ]
 keywords = ["hydrology", "groundwater", "SWAT+", "MODFLOW 6", "NextGen", "BMI", "model coupling", "water use"]
 classifiers = [

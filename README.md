@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.3.0).** Built and tested:
+**Status: early (0.4.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -39,15 +39,15 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river and
   drain packages;
 - groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
-  profile's bottom (chosen) or SWAT+ gwflow's rule, with or without a cap at the layers' room (none chosen; needs
-  swatplus-bmi 0.7.0, not yet released);
+  profile's bottom (chosen) or SWAT+ gwflow's rule, with or without a cap at the layers' room (none chosen;
+  swatplus-bmi 0.7.0);
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
 - the whole-basin balance, the capture of pumping (from storage, the streams and the boundary), and depletion against
   Glover and Balmer (1954);
 - scenarios from a shared warm-up, and restarts from a saved day that match unbroken runs bit for bit;
-- weather written into SWAT+'s gage records from a run's first day (needs swatplus-bmi 0.7, not yet released): a
+- weather written into SWAT+'s gage records from a run's first day (swatplus-bmi 0.7.0): a
   series per gage from a CSV, gridded data mapped to gages, and a scenario's change (wetter, drier, warmer; monthly
   factors and shifts);
 - stream temperature as a reach heat balance, with groundwater inflow and users' returns at their own temperatures;
@@ -231,6 +231,11 @@ limit = 0.002
 [weather]                      # optional: series written into SWAT+'s gage records, a CSV per variable
 precipitation = "weather/pcp.csv"
 change = {temperature = 2.0}   # a scenario's change, on the series or the project's own records
+
+[groundwater_to_soil]          # optional: MODFLOW 6's water up into SWAT+'s soil layers (needs [recharge] source =
+rule = "drain"                 #   "hru" and [exchange]); rule ("drain" or "gwflow") and cap ("none" or "room") have
+cap = "none"                   #   no default
+package = "soil"               # a DRN package with one entry on each mapped cell
 ```
 
 A scenario changes the weather from a shared warm-up:

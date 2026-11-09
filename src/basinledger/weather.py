@@ -1,4 +1,5 @@
-"""Weather written into SWAT+'s gage records (``[weather]``; swatplus-bmi 0.6's ``set_weather``).
+"""Weather written into SWAT+'s gage records (``[weather]``; swatplus-bmi's ``set_weather``, and 0.7's
+``project.write_weather`` for a run's first days).
 
 A series replaces a gage's daily records from the first day SWAT+ hasn't read, so the run is the one a weather file
 with those values would give: SWAT+ makes the mean temperature, PET, heat units and the rest from it, as it always
