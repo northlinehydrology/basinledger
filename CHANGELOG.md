@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-10)
+
+MODFLOW 6 vertex grids. Needs swatplus-bmi 0.7.0, as 0.4.0 did.
 
 - MODFLOW 6 vertex grids (DISV): maps (`object, layer, icell2d, ...`), wells, head outputs and drawdown rules
   (`[layer, icell2d]`) name a vertex grid's cells, next to a structured grid's `layer, row, col`; existing configs are

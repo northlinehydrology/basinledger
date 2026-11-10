@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 9, 2026, release 0.4.0). Built and tested on synthetic examples:
+Status (Nov 10, 2026, release 0.5.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -27,7 +27,7 @@ Status (Nov 9, 2026, release 0.4.0). Built and tested on synthetic examples:
 - weather written into SWAT+'s gage records from a run's first day, from a series or a scenario's change
   (`[weather]`, swatplus-bmi 0.7.0);
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site), with maps,
-  wells, head outputs and rules naming cells in the grid's own form (unreleased, Nov 10, 2026);
+  wells, head outputs and rules naming cells in the grid's own form;
 - the ledger, the command line, and the calibration module's structure.
 
 The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. A
@@ -1023,7 +1023,7 @@ Done for 0.4.0 (Nov 9, 2026), on swatplus-bmi 0.7.0: weather into SWAT+'s gage r
 into SWAT+), and groundwater up into the soil, with the drain and no cap chosen (Groundwater up into the soil). Not
 built: the start-up check refusing EVT or UZF alongside groundwater into the soil.
 
-Done since 0.4.0 (Nov 10, 2026, unreleased): MODFLOW 6 vertex grids (DISV), cells as layer, icell2d throughout (Cells,
+Done for 0.5.0 (Nov 10, 2026): MODFLOW 6 vertex grids (DISV), cells as layer, icell2d throughout (Cells,
 under NextGen geography), for a study's quadtree grid refined around its site.
 
 Next:
