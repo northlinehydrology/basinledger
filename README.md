@@ -323,9 +323,7 @@ swatplus-bmi ([doi:10.5281/zenodo.23963201](https://doi.org/10.5281/zenodo.23963
 ## AI use
 
 Basin Ledger was designed and directed by Andrew Sommerlot and built with an AI coding assistant (Claude, by
-Anthropic), which wrote most of the code, tests and documentation under his direction and review. Whether it is right
-rests on the tests: each model's own budget closes, and every transfer is checked against what the other model
-received.
+Anthropic), which wrote most of the code, tests and documentation under his direction and review.
 
 ## Contact
 
