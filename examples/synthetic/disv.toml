@@ -1,0 +1,50 @@
+name = "synthetic-disv"
+description = """The two-way example (two_way.toml) on a vertex grid: Osu_1hru over the same 10 ha aquifer as a DISV grid
+of 79 m cells refined to 40 m east of center, where the well is (model.py, build_small_disv). The maps, the well, the
+head output and a drawdown rule name cells as layer, icell2d, and chloride is carried as in transport.toml. For the
+engine's tests only: the numbers are round, not data."""
+
+[run]
+folder = "../../runs/synthetic-disv"
+
+[swatplus]
+project = "{swatplus_refdata}/Osu_1hru"
+
+[modflow6]
+builder = "model:build_small_disv"
+# chloride as in transport.toml: porosity 0.25 [A], longitudinal dispersivity 5 m [A], starting at 0.01 kg m-3 [A]
+builder_args = {transport = {chloride = {porosity = 0.25, dispersivity = 5.0, strt = 0.01}}}
+
+[recharge]
+map = "maps/disv_recharge.csv"   # object, layer, icell2d, area_m2 (model.py, write_small_disv_maps)
+area_rtol = 1e-6                 # the grid is exactly Osu_1hru's 10 ha aquifer
+
+[exchange]
+package = "riv"
+map = "maps/disv_river.csv"      # object, layer, icell2d: the west edge's cells to the channel
+
+[transport.chloride]
+recharge = 0.03           # kg m-3 [A]
+stream = 0.02             # kg m-3 [A]
+
+[[wells]]
+name = "pw1"
+cell = [0, 8]                    # layer, icell2d: a 40 m cell of the refined block
+
+[[users]]
+name = "plant"
+component = "basinledger.testing:SyntheticUser"
+config = "small_user.toml"
+withdrawal = "well:pw1"
+return = "outfall:offsite"
+
+[[rules]]
+name = "plant well limit"
+kind = "drawdown_limit"
+user = "plant"
+cell = [0, 8]
+head_min = 87.9           # m
+limit = 0.0002            # m3 s-1
+
+[outputs]
+heads = [{name = "pw1", cell = [0, 8]}]

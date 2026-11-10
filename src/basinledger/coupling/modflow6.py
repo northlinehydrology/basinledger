@@ -14,6 +14,11 @@ BOUND, as in older API examples, is overwritten before the solve.
 After a solve, ``simvals(package)`` gives each entry's simulated flow (m3 d-1, positive into the aquifer), which is what
 the ledger checks against what was sent.
 
+**Cells.** A structured grid (DIS) names a cell by ``(layer, row, col)``, a vertex grid (DISV, such as a quadtree
+refined around a site) by ``(layer, icell2d)``, all 0-based as flopy numbers them; ``node`` turns either into the
+reduced node, and a cell in the other grid's form is refused. An unstructured grid (DISU) has no layers in its cell
+numbers, so maps on it give reduced nodes (the ``node`` column) and its wells and heads aren't supported yet.
+
 The model must use meters and days, with one-day time steps. libmf6 holds one model per process; runs can follow one
 another in a process (finalize, then a new Modflow6), but not overlap.
 
@@ -34,6 +39,8 @@ import numpy as np
 from modflowapi import ModflowApi
 
 LIBNAME = {"darwin": "libmf6.dylib", "win32": "libmf6.dll"}.get(sys.platform, "libmf6.so")
+GRIDS = {3: "dis", 2: "disv", 1: "disu"}  # by the length of the discretization's shape (MSHAPE)
+CELL_FORM = {"dis": "layer, row, col", "disv": "layer, icell2d", "disu": "reduced nodes (give node)"}
 
 
 def find_library(path: str | None = None) -> Path:
@@ -59,7 +66,8 @@ class Modflow6:
         self.cell_area = self.get("AREA", self.model, "DIS").astype(float)
         self.nodes = len(self.cell_area)
         shape = self.get("MSHAPE", self.model, "DIS")
-        self.shape = tuple(int(s) for s in shape)  # (nlay, nrow, ncol) for DIS
+        self.shape = tuple(int(s) for s in shape)  # (nlay, nrow, ncol) for DIS, (nlay, ncpl) for DISV, (nodes,) DISU
+        self.grid = GRIDS[len(self.shape)]
         reduced = self._try("NODEREDUCED", self.model, "DIS")
         # NODEREDUCED is only allocated (to the user node count) when IDOMAIN removes cells
         nuser = int(np.prod(self.shape))
@@ -83,15 +91,21 @@ class Modflow6:
         self.api.set_value(self.address(var, self.model, package.upper()), values)
 
     # ---------- cells ----------
-    def node(self, layer: int, row: int, col: int) -> int:
-        """0-based (layer, row, col) of a DIS grid -> 0-based reduced node."""
-        nlay, nrow, ncol = self.shape
-        user = layer * nrow * ncol + row * ncol + col
+    def node(self, *cell: int) -> int:
+        """0-based ``(layer, row, col)`` of a DIS grid or ``(layer, icell2d)`` of a DISV grid -> 0-based reduced
+        node. A cell in the other grid's form, outside the grid or inactive is refused."""
+        cell = tuple(int(c) for c in cell)
+        if self.grid == "disu" or len(cell) != len(self.shape):
+            raise ValueError(f"cell {cell}: this model's grid is {self.grid.upper()}, whose cells are "
+                             f"{CELL_FORM[self.grid]}")
+        if any(c < 0 or c >= n for c, n in zip(cell, self.shape)):
+            raise ValueError(f"cell {cell} is outside the grid ({self.grid.upper()} {self.shape})")
+        user = int(np.ravel_multi_index(cell, self.shape))
         if self._reduced is None:
             return user
         n = int(self._reduced[user])
         if n <= 0:
-            raise ValueError(f"cell {(layer, row, col)} is inactive")
+            raise ValueError(f"cell {cell} is inactive")
         return n - 1
 
     def package_nodes(self, package: str) -> np.ndarray:

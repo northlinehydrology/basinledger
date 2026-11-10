@@ -46,11 +46,13 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     [[wells]]
     name = "pw1"
     package = "wel"
-    cell = [0, 20, 30]                  # layer, row, col (0-based)
+    cell = [0, 20, 30]                  # layer, row, col (0-based) on a structured grid (DIS); layer, icell2d on a
+                                        #   vertex grid (DISV), e.g. [0, 412]
 
     [exchange]                          # optional: two-way stream-aquifer exchange (MODFLOW 6 RIV <-> SWAT+)
     package = "riv"
-    map = "all:cha01"                   # every RIV entry to one channel, or a CSV: object, layer, row, col
+    map = "all:cha01"                   # every RIV entry to one channel, or a CSV: object, layer, row, col (or
+                                        #   object, layer, icell2d on a DISV grid, or object, node; mapping.py)
     limit = true                        # a losing reach takes no more than its channel carries (default)
     drains = {package = "drn", map = "maps/drains.csv"}   # optional: seepage cells, to their channels the next day
 
@@ -61,7 +63,7 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
 
     [rivers]                            # optional: MODFLOW 6 river cells by flowpath, for stage and base flow out
     package = "riv"
-    map = "maps/river_cells.csv"        # object (flowpath or channel), layer, row, col
+    map = "maps/river_cells.csv"        # object (flowpath or channel), layer, row, col (or layer, icell2d)
     stage = "nextgen_depth"             # or "fixed": the stage in MODFLOW 6's input
     bed_thickness = 1.0                 # m [A]: stage = RBOT + bed thickness + the day's depth
 
@@ -147,7 +149,17 @@ class UserConfig:
 class WellConfig:
     name: str
     package: str
-    cell: tuple[int, int, int]
+    cell: tuple[int, ...]   # (layer, row, col) on a DIS grid, (layer, icell2d) on a DISV grid
+
+
+def _cell(path: Path, where: str, cell) -> tuple[int, ...]:
+    """A cell as configured: 0-based layer, row, col (DIS) or layer, icell2d (DISV). Which one the model's grid takes
+    is checked when MODFLOW 6 starts (``Modflow6.node``)."""
+    if not isinstance(cell, (list, tuple)) or len(cell) not in (2, 3) or \
+            not all(isinstance(c, int) and not isinstance(c, bool) for c in cell):
+        raise ValueError(f"{path}: {where} cell must be [layer, row, col] (DIS) or [layer, icell2d] (DISV), "
+                         f"0-based integers; got {cell!r}")
+    return tuple(cell)
 
 
 @dataclass
@@ -271,6 +283,11 @@ def load(path: str | Path) -> ExampleConfig:
             raise ValueError(f"{path}: [transport.{sp}] stream needs the two-way [exchange]")
         if "exchange" in c and "stream" not in t:
             raise ValueError(f"{path}: [transport.{sp}] needs stream (kg m-3): the coupled rivers' losses carry it")
+    for h in c.get("outputs", {}).get("heads", []):
+        _cell(path, f"[outputs] heads {h.get('name')!r}", h.get("cell"))
+    for r in c.get("rules", []):
+        if r.get("kind") == "drawdown_limit":
+            _cell(path, f"rule {r.get('name', r['kind'])!r}", r.get("cell"))
     users = []
     for u in c.get("users", []):
         users.append(UserConfig(
@@ -290,7 +307,8 @@ def load(path: str | Path) -> ExampleConfig:
         recharge_package=rch.get("package", "rch"),
         recharge_map=rch.get("map", ""),
         area_rtol=None if rch.get("area_check", True) is False else float(rch.get("area_rtol", 1e-6)),
-        wells=[WellConfig(w["name"], w.get("package", "wel"), tuple(w["cell"])) for w in c.get("wells", [])],
+        wells=[WellConfig(w["name"], w.get("package", "wel"), _cell(path, f"well {w['name']!r}", w.get("cell")))
+               for w in c.get("wells", [])],
         users=users,
         calibration_record=_path(base, c["calibration"]["record"]) if c.get("calibration", {}).get("record") else None,
         places_of_use=[(x["name"], x["channel"]) for x in sw.get("places_of_use", [])],

@@ -10,7 +10,8 @@ Built-in rules (``[[rules]]`` in an example's config):
                               cap the user's withdrawal the day after its channel's flow was below the threshold
     kind = "dry_mode"         user, channel, threshold (m3 s-1)
                               run the user dry the day after the flow was below the threshold
-    kind = "drawdown_limit"   user, cell [layer, row, col], head_min (m), limit (m3 s-1, default 0)
+    kind = "drawdown_limit"   user, cell [layer, row, col] or [layer, icell2d] (DISV), head_min (m),
+                              limit (m3 s-1, default 0)
                               cap the user's withdrawal the day after the head in that cell was below head_min
 
 A study can add its own: ``kind = "rules:my_rule"`` names a function in the example folder,
@@ -32,7 +33,7 @@ class State:
 
     day: int
     flows: dict[str, float]                 # channel -> outflow, m3 s-1, yesterday
-    head_at: object                         # (layer, row, col) -> head, m, after yesterday's solve
+    head_at: object                         # cell (layer, row, col or layer, icell2d) -> head, m, after yesterday
     memory: dict = field(default_factory=dict)  # a rule's own memory between days (saved with restarts)
 
 
