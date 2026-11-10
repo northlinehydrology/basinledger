@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.4.0).** Built and tested:
+**Status: early (0.5.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -38,6 +38,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
   ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river and
   drain packages;
+- MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site): maps, wells,
+  head outputs and rules name cells as `layer, row, col` or `layer, icell2d`;
 - groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
   profile's bottom (chosen) or SWAT+ gwflow's rule, with or without a cap at the layers' room (none chosen;
   swatplus-bmi 0.7.0);
@@ -206,7 +208,7 @@ map = "all:aqu001"             # SWAT+ aquifers to MODFLOW 6 cells by area, or a
 
 [[wells]]
 name = "pw1"
-cell = [0, 20, 28]
+cell = [0, 20, 28]             # layer, row, col; on a vertex grid (DISV), layer, icell2d
 
 [[utilities]]
 name = "city"
@@ -271,6 +273,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | A user's balance | closes every hour; a component that loses water is refused |
 | Any component plugs in | a renamed component with other units, and `CoolingWaterBmi`, mapped by role |
 | Area maps | volume kept exactly; over-covered cells and mismatched areas refused |
+| Vertex grids | maps, wells, heads and rules by `layer, icell2d`; a cell in the other grid's form, outside the grid or inactive refused; a refined grid's budget closes every day and matches the ledger, with transport's mass closing; a uniform DISV grid gives the structured grid's run |
 | MODFLOW 6 control | values set between prepare and solve are the ones MODFLOW 6 uses; daily steps enforced |
 | Recharge | sent = received every day, against MODFLOW 6's budget file and SWAT+'s own printed recharge |
 | Recharge by HRU | pixels split exactly among cells; each HRU's percolation × its SWAT+ area reaches its own cells and no other, every day; the total equals SWAT+'s own aquifer recharge every day |

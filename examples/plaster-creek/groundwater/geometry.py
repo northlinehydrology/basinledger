@@ -6,6 +6,9 @@ projection, so nothing is reprojected here. Maps are written as the CSVs Basin L
 
 - catchment_cells.csv: object (cat- id), layer, row, col, area_m2: the overlap of each catchment with each cell;
 - river_cells.csv: object (wb- id), layer, row, col, length_m: the length of each flowpath in each cell.
+
+On a vertex grid (DISV) the helpers take GridIntersect's icell2d instead, and the maps' cell columns are layer,
+icell2d.
 """
 
 from __future__ import annotations
@@ -50,34 +53,45 @@ def grid_intersect(modelgrid):
     return GridIntersect(modelgrid)
 
 
-def catchment_cells(gi, polys: dict[str, object]) -> list[tuple[str, int, int, float]]:
-    """(catchment, row, col, area m2) for every overlap of a catchment with a top-layer cell."""
+def _cell(cellid) -> tuple[int, ...]:
+    """GridIntersect's cell id: (row, col) on a structured grid, icell2d on a vertex grid."""
+    return tuple(int(c) for c in np.atleast_1d(cellid))
+
+
+def catchment_cells(gi, polys: dict[str, object]) -> list[tuple]:
+    """(catchment, row, col, area m2) for every overlap of a catchment with a top-layer cell; (catchment, icell2d,
+    area m2) on a vertex grid."""
     rows = []
     for cid, poly in polys.items():
         r = gi.intersect(poly, geo_dataframe=False)
         for cell, area in zip(r["cellids"], r["areas"]):
             if area > 0:
-                rows.append((cid, int(cell[0]), int(cell[1]), float(area)))
+                rows.append((cid, *_cell(cell), float(area)))
     return rows
 
 
-def flowpath_cells(gi, lines: dict[str, object]) -> list[tuple[str, int, int, float]]:
-    """(flowpath, row, col, length m) for every cell a flowpath crosses."""
+def flowpath_cells(gi, lines: dict[str, object]) -> list[tuple]:
+    """(flowpath, row, col, length m) for every cell a flowpath crosses; (flowpath, icell2d, length m) on a vertex
+    grid."""
     rows = []
     for fid, line in lines.items():
         r = gi.intersect(line, geo_dataframe=False)
         for cell, length in zip(r["cellids"], r["lengths"]):
             if length > 0:
-                rows.append((fid, int(cell[0]), int(cell[1]), float(length)))
+                rows.append((fid, *_cell(cell), float(length)))
     return rows
 
 
 def write_map(path: Path, rows, value: str, layer: int = 0):
+    """A Basin Ledger map (mapping.py): object, layer, row, col, value, or object, layer, icell2d, value for rows
+    from a vertex grid."""
+    rows = list(rows)
+    cell = ["row", "col"] if not rows or len(rows[0]) == 4 else ["icell2d"]
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["object", "layer", "row", "col", value])
-        for obj, r, c, v in rows:
-            w.writerow([obj, layer, r, c, repr(float(v))])
+        w.writerow(["object", "layer", *cell, value])
+        for obj, *c, v in rows:
+            w.writerow([obj, layer, *c, repr(float(v))])
 
 
 def basin_outline(polys: dict[str, object]):

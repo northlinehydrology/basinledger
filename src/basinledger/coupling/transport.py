@@ -66,7 +66,7 @@ def _add_auxiliary(package, aux: str):
 def add_transport(sim, gwf, species: str, porosity, dispersivity, sorption: dict | None = None, strt=0.0,
                   sources: list[tuple[str, str]] = (), scheme: str = "tvd", diffusion: float = 0.0,
                   ims: dict | None = None, save: str = "LAST"):
-    """A GWT model ``gwt_<species>`` on ``gwf``'s grid (DIS only), linked to it and solved after it.
+    """A GWT model ``gwt_<species>`` on ``gwf``'s grid (DIS or DISV), linked to it and solved after it.
 
     porosity: effective porosity [A] (scalar or per cell). dispersivity: m [A], see ``_dispersivities``.
     sorption: None (a conservative species, such as chloride), or ``{"distcoef": Kd (m3 kg-1), "bulk_density": kg
@@ -77,18 +77,24 @@ def add_transport(sim, gwf, species: str, porosity, dispersivity, sorption: dict
     import flopy
 
     name = f"gwt_{species}"
-    dis = gwf.get_package("dis")
-    if dis is None or dis.package_type != "dis":
-        raise NotImplementedError("add_transport supports a structured grid (DIS) only")
+    dis = next((p for p in (gwf.get_package("dis"), gwf.get_package("disv")) if p is not None), None)
+    if dis is None or dis.package_type not in ("dis", "disv"):
+        raise NotImplementedError("add_transport supports a structured (DIS) or vertex (DISV) grid")
     gwt = flopy.mf6.ModflowGwt(sim, modelname=name, save_flows=True)
     settings = dict(complexity="simple", linear_acceleration="bicgstab", outer_maximum=50, outer_dvclose=1e-10,
                     inner_maximum=300, inner_dvclose=1e-12, rcloserecord=[1e-10, "strict"])
     settings.update(ims or {})
     solver = flopy.mf6.ModflowIms(sim, filename=f"{name}.ims", **settings)
     sim.register_ims_package(solver, [name])
-    flopy.mf6.ModflowGwtdis(gwt, length_units="meters", nlay=dis.nlay.get_data(), nrow=dis.nrow.get_data(),
-                            ncol=dis.ncol.get_data(), delr=dis.delr.get_data(), delc=dis.delc.get_data(),
-                            top=dis.top.get_data(), botm=dis.botm.get_data(), idomain=dis.idomain.get_data())
+    if dis.package_type == "dis":
+        flopy.mf6.ModflowGwtdis(gwt, length_units="meters", nlay=dis.nlay.get_data(), nrow=dis.nrow.get_data(),
+                                ncol=dis.ncol.get_data(), delr=dis.delr.get_data(), delc=dis.delc.get_data(),
+                                top=dis.top.get_data(), botm=dis.botm.get_data(), idomain=dis.idomain.get_data())
+    else:  # the flow model's vertex grid, cell for cell
+        flopy.mf6.ModflowGwtdisv(gwt, length_units="meters", nlay=dis.nlay.get_data(), ncpl=dis.ncpl.get_data(),
+                                 nvert=dis.nvert.get_data(), vertices=dis.vertices.get_data(),
+                                 cell2d=dis.cell2d.get_data(), top=dis.top.get_data(), botm=dis.botm.get_data(),
+                                 idomain=dis.idomain.get_data())
     mst = dict(porosity=porosity)
     if sorption:
         if set(sorption) - {"distcoef", "bulk_density"}:

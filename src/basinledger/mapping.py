@@ -5,12 +5,17 @@ a catchment) covers. Depth rates move through it by area, so volume is kept exac
 mapped area is what the cells receive. Maps come from an example's config, never from code:
 
     cells = "all"             every cell of the top layer, its whole area, to one object
-    cells = "map.csv"         a table: object, layer, row, col, area_m2 (or object, node, area_m2)
+    cells = "map.csv"         a table: object, layer, row, col, area_m2 on a structured grid (DIS);
+                              object, layer, icell2d, area_m2 on a vertex grid (DISV); or object, node, area_m2
 
-A map from GIS (NextGen catchments or SWAT+ HRU polygons intersected with the grid, e.g. with flopy's GridIntersect)
-is written to the same table, so the coupling code never sees geometry. ``pixel_rows`` writes it from a raster (HRUs
-built from land cover, soil and slope grids, as QSWAT+ and scripted builds do), splitting each pixel exactly among
-the cells it overlaps.
+Cells are 0-based, as flopy numbers them; ``node`` is MODFLOW 6's reduced node, 0-based. A table's cells must be in
+the model's own form: row and col on a DISV grid, or icell2d on a DIS grid, is refused (``cell_node``).
+
+A map from GIS (NextGen catchments or SWAT+ HRU polygons intersected with the grid, e.g. with flopy's GridIntersect,
+whose cell ids are (row, col) on a structured grid and icell2d on a vertex grid) is written to the same table, so the
+coupling code never sees geometry. ``pixel_rows`` writes it from a raster (HRUs built from land cover, soil and slope
+grids, as QSWAT+ and scripted builds do), splitting each pixel exactly among the cells of a structured grid it
+overlaps; on a vertex grid, intersect the pixels as polygons.
 
 HRU by HRU (``[recharge] source = "hru"``), the table gives each HRU's ground in each cell, and ``conserving`` scales
 each HRU's rows so they add to its area in SWAT+: the cells then take each HRU's share of its percolation by the share
@@ -90,19 +95,36 @@ class AreaMap:
 
     @classmethod
     def from_csv(cls, path: str | Path, objects: list[str], node_of) -> "AreaMap":
-        """``node_of(layer, row, col)`` -> 0-based reduced node; rows may give ``node`` instead."""
+        """``node_of(*cell)`` -> 0-based reduced node (``Modflow6.node``); see ``cell_node`` for the columns."""
         obj, node, area = [], [], []
         with open(path, newline="") as f:
             for r in csv.DictReader(f):
                 if r["object"] not in objects:
                     raise KeyError(f"{path}: {r['object']!r} is not an object of the source model")
                 obj.append(objects.index(r["object"]))
-                if r.get("node"):
-                    node.append(int(r["node"]))
-                else:
-                    node.append(node_of(int(r["layer"]), int(r["row"]), int(r["col"])))
+                node.append(cell_node(r, node_of, path))
                 area.append(float(r["area_m2"]))
-        return cls(list(objects), np.array(obj), np.array(node), np.array(area))
+        return cls(list(objects), np.array(obj, dtype=int), np.array(node, dtype=int), np.array(area))
+
+
+def cell_node(row: dict, node_of, where="map") -> int:
+    """A map row's 0-based reduced node: its ``node``, or its cell, ``layer, row, col`` (DIS) or ``layer, icell2d``
+    (DISV), through ``node_of(*cell)``, which refuses a cell in the other grid's form. A row giving both forms, or
+    neither, is refused."""
+    has = {k for k in ("node", "layer", "row", "col", "icell2d") if (row.get(k) or "").strip()}
+    if has == {"node"}:
+        return int(row["node"])
+    if has == {"layer", "row", "col"}:
+        cell = (row["layer"], row["row"], row["col"])
+    elif has == {"layer", "icell2d"}:
+        cell = (row["layer"], row["icell2d"])
+    else:
+        raise ValueError(f"{where}: a row gives {sorted(has) or 'no cell'}; give layer, row, col (DIS), "
+                         "layer, icell2d (DISV) or node")
+    try:
+        return node_of(*(int(c) for c in cell))
+    except ValueError as e:
+        raise ValueError(f"{where}: {e}") from None
 
 
 def pixel_rows(obj: np.ndarray, weight: np.ndarray, x0: np.ndarray, y0: np.ndarray, size: float,

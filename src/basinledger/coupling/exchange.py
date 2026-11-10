@@ -40,6 +40,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..mapping import cell_node
 from .modflow6 import Modflow6
 
 
@@ -71,7 +72,7 @@ class ChannelMap:
                     raise KeyError(f"{spec}: {ch!r} is not a SWAT+ channel")
                 if ch not in chans:
                     chans.append(ch)
-                n = int(r["node"]) if r.get("node") else mf6.node(int(r["layer"]), int(r["row"]), int(r["col"]))
+                n = cell_node(r, mf6.node, spec)
                 hit = np.flatnonzero(nodes == n)
                 if len(hit) == 0:
                     raise ValueError(f"{spec}: cell {n} has no {package} entry")
