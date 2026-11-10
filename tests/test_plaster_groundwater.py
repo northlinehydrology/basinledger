@@ -59,6 +59,27 @@ def test_maps_keep_area_and_length():
     assert (x0, y0, nrow, ncol) == (0.0, 0.0, 8, 10)  # x 20-480 and y 30-390, snapped to 50 m
 
 
+
+def test_maps_on_a_vertex_grid(tmp_path):
+    """GridIntersect's icell2d on a vertex grid gives rows of (object, icell2d, value), written as layer, icell2d."""
+    import csv
+    import flopy
+    verts = [[i * 4 + j, j * 100.0, 300.0 - i * 100.0] for i in range(4) for j in range(4)]
+    cell2d = [[r * 3 + c, c * 100 + 50.0, 250.0 - r * 100, 4, r * 4 + c, r * 4 + c + 1, (r + 1) * 4 + c + 1,
+               (r + 1) * 4 + c] for r in range(3) for c in range(3)]
+    mg = flopy.discretization.VertexGrid(vertices=verts, cell2d=cell2d, nlay=1, top=np.ones(9), botm=np.zeros((1, 9)))
+    gi = G.grid_intersect(mg)
+    p = box(30, 20, 270, 280)
+    cc = G.catchment_cells(gi, {"cat-a": p})
+    assert all(len(r) == 3 for r in cc) and sum(r[2] for r in cc) == pytest.approx(p.area, rel=1e-12)
+    fc = G.flowpath_cells(gi, {"wb-1": LineString([(10, 10), (290, 290)])})
+    assert {r[1] for r in fc} == {2, 4, 6}  # south-west to north-east, icell2d 0 at the north-west
+    G.write_map(tmp_path / "m.csv", cc, "area_m2")
+    rows = list(csv.DictReader(open(tmp_path / "m.csv")))
+    assert list(rows[0]) == ["object", "layer", "icell2d", "area_m2"]
+    assert sum(float(r["area_m2"]) for r in rows) == pytest.approx(p.area, rel=1e-12)
+
+
 def test_wellogic_filter(tmp_path):
     def well(i, **p):
         base = dict(WELLID=str(i), AQ_CODE="D", SWL=10, SWL_FLAG=None, ELEVATION=700, ELEV_DEM=702,
