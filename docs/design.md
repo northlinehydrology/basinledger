@@ -26,6 +26,8 @@ Status (Nov 9, 2026, release 0.4.0). Built and tested on synthetic examples:
   intake concentrations from the aquifer;
 - weather written into SWAT+'s gage records from a run's first day, from a series or a scenario's change
   (`[weather]`, swatplus-bmi 0.7.0);
+- MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site), with maps,
+  wells, head outputs and rules naming cells in the grid's own form (unreleased, Nov 10, 2026);
 - the ledger, the command line, and the calibration module's structure.
 
 The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. A
@@ -293,9 +295,28 @@ geometry, and nothing is hard-coded.
 
 | Map | Rows | Used for |
 |---|---|---|
-| `catchment_cells.csv` | catchment (or SWAT+ aquifer, or HRU), layer, row, col, area_m2 | recharge in; drawdown and storage out |
-| `flowpath_cells.csv` | flowpath, layer, row, col, length_m | stream-aquifer exchange (base flow) out, and in for losing reaches |
+| `catchment_cells.csv` | catchment (or SWAT+ aquifer, or HRU), cell, area_m2 | recharge in; drawdown and storage out |
+| `flowpath_cells.csv` | flowpath, cell, length_m | stream-aquifer exchange (base flow) out, and in for losing reaches |
 | wells in `basin.toml` | name, cell (or MAW connections) | pumping in; heads at wells out |
+
+**Cells (built Nov 10, 2026).** A cell is named in the grid's own form, 0-based as flopy numbers it: `layer, row, col`
+on a structured grid (DIS), `layer, icell2d` on a vertex grid (DISV). A map's columns say which (`object, layer, row,
+col, ...` or `object, layer, icell2d, ...`), or give MODFLOW 6's reduced `node`; wells, head outputs and drawdown rules
+take `[layer, row, col]` or `[layer, icell2d]`. The coupling reads the grid from MODFLOW 6's discretization (its shape
+has three numbers for DIS, two for DISV) and turns a cell into its reduced node (`Modflow6.node`), refusing a cell in
+the other grid's form, outside the grid or inactive, so a map made for one grid can't be read silently on another.
+Before this, a column past the grid's edge wrapped to the next row's cells. Everything after the node (recharge, the
+exchange, drains, groundwater into the soil, transport) was already by node, so it runs unchanged on either grid.
+A vertex grid lets a study refine its cells around a site and its streams (a quadtree from 200 m to 25 m, say) without
+a structured grid's long thin cells. An unstructured grid (DISU) isn't supported: its maps could give nodes, but its
+wells and heads have no cell form yet.
+
+The test (`tests/test_disv.py`) runs the two-way synthetic example on a vertex grid of 28 cells, 79 m refined to 40 m
+around the well, with the recharge and river maps, the well, the head output and a drawdown rule all by icell2d and
+chloride carried: MODFLOW 6's budget closes every day to 1e-7 of the gross flow and matches the ledger to 1e-12, and
+the transport's mass closes. The same aquifer as a uniform DISV grid, cell for cell the structured one, gives the
+structured run's ledger to 1e-7 relative: MODFLOW 6 reads a vertex grid's coordinates to about ten digits, so its cell
+areas differ from the structured grid's by about 4e-10.
 
 - **Recharge in.** Each catchment's recharge from SWAT+ spreads over cells by area of overlap, from its aquifer or,
   with `[recharge] source = "hru"`, from each HRU on the cells under its ground. Volume is kept exactly (built:
@@ -420,9 +441,10 @@ same rate as one under forest on till. Bailey et al. (2025) map HRU recharge to 
 same with swatplus-bmi 0.6.0's `soil_water__percolation_rate`: each HRU's percolation out of the bottom of its soil
 profile, the day just done.
 
-- **The map** gives each HRU's ground in each cell (object, layer, row, col, area_m2), from HRU polygons (flopy's
-  GridIntersect) or, where HRUs are raster classes, from their pixels (`mapping.pixel_rows`, which splits each pixel
-  exactly among the cells it overlaps and takes a pixel shared by several HRUs in their shares).
+- **The map** gives each HRU's ground in each cell (object, cell, area_m2; the cell as layer, row, col or layer,
+  icell2d), from HRU polygons (flopy's GridIntersect) or, where HRUs are raster classes on a structured grid, from their
+  pixels (`mapping.pixel_rows`, which splits each pixel exactly among the cells it overlaps and takes a pixel shared by
+  several HRUs in their shares).
 - **Volume.** Each HRU's rows are scaled to add to its area in SWAT+ (`hru.con`; `AreaMap.conserving`), so a cell
   takes each HRU's percolation by its share of that HRU's ground, and the volume sent is percolation times HRU area,
   exactly. The map places water; it never adds or loses any, so `recharge:by_the_map` is zero. The area check
@@ -568,8 +590,8 @@ exchange replaces SWAT+'s aquifer return flow.
   due in SWAT+ the next day, and the last day's is reported as in transit. Timing shifts by a day, which is small
   against the time scales of groundwater response. Iterating within the day by branching SWAT+
   is possible but costs a SWAT+ day per iteration. It will be tried if the lag matters for an example's question.
-- **Mapping.** Channels map to cells by length (`object, layer, row, col, length_m`). Conductance comes from the
-  MODFLOW 6 model, not from the map.
+- **Mapping.** Channels map to cells by length (`object, layer, row, col, length_m`, or `object, layer, icell2d,
+  length_m` on a vertex grid). Conductance comes from the MODFLOW 6 model, not from the map.
 
 **Wells.** A utility's wells are MODFLOW 6 wells named in the config, each by cell. A well screened over several layers
 will use the MAW package. The chain splits a utility's groundwater withdrawal among its wells by share or by capacity.
@@ -1000,6 +1022,9 @@ on Osu_1hru and Ames_sub1 and run on a study's coupled model.
 Done for 0.4.0 (Nov 9, 2026), on swatplus-bmi 0.7.0: weather into SWAT+'s gage records from a run's first day (Weather
 into SWAT+), and groundwater up into the soil, with the drain and no cap chosen (Groundwater up into the soil). Not
 built: the start-up check refusing EVT or UZF alongside groundwater into the soil.
+
+Done since 0.4.0 (Nov 10, 2026, unreleased): MODFLOW 6 vertex grids (DISV), cells as layer, icell2d throughout (Cells,
+under NextGen geography), for a study's quadtree grid refined around its site.
 
 Next:
 

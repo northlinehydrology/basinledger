@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- MODFLOW 6 vertex grids (DISV): maps (`object, layer, icell2d, ...`), wells, head outputs and drawdown rules
+  (`[layer, icell2d]`) name a vertex grid's cells, next to a structured grid's `layer, row, col`; existing configs are
+  unchanged. `Modflow6.node` reads the grid from MODFLOW 6's discretization and refuses a cell in the other grid's
+  form, outside the grid (a column past the edge used to wrap to the next row) or inactive; a config's cells must be
+  two or three integers. `add_transport` copies a DISV grid. The synthetic example runs on a refined DISV grid
+  (`examples/synthetic/disv.toml`, `model.build_small_disv`), and the Plaster Creek geometry helpers write icell2d
+  maps from a vertex grid.
+
 ## 0.4.0 (2026-11-09)
 
 Weather from a run's first day, and groundwater up into the soil. Needs swatplus-bmi 0.7.0; a SWAT+ built with an
