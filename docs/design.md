@@ -28,7 +28,8 @@ Status (Nov 11, 2026, release 0.5.1). Built and tested on synthetic examples:
   (`[weather]`, swatplus-bmi 0.7.0);
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site), with maps,
   wells, head outputs and rules naming cells in the grid's own form;
-- the ledger, the command line, and the calibration module's structure.
+- the ledger, the command line, and calibration: records, statistics, the forward model, parameters written into
+  SWAT+'s `calibration.cal` and MODFLOW 6's packages, and PEST++ IES files (Calibration).
 
 The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. A
 study's coupled SWAT+ and MODFLOW 6 model, kept in its own repository, runs every function (testing.md, tier 5).
@@ -867,26 +868,41 @@ in at the transfer hydrograph's temperature, and it mixes HRU water yields in mm
 ## Calibration
 
 Using Basin Ledger depends on calibrated models. Calibration is part of every example, not something a study adds
-later. `calibration.py` has the structure:
+later. `calibration.py` has:
 
 - the record and its status;
 - parameter and observation tables;
 - simulated values at observations;
 - the statistics;
-- a forward model that runs the driver.
+- a forward model that runs the driver (`python -m basinledger forward`);
+- parameters written into a run's copy of the models' files (built Nov 11, 2026);
+- PEST++ IES files (built Nov 11, 2026).
 
-Applying parameters to the models' files, PEST++ files and USGS downloads are stubbed. This section is the whole
-design.
+Pilot points and USGS groundwater level downloads are still to build. This section is the whole design.
 
-**Parameters.** The engine exposes each model's adjustable parameters as one named list, with bounds:
+**Parameters (built Nov 11, 2026).** The engine exposes each model's adjustable parameters as one named list, with
+bounds (`parameters.csv`: name, model, target, value, lower, upper, transform). They are written into the run's copy
+of each model's files before it starts (`apply_parameters`, through the driver's `prepare` step): the example's own
+set (`[calibration] parameters`, the calibrated values every run uses), with a calibration's values in place of any
+it names.
 
-- **SWAT+:** parameters changed in its input files before a run, through `calibration.cal` (absolute or relative
-  changes by object). swatplus-bmi refuses SWAT+'s soft and hard calibration runs, but a run with changed parameters
-  is an ordinary run. Whether every `calibration.cal` change applies in exchange mode is to be checked.
-- **MODFLOW 6:** package arrays (hydraulic conductivity, specific yield, streambed conductance, recharge multipliers),
-  written with flopy, by zone or by pilot points through pyEMU.
+- **SWAT+:** through its own `calibration.cal`, read once before the first day (swatplus-bmi 0.9.0). A target is
+  `<name>:<change>`, with optional objects, soil layers and an HRU's soil group, texture or land use, e.g.
+  `cn2:pctchg`, `awc:absval:layers=1-2`, `cn2:pctchg:hsg=D`. The rows go after the project's own. swatplus-bmi
+  refuses a change SWAT+ 62.0.1 reads but wouldn't make as asked (its audit of every parameter in the editor's
+  `cal_parms.cal`: 91 made, 50 refused, 22 with no code, 111 not checked), so a calibration can't move a parameter
+  that moves nothing. A run with changed parameters is an ordinary run.
+- **MODFLOW 6:** each value multiplies a package value as built, everywhere, in one layer or in one zone
+  (`[calibration] zones`: a CSV of cells and zones, such as a study's hydrostratigraphic units): `npf.k`, `npf.k22`,
+  `npf.k33`, `sto.sy`, `sto.ss`, and the columns `riv.cond`, `drn.cond`, `ghb.cond`, `sfr.rhk` and `sfr.man`. Only
+  the packages changed are written again, with flopy, at full precision, so a multiplier of one gives the plain run
+  bit for bit (tested). Recharge isn't one: Basin Ledger sets it each day from the surface model. Pilot points
+  (pyEMU) are still to build.
 - **Water users:** parameters in each component's config file, e.g. `CoolingWaterBmi`'s cycles of concentration.
-  These are usually set from the applicant's data, not calibrated.
+  These are set from the applicant's data, not calibrated; a user parameter in the list is refused.
+- A parameter for a model the example doesn't run is refused.
+- A restart writes the parameters into the new run's files again (MODFLOW 6's; SWAT+'s saved state already has
+  them), and matches the unbroken run bit for bit (tested).
 
 **Observations.** An example's `fetch.py` loads them into its cache, with their source and retrieval date:
 
@@ -906,10 +922,14 @@ design.
 - **Feedback** (two-way exchange, curtailment, drawdown limits): the models are calibrated jointly.
   - The individual calibrations give the prior.
   - [PEST++ IES](https://github.com/usgs/pestpp) runs Basin Ledger's driver as the forward model,
-    `calibration.run_forward_model(basin.toml, parameters.csv, observations.csv, simulated.csv)`. It applies a
-    parameter set through the driver's `prepare` hook, on the run's copy of each model's files before it starts. It
-    then runs every model and writes the simulated value at every observation for PEST++ to read. Applying
-    parameters is the part still to build.
+    `python -m basinledger forward basin.toml parameters.csv observations.csv simulated.csv --run-folder runs`
+    (`calibration.run_forward_model`). It applies the parameter set, runs every model in the worker's own folder,
+    and writes the simulated value at every observation for PEST++ to read.
+  - `calibration.write_pest_files(basin.toml, parameters.csv, observations.csv, folder)` writes the control file
+    (`basin.pst`), a template of the parameter table and the instructions for the simulated values (built Nov 11,
+    2026). Parameters start at their table values within their bounds, log-transformed where the table says;
+    observations keep their weights, grouped by kind and site; `ies_num_reals` sets the ensemble. The files are
+    checked against each other in the tests; PEST++ itself isn't run there.
   - The adjustable parameters are those the feedback touches: streambed conductance, aquifer hydraulic conductivity
     and specific yield near streams, and SWAT+'s percolation and channel parameters.
   - IES gives an ensemble, so results can carry its spread.
@@ -1051,7 +1071,8 @@ built: the start-up check refusing EVT or UZF alongside groundwater into the soi
 Done for 0.5.0 (Nov 10, 2026): MODFLOW 6 vertex grids (DISV), cells as layer, icell2d throughout (Cells,
 under NextGen geography), for a study's quadtree grid refined around its site.
 
-Done since 0.5.1 (Nov 11, 2026, unreleased): the two-way exchange through SFR (Two-way: stream-aquifer exchange).
+Done since 0.5.1 (Nov 11, 2026, unreleased): the two-way exchange through SFR (Two-way: stream-aquifer exchange);
+calibration parameters written into SWAT+'s and MODFLOW 6's files, and PEST++ IES files (Calibration).
 
 Next:
 
@@ -1061,8 +1082,7 @@ Next:
 3. Two-way refinements: leaks and infiltration in the chain exchanged with MODFLOW 6; SFT for transport with an SFR
    exchange.
 4. Restarts for MODFLOW 6 models with several stress periods.
-5. Applying calibration parameters (SWAT+ `calibration.cal`, MODFLOW 6 arrays with pyEMU), PEST++ IES files, USGS
-   observations.
+5. MODFLOW 6 parameters by pilot point (pyEMU); USGS groundwater levels as observations.
 6. AORC forcing for SWAT+ and the users; the SWAT+ project builder on the hydrofabric, with outputs at every nexus.
 7. Plaster Creek, in the calibration order above:
    - the SWAT+ project on the hydrofabric, which blocks stage 1;

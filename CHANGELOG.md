@@ -10,6 +10,16 @@
   a Manning's constant for other units than meters and days are refused at start-up, as are `limit = false`,
   `[rivers]` on the SFR package and transport with an SFR exchange. Maps can give reaches by number (`object,
   reach`). The synthetic example `sfr.toml`; restarts match the unbroken run bit for bit.
+- Calibration parameters written into a run's copy of the models' files before they start
+  (`calibration.apply_parameters`): SWAT+ through its own `calibration.cal` (swatplus-bmi 0.9.0, which refuses
+  changes SWAT+ 62.0.1 wouldn't make as asked), with targets like `cn2:pctchg` or `awc:absval:layers=1-2`; MODFLOW 6
+  as multipliers on `npf.k`, `npf.k22`, `npf.k33`, `sto.sy`, `sto.ss`, `riv.cond`, `drn.cond`, `ghb.cond`, `sfr.rhk`
+  and `sfr.man`, everywhere, by layer or by zone (`[calibration] zones`). The example's own set (`[calibration]
+  parameters`) is applied on every run, with a calibration's values in place of any it names; `Basin(...,
+  parameters=...)`. Water users' parameters, and parameters for a model the example doesn't run, are refused.
+- PEST++ IES files (`calibration.write_pest_files`): the control file, a template of the parameter table and the
+  instructions for the simulated values, with `python -m basinledger forward` (new) as the model command, each
+  worker running in its own folder (`--run-folder`).
 
 ## 0.5.1 (2026-11-11)
 

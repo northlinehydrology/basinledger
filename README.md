@@ -58,8 +58,10 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - NextGen as the surface model: a finished NGIAB run replayed day by day, with users on its own hourly forcing;
 - MODFLOW 6 recharge from NextGen (CFE's percolation), used as interim recharge in the Plaster Creek example;
 - the ledger and the command line;
-- calibration records per model, and the calibration module's structure. An example is a screening run unless every
-  model it runs is calibrated.
+- calibration records per model. An example is a screening run unless every model it runs is calibrated;
+- calibration parameters written into a run's copy of the models' files: SWAT+ through its own `calibration.cal`
+  (swatplus-bmi 0.9.0), MODFLOW 6 as multipliers on package values everywhere, by layer or by zone; and PEST++ IES
+  files with Basin Ledger's forward model as the model command (unreleased);
 
 Examples:
 
@@ -74,7 +76,7 @@ Still to come ([docs/design.md](docs/design.md)):
 - water quality through SWAT+'s streams (stage 2), on swatplus-bmi 0.5.0's species variables;
 - SWAT+ built on the NextGen hydrofabric, for water quality on the same catchments;
 - AORC forcing;
-- applying calibration parameters, and PEST++ IES.
+- MODFLOW 6 parameters by pilot point, and USGS groundwater levels as observations.
 
 ## How it works
 
@@ -181,7 +183,11 @@ uv run python -m basinledger run examples/synthetic/surface.toml --baseline   # 
 uv run python -m basinledger run examples/synthetic/two_way.toml --save-at 365 --save runs/warm
 uv run python -m basinledger run examples/synthetic/two_way.toml --restart runs/warm --run scenario
 uv run python -m basinledger status examples/synthetic/surface.toml           # calibrated, or a screening run
+uv run python -m basinledger forward basin.toml parameters.csv observations.csv simulated.csv --run-folder runs
 ```
+
+`forward` is the forward model PEST++ runs. `calibration.write_pest_files(basin.toml, parameters.csv,
+observations.csv, folder)` writes the control file, the template and the instructions that call it.
 
 Or from Python:
 
@@ -296,6 +302,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Restarts and scenarios | saved after a warm-up and carried on, runs match unbroken runs bit for bit; a case with no change matches the baseline |
 | Start-up warnings | soils that start empty, and a warm-up whose soils haven't settled, are warned of, not stopped |
 | Command line, calibration | outputs and status written; statistics on known values; the forward model writes simulated values at observations |
+| Calibration parameters | SWAT+ changes reach the run's `calibration.cal` after the project's own rows, and changes SWAT+ wouldn't make are refused; MODFLOW 6 multipliers everywhere, by layer and by zone, on arrays and list packages (SFR's bed included); a zero change and a multiplier of one give the plain coupled run bit for bit; restarts with parameters match; PEST++ files' template, instructions and control data agree |
 
 ## Prior work
 
