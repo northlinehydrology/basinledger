@@ -12,7 +12,7 @@ dependencies = [
     "bmipy>=2.0",
     "flopy>=3.9",
     "modflowapi>=0.2",
-    "swatplus-bmi>=0.7.0",
+    "swatplus-bmi>=0.9.0",
 ]
 keywords = ["hydrology", "groundwater", "SWAT+", "MODFLOW 6", "NextGen", "BMI", "model coupling", "water use"]
 classifiers = [
