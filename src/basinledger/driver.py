@@ -66,15 +66,30 @@ def _example_function(cfg: C.ExampleConfig, spec: str, default: str):
 class Basin:
     def __init__(self, cfg: C.ExampleConfig, run: str = "base", users: bool = True, days: int | None = None,
                  restart: str | Path | None = None, prepare=None, heads: np.ndarray | None = None,
-                 wrap_surface=None):
+                 wrap_surface=None, parameters: list | None = None):
         """``prepare(model, folder)``, if given, is called on the run's copy of each model's files ("swatplus",
-        "modflow6") before that model starts: where a calibration writes a parameter set. ``heads``: MODFLOW 6's
+        "modflow6") before that model starts, after the parameter set is written into them: the example's own
+        (``[calibration] parameters``) with ``parameters``' values in place of any it names (calibration.py's
+        ``apply_parameters``). ``heads``: MODFLOW 6's
         starting heads (per reduced node), in place of its input's, as from ``spin_up``. ``wrap_surface(model)``,
         if given, returns what the driver steps in place of the surface model once it has started: a study's way to
         hold or replace one of its values through BMI each day (a process substitution), with everything else
         passed through."""
         self.cfg = cfg
         self.status = cfg.calibration_status  # 'screening' unless the example's record says 'calibrated'
+        from .calibration import apply_parameters, merged, read_parameters
+        own = read_parameters(cfg.calibration_parameters) if cfg.calibration_parameters else []
+        self.parameters = merged(own, parameters or [])
+        unused = sorted({q.model for q in self.parameters} - set(cfg.models) - {"user"})
+        if unused:
+            raise ValueError(f"parameters for {', '.join(unused)}, which this example doesn't run ({cfg.models})")
+        user_prepare = prepare
+
+        def prepare(model, folder):
+            apply_parameters(model, folder, self.parameters, cfg.calibration_zones, cfg.mf6_model)
+            if user_prepare:
+                user_prepare(model, folder)
+
         self.folder = cfg.run_folder / run
         if self.folder.exists():
             shutil.rmtree(self.folder)
@@ -106,8 +121,7 @@ class Basin:
                 print_daily(swat_dir, ["lsunit_wb", "channel_sd"])
             if cfg.outputs.get("balance"):      # the whole-basin balance reads SWAT+'s daily land budget
                 print_daily(swat_dir, ["basin_wb", "channel_sd", "reservoir"])
-            if prepare:
-                prepare("swatplus", swat_dir)
+            prepare("swatplus", swat_dir)
             problems = S.coupling_problems(swat_dir, two_way=bool(ex))
             if problems:
                 raise ValueError("SWAT+ isn't set up to be coupled:\n- " + "\n- ".join(problems))
@@ -167,8 +181,7 @@ class Basin:
                 remaining_simulation(cfg.mf6_workspace, ws, self.day)
             else:
                 shutil.copytree(cfg.mf6_workspace, ws)
-            if prepare:
-                prepare("modflow6", ws)
+            prepare("modflow6", ws)
             self.mf6 = Modflow6(ws, cfg.mf6_model)
             if saved:
                 self.mf6.set_heads(np.load(Path(restart) / "heads.npy"))

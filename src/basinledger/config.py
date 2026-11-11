@@ -89,6 +89,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
 
     [calibration]                       # optional: the example's calibration record
     record = "calibration/record.toml"  # without one, the example is a screening run
+    parameters = "calibration/parameters.csv"  # optional: applied on every run (calibration.py's table)
+    zones = "calibration/zones.csv"     # optional: MODFLOW 6 cells' zones for parameters by zone
 
     [[users]]
     name = "plant"
@@ -181,6 +183,8 @@ class ExampleConfig:
     wells: list[WellConfig]
     users: list[UserConfig]
     calibration_record: Path | None = None
+    calibration_parameters: Path | None = None
+    calibration_zones: Path | None = None
     places_of_use: list[tuple[str, str]] = field(default_factory=list)
     point_sources: list[tuple[str, str]] = field(default_factory=list)
     exchange: dict | None = None
@@ -313,6 +317,9 @@ def load(path: str | Path) -> ExampleConfig:
                for w in c.get("wells", [])],
         users=users,
         calibration_record=_path(base, c["calibration"]["record"]) if c.get("calibration", {}).get("record") else None,
+        calibration_parameters=(_path(base, c["calibration"]["parameters"])
+                                if c.get("calibration", {}).get("parameters") else None),
+        calibration_zones=_path(base, c["calibration"]["zones"]) if c.get("calibration", {}).get("zones") else None,
         places_of_use=[(x["name"], x["channel"]) for x in sw.get("places_of_use", [])],
         point_sources=[(x["name"], x["channel"]) for x in sw.get("point_sources", [])],
         exchange=c.get("exchange"),
