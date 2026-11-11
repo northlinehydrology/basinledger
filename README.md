@@ -36,8 +36,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - the utility chain: sources, losses, sewer, plant outfall;
 - feedback rules: curtailment, dry mode, drawdown limit;
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
-  ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river and
-  drain packages;
+  ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river, drain or
+  streamflow routing (SFR) packages (SFR unreleased);
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site): maps, wells,
   head outputs and rules name cells as `layer, row, col` or `layer, icell2d`;
 - groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
@@ -284,6 +284,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Utility chain | production = delivery + losses = the sum of its sources; sewer = plant outfall |
 | Rules | act on exactly the days after the trigger; a curtailed user takes nothing; dry mode uses less water and more electricity |
 | Two-way exchange | SWAT+'s aquifer returns nothing and stores exactly its recharge; each day's river exchange reaches SWAT+ the next day, whole |
+| Through SFR | a channel's water in at its top reach; no reach loses more than it carries; MODFLOW 6's budget closes and its SFR term is the exchange; reaches between channels, other units and storage refused; restarts bit for bit |
 | Groundwater transport | each species' mass closes every day; uniform recharge concentration reaches every cell at steady state; a column matches Ogata and Banks (1961) within 1% of C0; a well's user takes in the aquifer's concentration a day later |
 | Conservation across links | recharge keeps the surface model's volume; a channel never loses more than it carries; water from outside and the release from storage booked; wrong coupling settings refused at start-up |
 | The whole basin | SWAT+'s land, channel and lake budgets, the links and MODFLOW 6's close together over a run |

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- The two-way exchange through MODFLOW 6's streamflow routing package (`[exchange] package` an SFR package): each
+  coupled channel's water goes in at its top reach, SFR computes the stages (Manning's equation) and the leakage
+  inside the solve, so a reach can't lose more than it carries, and the channel's net exchange goes to SWAT+ the next
+  day, as with RIV (`exchange:<channel>:sfr_inflow`). SWAT+ stays the only model routing between channels: reaches
+  connected across channels, a channel with more than one top reach, diversions, the mover, SFR's storage option and
+  a Manning's constant for other units than meters and days are refused at start-up, as are `limit = false`,
+  `[rivers]` on the SFR package and transport with an SFR exchange. Maps can give reaches by number (`object,
+  reach`). The synthetic example `sfr.toml`; restarts match the unbroken run bit for bit.
+
 ## 0.5.1 (2026-11-11)
 
 Needs swatplus-bmi 0.9.0. Its exchange protocol changed in 0.8.0, so a SWAT+ built by an earlier swatplus-bmi has to

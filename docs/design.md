@@ -547,9 +547,9 @@ rest. With no cap, water the profile can't hold runs off at the surface.
 Not built: a check at start-up that the flow model has no EVT or UZF package (SWAT+'s soil now takes ET from
 groundwater, and a second ET would count it twice); an example should leave them out.
 
-**Two-way: stream-aquifer exchange (built with RIV; `coupling/exchange.py`, `examples/synthetic/two_way.toml`).**
-MODFLOW 6 computes the exchange between streams and the aquifer (RIV now, SFR for routed streams later), and that
-exchange replaces SWAT+'s aquifer return flow.
+**Two-way: stream-aquifer exchange (built with RIV, and with SFR since Nov 11, 2026; `coupling/exchange.py`,
+`examples/synthetic/two_way.toml` and `sfr.toml`).** MODFLOW 6 computes the exchange between streams and the aquifer,
+through a river (RIV) or a streamflow routing (SFR) package, and that exchange replaces SWAT+'s aquifer return flow.
 
 - **No double counting.** SWAT+'s aquifer must stop returning water once MODFLOW 6 does.
   - This is done in the run's copy of the SWAT+ inputs, not in SWAT+'s code. SWAT+ 62.0.1 returns flow when the depth
@@ -582,6 +582,29 @@ exchange replaces SWAT+'s aquifer return flow.
   16.3 million m3 without the limit (35% of the exchange) and 0.2 million m3 with it (0.7%); the run takes about
   twice as long. In the synthetic two-way example it is 186 m3 over three years without the limit and 76 m3 with
   it, of about 61,000 m3. Each day starts from its own stages, so a restarted run matches.
+- **Through SFR (built Nov 11, 2026; `[exchange] package` an SFR package).** SFR computes each reach's stage from its
+  flow by Manning's equation and its leakage at that stage, inside MODFLOW 6's solve, and a reach can't lose more than
+  it carries. So it replaces both RIV's fixed stage and the stage-lowering limit, and suits headwater drains that go
+  dry.
+  - Each day, a coupled channel's water without today's exchange (what the limit uses) goes in as the inflow of the
+    channel's top reach (`exchange:<channel>:sfr_inflow`). The reaches below carry it, less what they lose and plus
+    what the aquifer gives. The channel's net exchange goes to SWAT+ the next day, as with RIV.
+  - SFR's outflow from a channel's last reach isn't entered anywhere: SWAT+ routes the channel's water on, and is
+    the only model routing water between channels. SFR's reaches therefore connect only within a channel. A reach
+    flowing into a reach of another channel, or one not coupled, is refused at start-up (cut that connection when
+    building the model from the SWAT+ channels), as is a channel with more than one top reach.
+  - Also refused: diversions and the mover (water SWAT+ doesn't see), SFR's storage option (kinematic-wave routing:
+    water held in the reaches from day to day, which a restart would need), `[exchange] limit = false`, `[rivers]` on
+    the SFR package, and transport with an SFR exchange (MODFLOW 6's SFT package, not built).
+  - Manning's constant must be for meters and days (`UNIT_CONVERSION 86400`, or `TIME_CONVERSION 86400`). MODFLOW 6's
+    default, 1, is for meters and seconds; on it, a reach of the synthetic example a few centimeters deep came out
+    eight meters deep. It is refused.
+  - Maps give each reach's cell, or its 0-based number (`object, reach`), since several reaches can share a cell.
+  - Without storage, SFR keeps no state between days, so a restarted run matches the unbroken one bit for bit
+    (tested).
+  - In the synthetic example (`sfr.toml`: `two_way.toml` with the river as ten SFR reaches of the RIV entries' bed
+    conductance), the reach gains on 1,074 days and loses on 22 in three years, never more than its inflow; the
+    shortfall from the one-day lag is 6 m3 of about 62,000 m3 exchanged.
 - **Stage.** With `[rivers] stage = "surface_depth"`, MODFLOW 6's river stage on day *d* is the river bottom plus
   the bed thickness plus SWAT+'s channel depth for day *d* (`channel_water__depth`, on SWAT+'s rating curve,
   swatplus-bmi 0.2.0). Otherwise it is fixed in the input. Under a NextGen replay the same setting uses t-route's
@@ -591,7 +614,8 @@ exchange replaces SWAT+'s aquifer return flow.
   against the time scales of groundwater response. Iterating within the day by branching SWAT+
   is possible but costs a SWAT+ day per iteration. It will be tried if the lag matters for an example's question.
 - **Mapping.** Channels map to cells by length (`object, layer, row, col, length_m`, or `object, layer, icell2d,
-  length_m` on a vertex grid). Conductance comes from the MODFLOW 6 model, not from the map.
+  length_m` on a vertex grid), or to SFR reaches by number (`object, reach`). Conductance comes from the MODFLOW 6
+  model, not from the map.
 
 **Wells.** A utility's wells are MODFLOW 6 wells named in the config, each by cell. A well screened over several layers
 will use the MAW package. The chain splits a utility's groundwater withdrawal among its wells by share or by capacity.
@@ -932,7 +956,8 @@ source). All of them start from one warm-up:
 
 - **SWAT+:** `branch()` copies the paused SWAT+ process with fork (Mac, Linux), and `save_state()` writes it to a
   folder (any platform). Both are exact (swatplus-bmi's tests).
-- **MODFLOW 6:** its state is its heads, plus the stages and storages of advanced packages (SFR, MAW, UZF) if used.
+- **MODFLOW 6:** its state is its heads, plus the storages of advanced packages (MAW, UZF; SFR with its storage
+  option, which the exchange refuses) if used. SFR without storage holds no water from day to day.
   At the end of the warm-up the driver saves heads (`X`). Each scenario starts a new MODFLOW 6 simulation covering
   only the days left: the example's builder is called for them, or a copied model's single stress period is
   shortened. The saved heads are then put straight into memory after initialize, not into the IC file, which would
@@ -1026,14 +1051,15 @@ built: the start-up check refusing EVT or UZF alongside groundwater into the soi
 Done for 0.5.0 (Nov 10, 2026): MODFLOW 6 vertex grids (DISV), cells as layer, icell2d throughout (Cells,
 under NextGen geography), for a study's quadtree grid refined around its site.
 
+Done since 0.5.1 (Nov 11, 2026, unreleased): the two-way exchange through SFR (Two-way: stream-aquifer exchange).
+
 Next:
 
 1. Water quality's stage 2: loads through SWAT+'s streams, on swatplus-bmi 0.5.0's species variables (Water quality
    across links).
 2. Point source loads (asked of swatplus-bmi).
-3. Two-way refinements:
-   - SFR for routed streams;
-   - leaks and infiltration in the chain exchanged with MODFLOW 6.
+3. Two-way refinements: leaks and infiltration in the chain exchanged with MODFLOW 6; SFT for transport with an SFR
+   exchange.
 4. Restarts for MODFLOW 6 models with several stress periods.
 5. Applying calibration parameters (SWAT+ `calibration.cal`, MODFLOW 6 arrays with pyEMU), PEST++ IES files, USGS
    observations.
