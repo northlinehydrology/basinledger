@@ -1,0 +1,35 @@
+name = "synthetic-sfr"
+description = """two_way.toml with the river as MODFLOW 6's streamflow routing (SFR) package: SWAT+'s channel water goes
+in at the top reach each day, SFR computes the stages and the leakage, and the channel's net exchange goes back into
+SWAT+'s channel the next day. For the engine's tests only."""
+
+[run]
+folder = "../../runs/synthetic-sfr"
+
+[swatplus]
+project = "{swatplus_refdata}/Osu_1hru"
+
+[modflow6]
+builder = "model:build_small_sfr"
+
+[recharge]
+map = "all:aqu001"
+area_rtol = 1e-6          # the grid is exactly Osu_1hru's 10 ha aquifer
+
+[exchange]
+package = "sfr"
+map = "all:cha01"         # every reach to the one channel; a CSV would give object, reach (0-based)
+
+[[wells]]
+name = "pw1"
+cell = [0, 5, 6]
+
+[[users]]
+name = "plant"
+component = "basinledger.testing:SyntheticUser"
+config = "small_user.toml"
+withdrawal = "well:pw1"
+return = "outfall:offsite"
+
+[outputs]
+heads = [{name = "pw1", cell = [0, 5, 6]}]

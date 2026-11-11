@@ -49,11 +49,13 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     cell = [0, 20, 30]                  # layer, row, col (0-based) on a structured grid (DIS); layer, icell2d on a
                                         #   vertex grid (DISV), e.g. [0, 412]
 
-    [exchange]                          # optional: two-way stream-aquifer exchange (MODFLOW 6 RIV <-> SWAT+)
-    package = "riv"
+    [exchange]                          # optional: two-way stream-aquifer exchange (MODFLOW 6 RIV or SFR <-> SWAT+)
+    package = "riv"                     #   a river (RIV) or streamflow routing (SFR) package
     map = "all:cha01"                   # every RIV entry to one channel, or a CSV: object, layer, row, col (or
-                                        #   object, layer, icell2d on a DISV grid, or object, node; mapping.py)
-    limit = true                        # a losing reach takes no more than its channel carries (default)
+                                        #   object, layer, icell2d on a DISV grid, or object, node; mapping.py; or
+                                        #   object, reach for SFR's 0-based reach numbers)
+    limit = true                        # RIV: a losing reach takes no more than its channel carries (default; SFR
+                                        #   does this itself)
     drains = {package = "drn", map = "maps/drains.csv"}   # optional: seepage cells, to their channels the next day
 
     [transport.chloride]                # optional: a MODFLOW 6 transport model per species (coupling/transport.py),
