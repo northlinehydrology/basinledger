@@ -66,7 +66,7 @@ def _example_function(cfg: C.ExampleConfig, spec: str, default: str):
 class Basin:
     def __init__(self, cfg: C.ExampleConfig, run: str = "base", users: bool = True, days: int | None = None,
                  restart: str | Path | None = None, prepare=None, heads: np.ndarray | None = None,
-                 wrap_surface=None, parameters: list | None = None):
+                 wrap_surface=None, parameters: list | None = None, _problems: list | None = None):
         """``prepare(model, folder)``, if given, is called on the run's copy of each model's files ("swatplus",
         "modflow6") before that model starts, after the parameter set is written into them: the example's own
         (``[calibration] parameters``) with ``parameters``' values in place of any it names (calibration.py's
@@ -76,13 +76,15 @@ class Basin:
         hold or replace one of its values through BMI each day (a process substitution), with everything else
         passed through."""
         self.cfg = cfg
+        self._problems = _problems  # a check (Basin.check): problems listed here, each part carrying on
         self.status = cfg.calibration_status  # 'screening' unless the example's record says 'calibrated'
         from .calibration import apply_parameters, merged, read_parameters
         own = read_parameters(cfg.calibration_parameters) if cfg.calibration_parameters else []
         self.parameters = merged(own, parameters or [])
         unused = sorted({q.model for q in self.parameters} - set(cfg.models) - {"user"})
         if unused:
-            raise ValueError(f"parameters for {', '.join(unused)}, which this example doesn't run ({cfg.models})")
+            self._problem(ValueError(f"parameters for {', '.join(unused)}, which this example doesn't run "
+                                     f"({cfg.models})"))
         user_prepare = prepare
 
         def prepare(model, folder):
@@ -124,7 +126,7 @@ class Basin:
             prepare("swatplus", swat_dir)
             problems = S.coupling_problems(swat_dir, two_way=bool(ex))
             if problems:
-                raise ValueError("SWAT+ isn't set up to be coupled:\n- " + "\n- ".join(problems))
+                self._problem(ValueError("SWAT+ isn't set up to be coupled:\n- " + "\n- ".join(problems)))
             for w in ([] if saved else S.start_warnings(swat_dir)):  # a restart's soils are the saved state's
                 warnings.warn(w, S.StartWarning, stacklevel=2)
             if cfg.weather and not saved:  # the days SWAT+ reads before it first pauses, into its files (weather.py)
@@ -188,7 +190,8 @@ class Basin:
             elif heads is not None:
                 self.mf6.set_heads(np.asarray(heads, float))
             if self.mf6.end < self.days - self.day - 1e-9:
-                raise ValueError(f"MODFLOW 6 simulation is {self.mf6.end} days; the run needs {self.days - self.day}")
+                self._problem(ValueError(f"MODFLOW 6 simulation is {self.mf6.end} days; the run needs "
+                                         f"{self.days - self.day}"))
         elif cfg.wells or ex or cfg.outputs.get("heads") or cfg.rivers or cfg.transport:
             raise ValueError("wells, rivers, the two-way exchange, transport and head outputs need a [modflow6] model")
         self.transport = {}
@@ -199,49 +202,25 @@ class Basin:
                     t.set_concentration(np.load(Path(restart) / f"concentration_{sp}.npy"))
         self.rivers = None  # built on the first day, once MODFLOW 6's river package has its entries
         if cfg.rivers and cfg.rivers.get("stage", "fixed") not in ("fixed", "surface_depth", "nextgen_depth"):
-            raise ValueError("[rivers] stage must be fixed or surface_depth")
+            self._problem(ValueError("[rivers] stage must be fixed or surface_depth"))
         if cfg.rivers and cfg.rivers.get("stage") in ("surface_depth", "nextgen_depth") and not self.sw.has(S.DEPTH):
-            raise ValueError("[rivers] stage = surface_depth needs the surface model's channel depth "
-                             "(NextGen's t-route, or swatplus-bmi 0.2.0)")
+            self._problem(ValueError("[rivers] stage = surface_depth needs the surface model's channel depth "
+                                     "(NextGen's t-route, or swatplus-bmi 0.2.0)"))
 
         self.ledger = Ledger()
         L = self.ledger
         # recharge: SWAT+ aquifers (or HRUs) -> MODFLOW 6 cells
         self.aquifer_check = None
         self.gw_soil = None
+        self.recharge = None
         if self.mf6 is not None:
-            var = RC.SOURCES[cfg.recharge_source]
-            if not self.sw.has(var):
-                raise ValueError(f"[recharge] source = {cfg.recharge_source} needs the surface model's {var} "
-                                 "(swatplus-bmi 0.6.0 for HRU percolation)")
-            objects = self.sw.names(var)
-            self.map = self._area_map(cfg.recharge_map, objects)
-            if cfg.recharge_source == "hru":
-                areas = S.hru_areas(swat_dir)
-            else:
-                areas = S.aquifer_areas(swat_dir) if swat_dir else self.swat.areas
-            source = np.array([areas[a] for a in objects])
-            self.map.check(self.mf6.cell_area, source, cfg.area_rtol)
-            if cfg.recharge_source == "hru":
-                self.ground_map = self.map  # each HRU's ground in each cell, for groundwater up into the soil
-                # each HRU's rows scaled to its area in SWAT+: the map places, never adds or loses (mapping.py)
-                self.map = self.map.conserving(source)
-                aquifers = self.sw.names(RC.RECHARGE) if self.sw.has(RC.RECHARGE) else []
-                if aquifers:  # SWAT+'s own aquifer recharge, the same percolation summed by aquifer (recharge.py)
-                    a = S.aquifer_areas(swat_dir)
-                    self.aquifer_check = np.array([a[x] for x in aquifers])
-                    L.pair("recharge:made", "recharge:swat_aquifers", rtol=RC.AQUIFER_RTOL)
-            self.recharge = RechargeLink(self.swat, self.mf6, self.map, cfg.recharge_package, source, var)
-            # groundwater up into the soil: SWAT+'s side now, MODFLOW 6's on the first day (coupling/gwsoil.py)
-            if cfg.groundwater_to_soil:
-                gs = cfg.groundwater_to_soil
-                self.gw_soil = GroundwaterToSoil(self.sw, self.ground_map, source, gs["rule"], gs["cap"],
-                                                 gs["package"], saved.get("gw_soil_due") if saved else None)
-                L.pair("gw_soil:due", "gw_soil:received", rtol=FLOAT32)
-            L.pair("recharge:sent", "recharge:received")
-            # what the surface model made, and what the map added to it (+) or couldn't place (-): water from outside
-            L.pair("recharge:sent", ["recharge:made", "recharge:by_the_map"])
-        wells = {w.name: (w.package, self.mf6.node(*w.cell)) for w in cfg.wells}
+            self._part("[recharge]", lambda: self._recharge(cfg, swat_dir, saved))
+        wells = {}
+        self._wells_left_out = set()  # a check's wells with a problem: listed once, not again by the users on them
+        for w in cfg.wells:
+            if self._part(f"well {w.name}", lambda w=w: wells.__setitem__(w.name, (w.package, self.mf6.node(*w.cell)))
+                          or True) is None:
+                self._wells_left_out.add(w.name)
         self.router = Router(self.sw, self.mf6, wells, L)
 
         # stream-aquifer exchange (built on the first day, once MODFLOW 6's river package has its entries)
@@ -252,8 +231,8 @@ class Basin:
         if ex:
             for c in ex_channels:
                 if not self.direct_exchange:
-                    self.router.check(f"swat:point_source:gw_{c}")
-                    self.router.check(f"swat:place_of_use:seep_{c}")
+                    self._part("[exchange]", lambda c=c: self.router.check(f"swat:point_source:gw_{c}"))
+                    self._part("[exchange]", lambda c=c: self.router.check(f"swat:place_of_use:seep_{c}"))
                 k = f"exchange:{c}:"
                 L.pair(k + "due", [k + "applied", k + "shortfall"], rtol=FLOAT32)
             L.zero("swatplus:aquifer_outflow", atol=1e-9)
@@ -262,32 +241,18 @@ class Basin:
         self.utilities = {u["name"]: UtilityChain.from_config(u) for u in cfg.utilities}
         for u in self.utilities.values():
             u.declare(L)
-            for s in u.sources:
-                self.router.check(s.route)
-            self.router.check(u.outfall)
+            for route in [s.route for s in u.sources] + [u.outfall]:
+                if route.removeprefix("well:") not in self._wells_left_out:
+                    self._part(f"utility {u.name}", lambda r=route: self.router.check(r))
         self.users = []
         if users:
             for u in cfg.users:
-                comp = load_component(u.component)
-                wu = WaterUser(u.name, comp, str(u.config) if u.config else None,
-                               variables=u.variables or None, constituents=u.constituents,
-                               report=u.report or None)
-                wu.inputs = self._forcing(u, comp)  # after initialize, when a component's inputs are known
-                self.users.append((u, wu))
-                for route in (u.withdrawal, u.returns):
-                    k, name = kind(route)
-                    if k == "utility":
-                        if name not in self.utilities:
-                            raise KeyError(f"user {u.name}: no utility named {name!r}")
-                    else:
-                        self.router.check(route)
-                k = f"user:{u.name}:"
-                L.pair(k + "withdrawal", [k + "consumption", k + "return", k + "storage_less_gain"])
+                self._part(f"user {u.name}", lambda u=u: self._add_user(u, L))
         # intakes from the aquifer: each user on a configured well, for each species its component takes
         self.intakes = []  # (user, WaterUser, input variable, species, node)
         for u, wu in self.users:
             k, name = kind(u.withdrawal)
-            if k != "well":
+            if k != "well" or name not in wells:
                 continue
             takes = set(wu.bmi.get_input_var_names())
             for sp in self.transport:
@@ -295,28 +260,25 @@ class Basin:
                 if var not in takes:
                     continue
                 if var in (u.inputs or {}):
-                    raise ValueError(f"user {u.name}: {var} is set from the aquifer ([transport.{sp}]); "
-                                     "remove its constant input")
+                    self._problem(ValueError(f"user {u.name}: {var} is set from the aquifer ([transport.{sp}]); "
+                                             "remove its constant input"))
+                    continue
                 self.intakes.append((u.name, wu, var, sp, wells[name][1]))
         self._set_intakes()
         users_by_name = {u.name: wu for u, wu in self.users}
         self.rules = []
         for r in cfg.rules:
-            settings = {k: v for k, v in r.items() if k not in ("name", "kind")}
-            fn = R.BUILT_IN.get(r["kind"]) or _example_function(cfg, r["kind"], "rule")
-            if users and settings.get("user") not in users_by_name:
-                raise KeyError(f"rule {r.get('name', r['kind'])}: no user {settings.get('user')!r}")
-            need = {"curtailment": "limit", "drawdown_limit": "limit", "dry_mode": "dry_mode"}.get(r["kind"])
-            if users and need and need not in users_by_name[settings["user"]].control_vars:
-                raise KeyError(f"rule {r.get('name')}: user {settings['user']!r} takes no {need!r} input")
-            self.rules.append(R.Rule(r.get("name", r["kind"]), fn, settings))
+            self._part(f"rule {r.get('name', r['kind'])}", lambda r=r: self._add_rule(r, users, users_by_name))
         self.rule_memory = {}
 
         # outputs
         out = cfg.outputs
         self.out_channels = out.get("channels", channels)
         self._ch_index = {c: channels.index(c) for c in self.out_channels}
-        self.out_heads = [(h["name"], self.mf6.node(*h["cell"])) for h in out.get("heads", [])]
+        self.out_heads = []
+        for h in out.get("heads", []):
+            self._part(f"head output {h['name']}",
+                       lambda h=h: self.out_heads.append((h["name"], self.mf6.node(*h["cell"]))))
         self.series: dict[str, list[float]] = {f"flow:{c}": [] for c in self.out_channels}
         # NextGen: flow at each nexus, from the flowpaths draining to it (the hydrofabric's topology)
         self._nexus: dict[str, list[int]] = {}
@@ -335,6 +297,90 @@ class Basin:
             self.rule_memory = saved["rule_memory"]
             for _, wu in self.users:
                 wu.fast_forward(self.day)
+
+    # ---------- start-up, and checks ----------
+    def _problem(self, e: Exception):
+        """A problem at start-up: raised in a run, listed in a check, which carries on."""
+        if self._problems is None:
+            raise e
+        self._problems.append(e.args[0] if isinstance(e, KeyError) and e.args else str(e))
+
+    def _part(self, where: str, fn):
+        """One part of the start-up: in a run it is just called, and a problem stops the run; in a check (Basin.check)
+        a problem is listed under ``where`` and the start-up goes on without that part."""
+        if self._problems is None:
+            return fn()
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 (a check lists every kind of problem)
+            msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
+            self._problems.append(msg if msg.startswith(where) else f"{where}: {msg}")
+            return None
+
+    def _recharge(self, cfg, swat_dir, saved):
+        """Recharge from the surface model's aquifers or HRUs into MODFLOW 6's cells, and groundwater back up into the
+        soil (its SWAT+ side; MODFLOW 6's on the first day)."""
+        L = self.ledger
+        var = RC.SOURCES[cfg.recharge_source]
+        if not self.sw.has(var):
+            raise ValueError(f"[recharge] source = {cfg.recharge_source} needs the surface model's {var} "
+                             "(swatplus-bmi 0.6.0 for HRU percolation)")
+        objects = self.sw.names(var)
+        self.map = self._area_map(cfg.recharge_map, objects)
+        if cfg.recharge_source == "hru":
+            areas = S.hru_areas(swat_dir)
+        else:
+            areas = S.aquifer_areas(swat_dir) if swat_dir else self.swat.areas
+        source = np.array([areas[a] for a in objects])
+        self.map.check(self.mf6.cell_area, source, cfg.area_rtol)
+        if cfg.recharge_source == "hru":
+            self.ground_map = self.map  # each HRU's ground in each cell, for groundwater up into the soil
+            # each HRU's rows scaled to its area in SWAT+: the map places, never adds or loses (mapping.py)
+            self.map = self.map.conserving(source)
+            aquifers = self.sw.names(RC.RECHARGE) if self.sw.has(RC.RECHARGE) else []
+            if aquifers:  # SWAT+'s own aquifer recharge, the same percolation summed by aquifer (recharge.py)
+                a = S.aquifer_areas(swat_dir)
+                self.aquifer_check = np.array([a[x] for x in aquifers])
+                L.pair("recharge:made", "recharge:swat_aquifers", rtol=RC.AQUIFER_RTOL)
+        self.recharge = RechargeLink(self.swat, self.mf6, self.map, cfg.recharge_package, source, var)
+        # groundwater up into the soil: SWAT+'s side now, MODFLOW 6's on the first day (coupling/gwsoil.py)
+        if cfg.groundwater_to_soil:
+            gs = cfg.groundwater_to_soil
+            self.gw_soil = GroundwaterToSoil(self.sw, self.ground_map, source, gs["rule"], gs["cap"],
+                                             gs["package"], saved.get("gw_soil_due") if saved else None)
+            L.pair("gw_soil:due", "gw_soil:received", rtol=FLOAT32)
+        L.pair("recharge:sent", "recharge:received")
+        # what the surface model made, and what the map added to it (+) or couldn't place (-): water from outside
+        L.pair("recharge:sent", ["recharge:made", "recharge:by_the_map"])
+
+    def _add_user(self, u, L):
+        comp = load_component(u.component)
+        wu = WaterUser(u.name, comp, str(u.config) if u.config else None,
+                       variables=u.variables or None, constituents=u.constituents,
+                       report=u.report or None)
+        wu.inputs = self._forcing(u, comp)  # after initialize, when a component's inputs are known
+        for route in (u.withdrawal, u.returns):
+            k, name = kind(route)
+            if k == "utility":
+                if name not in self.utilities:
+                    raise KeyError(f"user {u.name}: no utility named {name!r}")
+            elif not (k == "well" and name in self._wells_left_out):
+                self.router.check(route)
+        self.users.append((u, wu))
+        k = f"user:{u.name}:"
+        L.pair(k + "withdrawal", [k + "consumption", k + "return", k + "storage_less_gain"])
+
+    def _add_rule(self, r, users, users_by_name):
+        settings = {k: v for k, v in r.items() if k not in ("name", "kind")}
+        fn = R.BUILT_IN.get(r["kind"]) or _example_function(self.cfg, r["kind"], "rule")
+        if users and settings.get("user") not in users_by_name:
+            raise KeyError(f"rule {r.get('name', r['kind'])}: no user {settings.get('user')!r}")
+        need = {"curtailment": "limit", "drawdown_limit": "limit", "dry_mode": "dry_mode"}.get(r["kind"])
+        if users and need and need not in users_by_name[settings["user"]].control_vars:
+            raise KeyError(f"rule {r.get('name')}: user {settings['user']!r} takes no {need!r} input")
+        if "cell" in settings and self.mf6 is not None:
+            self.mf6.node(*settings["cell"])  # the cell is checked now, not on the first day it's read
+        self.rules.append(R.Rule(r.get("name", r["kind"]), fn, settings))
 
     def _exchange_channels(self, ex) -> list[str]:
         """The channels the exchange's rivers and drains couple, in order; needed before SWAT+ starts."""
@@ -359,14 +405,8 @@ class Basin:
     def _rivers_day(self):
         """Set today's river stages (if from NextGen's depth), before the solve."""
         rv = self.cfg.rivers
-        pkg = rv.get("package", "riv")
         if self.rivers is None:
-            if package_type(self.mf6, pkg) != "riv":
-                raise ValueError(f"[rivers] sets a river (RIV) package's stage; {pkg!r} is "
-                                 f"{package_type(self.mf6, pkg).upper()}")
-            cmap = ChannelMap.from_spec(rv.get("map", ""), self.cfg.folder, self.mf6, pkg, self.sw.names(S.QOUT))
-            self.rivers = (pkg, cmap, self.mf6.get("RBOT", self.mf6.model, pkg.upper()).astype(float),
-                           self.mf6.get("STAGE", self.mf6.model, pkg.upper()).astype(float))
+            self._build_rivers()
         pkg, cmap, rbot, stage0 = self.rivers
         if rv.get("stage") in ("surface_depth", "nextgen_depth"):
             depth = dict(zip(self.sw.names(S.DEPTH), self.sw.get(S.DEPTH)))  # yesterday's (SWAT+) or today's (replay)
@@ -375,6 +415,17 @@ class Basin:
             for i, c in enumerate(cmap.channels):
                 stage[e == i] = rbot[e == i] + float(rv.get("bed_thickness", 1.0)) + depth[c]
             self.mf6.set_stage(pkg, stage)
+
+    def _build_rivers(self):
+        """The river cells by flowpath, once MODFLOW 6 has read its first day."""
+        rv = self.cfg.rivers
+        pkg = rv.get("package", "riv")
+        if package_type(self.mf6, pkg) != "riv":
+            raise ValueError(f"[rivers] sets a river (RIV) package's stage; {pkg!r} is "
+                             f"{package_type(self.mf6, pkg).upper()}")
+        cmap = ChannelMap.from_spec(rv.get("map", ""), self.cfg.folder, self.mf6, pkg, self.sw.names(S.QOUT))
+        self.rivers = (pkg, cmap, self.mf6.get("RBOT", self.mf6.model, pkg.upper()).astype(float),
+                       self.mf6.get("STAGE", self.mf6.model, pkg.upper()).astype(float))
 
     def _rivers_out(self):
         pkg, cmap, _, _ = self.rivers
@@ -433,36 +484,40 @@ class Basin:
             wu.inputs[var] = (lambda value: (lambda t: value))(c)
             self.intake[(user, sp)] = c
 
+    def _build_mass_links(self):
+        """The transport's links, once MODFLOW 6 has read its first day: recharge, the wells and the streams."""
+        rp = self.cfg.recharge_package
+        wells = {w.name: (w.package, self.mf6.entry(w.package, self.mf6.node(*w.cell))) for w in self.cfg.wells}
+        streams = []
+        if self.exchange is not None:
+            streams.append((self.exchange.package, self.exchange.map.entry_channel, self.exchange.map.channels))
+            if self.exchange.drains is not None:
+                dp, dmap = self.exchange.drains
+                streams.append((dp, dmap.entry_channel, dmap.channels))
+        if self.exchange is not None and self.exchange.kind == "sfr":
+            raise NotImplementedError("transport with an SFR exchange needs MODFLOW 6's SFT package for the "
+                                      "streams' concentrations; not built")
+        for sp, t in self.transport.items():
+            if not t.takes_inflow(rp):
+                raise ValueError(f"{t.model.lower()}: the recharge package {rp!r} isn't an AUX source in SSM "
+                                 "(add_transport's sources)")
+            if self.exchange is not None and not t.takes_inflow(self.exchange.package):
+                raise ValueError(f"{t.model.lower()}: the coupled river package {self.exchange.package!r} isn't an "
+                                 "AUX source in SSM, so its losses would carry nothing")
+        self._mass_links = (rp, wells, streams)
+        L = self.ledger
+        for sp in self.transport:
+            k = f"transport:{sp}:"
+            L.pair(k + "recharge:sent", k + "recharge:received")
+            for c in (self.exchange.map.channels if self.exchange is not None else []):
+                L.pair(k + f"stream:{c}:leakage_sent", k + f"stream:{c}:leakage_received")
+            L.zero(k + "closure_share", atol=1e-6)
+
     def _transport_day(self):
         """The day's inflow concentrations, after MODFLOW 6 prepares the day [A]. The couplings are found on the first
         day, once the packages have their entries."""
         if not hasattr(self, "_mass_links"):
-            rp = self.cfg.recharge_package
-            wells = {w.name: (w.package, self.mf6.entry(w.package, self.mf6.node(*w.cell))) for w in self.cfg.wells}
-            streams = []
-            if self.exchange is not None:
-                streams.append((self.exchange.package, self.exchange.map.entry_channel, self.exchange.map.channels))
-                if self.exchange.drains is not None:
-                    dp, dmap = self.exchange.drains
-                    streams.append((dp, dmap.entry_channel, dmap.channels))
-            if self.exchange is not None and self.exchange.kind == "sfr":
-                raise NotImplementedError("transport with an SFR exchange needs MODFLOW 6's SFT package for the "
-                                          "streams' concentrations; not built")
-            for sp, t in self.transport.items():
-                if not t.takes_inflow(rp):
-                    raise ValueError(f"{t.model.lower()}: the recharge package {rp!r} isn't an AUX source in SSM "
-                                     "(add_transport's sources)")
-                if self.exchange is not None and not t.takes_inflow(self.exchange.package):
-                    raise ValueError(f"{t.model.lower()}: the coupled river package {self.exchange.package!r} isn't an "
-                                     "AUX source in SSM, so its losses would carry nothing")
-            self._mass_links = (rp, wells, streams)
-            L = self.ledger
-            for sp in self.transport:
-                k = f"transport:{sp}:"
-                L.pair(k + "recharge:sent", k + "recharge:received")
-                for c in (self.exchange.map.channels if self.exchange is not None else []):
-                    L.pair(k + f"stream:{c}:leakage_sent", k + f"stream:{c}:leakage_received")
-                L.zero(k + "closure_share", atol=1e-6)
+            self._build_mass_links()
         rp, _, streams = self._mass_links
         for sp, t in self.transport.items():
             t.set_inflow(rp, float(self.cfg.transport[sp]["recharge"]))
@@ -603,21 +658,7 @@ class Basin:
     def _modflow_day(self, L, rt):
         self.mf6.prepare_day()
         if self.cfg.exchange and self.exchange is None:
-            ex = self.cfg.exchange
-            names = self.sw.names(S.QOUT)
-            cmap = ChannelMap.from_spec(ex.get("map", ""), self.cfg.folder, self.mf6, ex.get("package", "riv"),
-                                        names, channels=list(self.due))
-            if cmap.channels != list(self.due):
-                raise ValueError(f"exchange map channels {cmap.channels} differ from {list(self.due)}")
-            drains = None
-            if ex.get("drains"):
-                dp = ex["drains"].get("package", "drn")
-                drains = (dp, ChannelMap.from_spec(ex["drains"]["map"], self.cfg.folder, self.mf6, dp, names,
-                                                   channels=list(self.due)))
-            self.exchange = StreamExchange(self.mf6, ex.get("package", "riv"), cmap, drains)
-            if self.exchange.kind == "sfr" and ex.get("limit") is False:
-                raise ValueError("[exchange] limit = false: SFR limits a reach's loss to what it carries itself; the "
-                                 "limit is for a river (RIV) package")
+            self._build_exchange()
         if self.transport:
             self._transport_day()
         sent = self.recharge.transfer()
@@ -672,6 +713,24 @@ class Basin:
         self._groundwater_accounts(L)
         if self.transport:
             self._transport_accounts(L)
+
+    def _build_exchange(self):
+        """The stream-aquifer exchange, once MODFLOW 6 has read its first day (the packages have their entries)."""
+        ex = self.cfg.exchange
+        names = self.sw.names(S.QOUT)
+        cmap = ChannelMap.from_spec(ex.get("map", ""), self.cfg.folder, self.mf6, ex.get("package", "riv"),
+                                    names, channels=list(self.due))
+        if cmap.channels != list(self.due):
+            raise ValueError(f"exchange map channels {cmap.channels} differ from {list(self.due)}")
+        drains = None
+        if ex.get("drains"):
+            dp = ex["drains"].get("package", "drn")
+            drains = (dp, ChannelMap.from_spec(ex["drains"]["map"], self.cfg.folder, self.mf6, dp, names,
+                                               channels=list(self.due)))
+        self.exchange = StreamExchange(self.mf6, ex.get("package", "riv"), cmap, drains)
+        if self.exchange.kind == "sfr" and ex.get("limit") is False:
+            raise ValueError("[exchange] limit = false: SFR limits a reach's loss to what it carries itself; the "
+                             "limit is for a river (RIV) package")
 
     def _groundwater_accounts(self, L):
         """Every flow in or out of the groundwater model that no link carries, by package (water from or to outside
@@ -811,6 +870,39 @@ class Basin:
         if self.mf6 is not None:
             self.mf6.finalize()
         self.swat.finalize()
+
+    @classmethod
+    def check(cls, cfg: C.ExampleConfig, users: bool = True, run: str = "check") -> tuple[list[str], list[str]]:
+        """Every problem the example's start-up can find, without running a day: (problems, notes). The models start
+        as for a run, MODFLOW 6 reads its first day (the packages have their entries then) and the links are built:
+        the SWAT+ settings, the parameters, the recharge map and its areas, the wells', head outputs' and rules'
+        cells, the routes, users and rules, the exchange and its maps (SFR's checks included), the rivers,
+        groundwater into the soil and transport. A part with a problem is listed and left out, and the rest go on;
+        a problem that leaves a model unable to start ends the check there. Notes are the start-up's warnings."""
+        problems: list[str] = []
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                b = cls(cfg, run=run, users=users, days=1, _problems=problems)
+            except Exception as e:  # noqa: BLE001
+                problems.append(f"the start-up stopped: {e}")
+                b = None
+            if b is not None:
+                try:
+                    if b.mf6 is not None and b._part("MODFLOW 6's first day", lambda: b.mf6.prepare_day() or True):
+                        if cfg.exchange:
+                            b._part("[exchange]", b._build_exchange)
+                        if cfg.rivers:
+                            b._part("[rivers]", b._build_rivers)
+                        for name, (pkg, node) in b.router.wells.items():
+                            b._part(f"well {name}", lambda pkg=pkg, node=node: b.mf6.entry(pkg, node))
+                        if b.gw_soil is not None:
+                            b._part("[groundwater_to_soil]", lambda: b.gw_soil.attach(b.mf6))
+                        if b.transport:
+                            b._part("[transport]", b._build_mass_links)
+                finally:
+                    b.finalize()
+        return problems, list(dict.fromkeys(str(w.message) for w in caught))
 
     @classmethod
     def spin_up(cls, cfg: C.ExampleConfig, days: int = 365, cycles: int = 5, tol: float = 0.01, run: str = "spinup",
