@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 10, 2026, release 0.5.0). Built and tested on synthetic examples:
+Status (Nov 11, 2026, release 0.5.1). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;

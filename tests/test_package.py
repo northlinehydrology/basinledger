@@ -59,3 +59,18 @@ def test_command_line_end_to_end(tmp_path, swatplus):
     s = json.loads((out / "summary.json").read_text())
     assert s["days"] == 30 and s["totals"]["route:well:pw1:delivered"] > 0
     assert (out / "ledger.csv").exists() and (out / "series.csv").exists()
+
+
+def test_a_swatplus_built_by_another_wrapper_says_to_rebuild(swatplus, monkeypatch):
+    """A SWAT+ built by an earlier swatplus-bmi speaks an older exchange protocol; the error says how to rebuild."""
+    from swatplus_bmi.exchange import ExchangeError
+
+    from basinledger import driver
+    from conftest import synthetic_config
+
+    def old_build(self, path):
+        raise ExchangeError("SWAT+ speaks exchange protocol 4, this wrapper 5")
+
+    monkeypatch.setattr(driver.SwatPlusBmi, "initialize", old_build)
+    with pytest.raises(ExchangeError, match=r"protocol 4, this wrapper 5: .*swatplus-bmi build --jobs 2"):
+        driver.Basin(synthetic_config(), run="old-build", days=2)

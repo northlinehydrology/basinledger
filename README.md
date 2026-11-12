@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.5.0).** Built and tested:
+**Status: early (0.5.1).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;

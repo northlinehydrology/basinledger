@@ -36,6 +36,7 @@ from pathlib import Path
 
 import numpy as np
 from swatplus_bmi import SwatPlusBmi
+from swatplus_bmi.exchange import ExchangeError
 
 from . import config as C
 from . import rules as R
@@ -116,7 +117,13 @@ class Basin:
                 from . import weather as W
                 W.write_first_days(swat_dir, cfg.weather, S._period(swat_dir)[0])
             self.swat = SwatPlusBmi()
-            self.swat.initialize(str(swat_dir))
+            try:
+                self.swat.initialize(str(swat_dir))
+            except ExchangeError as e:
+                if "protocol" not in str(e):
+                    raise
+                raise ExchangeError(f"{e}: SWAT+ was built by another swatplus-bmi; build it again with this one "
+                                    f"(uv run swatplus-bmi build --jobs 2)") from e
             if wrap_surface is not None:
                 self.swat = wrap_surface(self.swat)
         else:

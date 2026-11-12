@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1 (2026-11-11)
+
+Needs swatplus-bmi 0.9.0. Its exchange protocol changed in 0.8.0, so a SWAT+ built by an earlier swatplus-bmi has to
+be built again (`uv run swatplus-bmi build --jobs 2`). No changes to what Basin Ledger computes.
+
+- swatplus-bmi 0.9.0 required (0.7.0 before); the full suite passes on it unchanged.
+- A SWAT+ built by another swatplus-bmi: the protocol error now says to build it again.
+
 ## 0.5.0 (2026-11-10)
 
 MODFLOW 6 vertex grids. Needs swatplus-bmi 0.7.0, as 0.4.0 did.
