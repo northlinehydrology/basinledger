@@ -33,6 +33,8 @@ users = ["waterledger-models>=3.11", "pyyaml>=6"]
 # NextGen as the surface model: reading NGIAB runs (t-route output, forcing). Below 1.7.5, netCDF4 ships wheels for
 # macOS 13 and 14; 1.7.5 and later need macOS 15 or a local netCDF library to build from source.
 nextgen = ["netCDF4>=1.6,<1.7.5"]
+# building a link from geometry: SFR reaches from channel lines (coupling/sfr.py, through flopy's GridIntersect)
+gis = ["shapely>=2"]
 
 [project.urls]
 Homepage = "https://github.com/northlinehydrology/basinledger"

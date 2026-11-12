@@ -16,7 +16,7 @@ refuses a channel whose streambed rises downstream rather than smoothing it.
 
 ``width``, ``thickness``, ``k``, ``manning`` and ``layer`` take one value, one per reach (in ``reaches``' order) or
 one per channel (a dict). Works on structured (DIS) and vertex (DISV) grids, through flopy's GridIntersect; needs
-shapely (the ``gis`` dependency group).
+shapely (``pip install basinledger[gis]``).
 """
 
 from __future__ import annotations
