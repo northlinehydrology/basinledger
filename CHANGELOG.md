@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- SFR reaches for the exchange, built from SWAT+'s channel lines (`coupling/sfr.py`): `channel_reaches` cuts each
+  channel's line into reaches on a structured or vertex grid, in order downstream; `add_sfr` writes the package the
+  exchange takes (reaches chained within each channel only, Manning's constant for meters and days); and
+  `write_reach_map` writes the `object, reach` map. The streambed's numbers come from the study; a streambed rising
+  downstream is refused, a flat one needs `min_slope`. Needs shapely: the new `gis` extra. The synthetic SFR example
+  is built with it.
+- `basinledger check basin.toml` (`Basin.check`): starts the models, has MODFLOW 6 read its first day, builds every
+  link, and lists every problem the start-up finds, without running a day; exits with 1 if there are any. A rule's
+  cell is now checked at start-up rather than on the first day it's read.
+- The design note's principles: Basin Ledger builds and checks the links between models, never the models.
+
 ## 0.6.0 (2026-11-11)
 
 The two-way exchange through SFR, and calibration parameters with PEST++ IES files. Needs swatplus-bmi 0.9.0, as

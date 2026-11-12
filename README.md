@@ -37,7 +37,7 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - feedback rules: curtailment, dry mode, drawdown limit;
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
   ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river, drain or
-  streamflow routing (SFR) packages;
+  streamflow routing (SFR) packages, with SFR's reaches built from SWAT+'s channel lines (unreleased);
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site): maps, wells,
   head outputs and rules name cells as `layer, row, col` or `layer, icell2d`;
 - groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
@@ -57,7 +57,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   concentration from the aquifer at its well;
 - NextGen as the surface model: a finished NGIAB run replayed day by day, with users on its own hourly forcing;
 - MODFLOW 6 recharge from NextGen (CFE's percolation), used as interim recharge in the Plaster Creek example;
-- the ledger and the command line;
+- the ledger and the command line, with `check`: every problem an example's start-up finds, without running a day
+  (unreleased);
 - calibration records per model. An example is a screening run unless every model it runs is calibrated;
 - calibration parameters written into a run's copy of the models' files: SWAT+ through its own `calibration.cal`
   (swatplus-bmi 0.9.0), MODFLOW 6 as multipliers on package values everywhere, by layer or by zone; and PEST++ IES
@@ -141,7 +142,8 @@ pip install "basinledger[users,nextgen]"      # or: uv add "basinledger[users,ne
 The extras:
 
 - **`users`:** the water-user models from `waterledger-models` (`CoolingWaterBmi`);
-- **`nextgen`:** netCDF4, for reading NextGen runs.
+- **`nextgen`:** netCDF4, for reading NextGen runs;
+- **`gis`:** shapely, for building SFR's reaches from channel lines (`coupling/sfr.py`).
 
 Two model programs aren't Python packages, and come separately:
 
@@ -183,6 +185,7 @@ uv run python -m basinledger run examples/synthetic/surface.toml --baseline   # 
 uv run python -m basinledger run examples/synthetic/two_way.toml --save-at 365 --save runs/warm
 uv run python -m basinledger run examples/synthetic/two_way.toml --restart runs/warm --run scenario
 uv run python -m basinledger status examples/synthetic/surface.toml           # calibrated, or a screening run
+uv run python -m basinledger check examples/synthetic/sfr.toml                # every problem the start-up finds
 uv run python -m basinledger forward basin.toml parameters.csv observations.csv simulated.csv --run-folder runs
 ```
 
@@ -290,6 +293,8 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Utility chain | production = delivery + losses = the sum of its sources; sewer = plant outfall |
 | Rules | act on exactly the days after the trigger; a curtailed user takes nothing; dry mode uses less water and more electricity |
 | Two-way exchange | SWAT+'s aquifer returns nothing and stores exactly its recharge; each day's river exchange reaches SWAT+ the next day, whole |
+| SFR from channel lines | reaches in order downstream with the line's length kept, on structured and vertex grids; chained within each channel; the package the exchange takes; a streambed rising downstream, a flat one and other units refused |
+| Checked before a run | a good example has no problems; several mistakes are each listed, and what depends on them isn't; a run still stops at the first |
 | Through SFR | a channel's water in at its top reach; no reach loses more than it carries; MODFLOW 6's budget closes and its SFR term is the exchange; reaches between channels, other units and storage refused; restarts bit for bit |
 | Groundwater transport | each species' mass closes every day; uniform recharge concentration reaches every cell at steady state; a column matches Ogata and Banks (1961) within 1% of C0; a well's user takes in the aquifer's concentration a day later |
 | Conservation across links | recharge keeps the surface model's volume; a channel never loses more than it carries; water from outside and the release from storage booked; wrong coupling settings refused at start-up |
