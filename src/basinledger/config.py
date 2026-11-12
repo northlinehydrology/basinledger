@@ -49,11 +49,13 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     cell = [0, 20, 30]                  # layer, row, col (0-based) on a structured grid (DIS); layer, icell2d on a
                                         #   vertex grid (DISV), e.g. [0, 412]
 
-    [exchange]                          # optional: two-way stream-aquifer exchange (MODFLOW 6 RIV <-> SWAT+)
-    package = "riv"
+    [exchange]                          # optional: two-way stream-aquifer exchange (MODFLOW 6 RIV or SFR <-> SWAT+)
+    package = "riv"                     #   a river (RIV) or streamflow routing (SFR) package
     map = "all:cha01"                   # every RIV entry to one channel, or a CSV: object, layer, row, col (or
-                                        #   object, layer, icell2d on a DISV grid, or object, node; mapping.py)
-    limit = true                        # a losing reach takes no more than its channel carries (default)
+                                        #   object, layer, icell2d on a DISV grid, or object, node; mapping.py; or
+                                        #   object, reach for SFR's 0-based reach numbers)
+    limit = true                        # RIV: a losing reach takes no more than its channel carries (default; SFR
+                                        #   does this itself)
     drains = {package = "drn", map = "maps/drains.csv"}   # optional: seepage cells, to their channels the next day
 
     [transport.chloride]                # optional: a MODFLOW 6 transport model per species (coupling/transport.py),
@@ -87,6 +89,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
 
     [calibration]                       # optional: the example's calibration record
     record = "calibration/record.toml"  # without one, the example is a screening run
+    parameters = "calibration/parameters.csv"  # optional: applied on every run (calibration.py's table)
+    zones = "calibration/zones.csv"     # optional: MODFLOW 6 cells' zones for parameters by zone
 
     [[users]]
     name = "plant"
@@ -179,6 +183,8 @@ class ExampleConfig:
     wells: list[WellConfig]
     users: list[UserConfig]
     calibration_record: Path | None = None
+    calibration_parameters: Path | None = None
+    calibration_zones: Path | None = None
     places_of_use: list[tuple[str, str]] = field(default_factory=list)
     point_sources: list[tuple[str, str]] = field(default_factory=list)
     exchange: dict | None = None
@@ -311,6 +317,9 @@ def load(path: str | Path) -> ExampleConfig:
                for w in c.get("wells", [])],
         users=users,
         calibration_record=_path(base, c["calibration"]["record"]) if c.get("calibration", {}).get("record") else None,
+        calibration_parameters=(_path(base, c["calibration"]["parameters"])
+                                if c.get("calibration", {}).get("parameters") else None),
+        calibration_zones=_path(base, c["calibration"]["zones"]) if c.get("calibration", {}).get("zones") else None,
         places_of_use=[(x["name"], x["channel"]) for x in sw.get("places_of_use", [])],
         point_sources=[(x["name"], x["channel"]) for x in sw.get("point_sources", [])],
         exchange=c.get("exchange"),

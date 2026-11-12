@@ -5,20 +5,31 @@ Built:
 - parameters and observations as tables (CSV);
 - simulated values at observations, from a run's series (channel flow, heads at named cells);
 - statistics: NSE, KGE, percent bias, a low-flow NSE (on log flows), mean error and RMSE;
-- the forward model: run an example and write simulated values at every observation, for PEST++ to read.
+- the forward model: run an example and write simulated values at every observation, for PEST++ to read;
+- applying a parameter set to a run's copy of the models' files before they start (``apply_parameters``): SWAT+
+  through its own ``calibration.cal`` (swatplus-bmi 0.9.0, which refuses changes SWAT+ 62.0.1 wouldn't make as
+  asked), MODFLOW 6 as multipliers on package values, everywhere, by layer or by zone (flopy);
+- the example's own parameter set, applied on every run (``[calibration] parameters``), with the forward model's
+  values in place of any it names;
+- PEST++ IES files (``write_pest_files``): the control file, a template for the parameter table and an instruction
+  file for the simulated values; the forward model as the model command (``python -m basinledger forward``).
 
 Not built yet (docs/design.md, Calibration):
-- applying a parameter set to the models' input files: SWAT+ through ``calibration.cal``, MODFLOW 6 arrays by zone or
-  pilot point (flopy, pyEMU), users through their config. ``apply_parameters`` refuses anything it can't apply yet;
-- writing PEST++ IES control and template files (pyEMU);
-- fetching observations: USGS daily streamflow and groundwater levels (``dataretrieval``), matched to hydrofabric
-  flowpaths and nexuses and to MODFLOW 6 cells.
+- water users' parameters (set from the applicant's data in each user's config, not calibrated);
+- MODFLOW 6 values by pilot point (pyEMU);
+- fetching USGS groundwater levels, matched to MODFLOW 6 cells.
 
 Tables:
 
     parameters.csv    name, model, target, value, lower, upper, transform
-                      model: swatplus | modflow6 | user; target: what it changes (a calibration.cal parameter and
-                      object, a MODFLOW 6 package array and zone, a user's config key); transform: none | log
+                      model: swatplus | modflow6 | user; transform: none | log; target: what the value changes
+                      swatplus: <calibration.cal name>:<change>[:objects=1,2,...][:layers=1-2][:<condition>=<value>]
+                        change absval | abschg | pctchg | relchg; conditions hsg, texture, landuse (HRUs only);
+                        e.g. cn2:pctchg, awc:absval:layers=1-2, cn2:pctchg:hsg=D
+                      modflow6: <package>.<value>:<where>, the value multiplied by the parameter's value
+                        a griddata array (npf.k, npf.k22, npf.k33, sto.sy, sto.ss) or a column of a list package (riv.cond,
+                        drn.cond, ghb.cond, sfr.rhk, sfr.man); where all | layer=<n> (0-based) | zone=<id>
+                        (``[calibration] zones``: a CSV of cells, layer, row, col or layer, icell2d, and zone)
     observations.csv  name, kind, object, date, value, weight, source
                       kind: flow (m3 s-1, object = channel or hydrofabric id) | head (m, object = a named head
                       output); date ISO; source: e.g. "USGS 04119055 dv"
@@ -123,12 +134,133 @@ def read_observations(path: Path) -> list[Observation]:
     return obs
 
 
-def apply_parameters(model: str, folder: Path, params: list[Parameter]):
+def merged(base: list[Parameter], over: list[Parameter]) -> list[Parameter]:
+    """``base`` with ``over``'s values in place of any it names, and ``over``'s others after."""
+    names = {p.name for p in over}
+    return [p for p in base if p.name not in names] + list(over)
+
+
+def apply_parameters(model: str, folder: Path, params: list[Parameter], zones: Path | None = None,
+                     gwf: str = "gwf"):
     """Write a parameter set into a run's copy of one model's inputs, before it starts (the driver's ``prepare``
-    hook). Not built yet for any model."""
+    hook): ``swatplus`` into the run's ``calibration.cal``, ``modflow6`` into the packages of model ``gwf``.
+    Water users' parameters aren't built."""
     mine = [p for p in params if p.model == model]
-    if mine:
-        raise NotImplementedError(f"applying {model} parameters is planned; see docs/design.md, Calibration")
+    if not mine:
+        return
+    if model == "swatplus":
+        from swatplus_bmi.calibration import write_changes
+        write_changes(folder, [swatplus_change(p) for p in mine])
+    elif model == "modflow6":
+        apply_modflow6(Path(folder), mine, zones, gwf)
+    else:
+        raise NotImplementedError(f"{model} parameters: set them in the user's config (from the applicant's data); "
+                                  "calibrating them isn't built")
+
+
+def swatplus_change(p: Parameter):
+    """A SWAT+ parameter's ``target`` (module docstring) as a calibration.cal row."""
+    from swatplus_bmi.calibration import CONDITIONS, Change
+    name, *rest = p.target.split(":")
+    if not rest or "=" in rest[0]:
+        raise ValueError(f"parameter {p.name}: a SWAT+ target is <name>:<change>[:...], not {p.target!r}")
+    change, objects, layers, conditions = rest[0], (), (0, 0), []
+    for part in rest[1:]:
+        key, _, val = part.partition("=")
+        if key == "objects":
+            objects = tuple(int(i) for i in val.split(","))
+        elif key == "layers":
+            first, _, last = val.partition("-")
+            layers = (int(first), int(last or first))
+        elif key in CONDITIONS:
+            conditions.append((key, val))
+        else:
+            raise ValueError(f"parameter {p.name}: {key!r} in {p.target!r}; a SWAT+ target takes objects, layers "
+                             f"and the conditions {CONDITIONS}")
+    return Change(name, p.value, change, objects, layers, tuple(conditions))
+
+
+MF6_ARRAYS = {"npf": ("k", "k22", "k33"), "sto": ("sy", "ss")}
+MF6_COLUMNS = {"riv": ("cond",), "drn": ("cond",), "ghb": ("cond",), "sfr": ("rhk", "man")}
+
+
+def read_zones(path: Path, shape: tuple[int, ...]) -> np.ndarray:
+    """A zone per cell (-1 where none is given), in the grid's user shape: (nlay, nrow, ncol) or (nlay, ncpl)."""
+    z = np.full(shape, -1, dtype=int)
+    with open(path, newline="") as f:
+        for r in csv.DictReader(f):
+            cols = ("layer", "row", "col") if len(shape) == 3 else ("layer", "icell2d")
+            if any(not (r.get(c) or "").strip() for c in cols):
+                raise ValueError(f"{path}: a zone row gives {', '.join(cols)} and zone on this grid")
+            z[tuple(int(r[c]) for c in cols)] = int(r["zone"])
+    return z
+
+
+def apply_modflow6(folder: Path, params: list[Parameter], zones: Path | None, gwf: str):
+    """Each parameter's value multiplies a package value (module docstring) where its target says. Only the
+    packages changed are written again, at full precision."""
+    import flopy
+
+    sim = flopy.mf6.MFSimulation.load(sim_ws=str(folder), verbosity_level=0)
+    sim.simulation_data.float_precision, sim.simulation_data.float_characters = 17, 26
+    m = sim.get_model(gwf)
+    shape = tuple(int(n) for n in m.modelgrid.shape)
+    zone = read_zones(zones, shape) if zones else None
+    changed = {}
+    for p in params:
+        what, _, where = p.target.partition(":")
+        pkg_name, _, value = what.partition(".")
+        pkg = m.get_package(pkg_name)
+        if pkg is None:
+            raise ValueError(f"parameter {p.name}: model {gwf} has no package {pkg_name!r}")
+        ptype = pkg.package_type
+        key, _, arg = (where or "all").partition("=")
+        if key == "all":
+            mask = np.ones(shape, bool)
+        elif key == "layer":
+            if not 0 <= int(arg) < shape[0]:
+                raise ValueError(f"parameter {p.name}: layer {arg} isn't in the grid's {shape[0]} (from 0)")
+            mask = np.zeros(shape, bool)
+            mask[int(arg)] = True
+        elif key == "zone":
+            if zone is None:
+                raise ValueError(f"parameter {p.name}: zone={arg} needs [calibration] zones")
+            mask = zone == int(arg)
+        else:
+            raise ValueError(f"parameter {p.name}: where is all, layer=<n> or zone=<id>, not {where!r}")
+        if not mask.any():
+            raise ValueError(f"parameter {p.name}: {where} has no cells")
+        if value in MF6_ARRAYS.get(ptype, ()):
+            arr = getattr(pkg, value)
+            data = np.array(arr.array, dtype=float).reshape(shape)
+            data[mask] *= p.value
+            setattr(pkg, value, data)
+        elif value in MF6_COLUMNS.get(ptype, ()):
+            hit = 0
+            blocks = ([pkg.packagedata] if ptype == "sfr" else [pkg.stress_period_data])
+            for block in blocks:
+                data = block.get_data()
+                periods = data if isinstance(data, dict) else {None: data}
+                for per, rows in periods.items():
+                    if rows is None:
+                        continue
+                    rows = rows.copy()
+                    sel = np.array([isinstance(c, tuple) and bool(mask[c]) for c in rows["cellid"]])
+                    rows[value][sel] = rows[value][sel] * p.value
+                    hit += int(sel.sum())
+                    if per is None:
+                        block.set_data(rows)
+                    else:
+                        block.set_data(rows, key=per)
+            if not hit:
+                raise ValueError(f"parameter {p.name}: {pkg_name} has no entries in {where or 'all'}")
+        else:
+            known = MF6_ARRAYS.get(ptype, ()) + MF6_COLUMNS.get(ptype, ())
+            raise ValueError(f"parameter {p.name}: {ptype}.{value} isn't a value Basin Ledger multiplies"
+                             + (f" ({ptype}: {', '.join(known)})" if known else ""))
+        changed[pkg_name] = pkg
+    for pkg in changed.values():
+        pkg.write()
 
 
 def simulated(series: dict[str, list[float]], dates: list[str], observations: list[Observation]) -> np.ndarray:
@@ -196,16 +328,19 @@ def statistics(observations: list[Observation], sim: np.ndarray) -> dict[str, di
 
 
 def run_forward_model(config: str | Path, parameters: Path | None, observations: Path, out: Path,
-                      run: str = "calibration") -> Path:
-    """The forward model PEST++ calls: apply a parameter set, run the example, and write the simulated value at
-    every observation (name, simulated) to ``out``."""
+                      run: str = "calibration", run_folder: str | Path | None = None) -> Path:
+    """The forward model PEST++ calls: apply a parameter set (the example's own, with these values in place of any
+    it names), run the example, and write the simulated value at every observation (name, simulated) to ``out``.
+    ``run_folder``: where the run's files go, instead of the example's, so parallel workers don't share one."""
     from . import config as C
     from .driver import Basin
 
     cfg = C.load(config)
+    if run_folder is not None:
+        cfg.run_folder = Path(run_folder).resolve()
     obs = read_observations(observations)
     params = read_parameters(parameters) if parameters else []
-    b = Basin(cfg, run=run, prepare=lambda model, folder: apply_parameters(model, folder, params))
+    b = Basin(cfg, run=run, parameters=params)
     try:
         b.run()
         sim = simulated(b.series, b.dates(), obs)
@@ -219,8 +354,85 @@ def run_forward_model(config: str | Path, parameters: Path | None, observations:
     return out
 
 
-def write_pest_files(*args, **kwargs):
-    raise NotImplementedError("PEST++ IES control and template files (pyEMU) are planned; see docs/design.md")
+PEST_NAME = 200  # PEST++'s longest parameter or observation name
+
+
+def _pest_name(kind: str, name: str) -> str:
+    if not name or len(name) > PEST_NAME or any(c.isspace() for c in name):
+        raise ValueError(f"{kind} {name!r}: PEST++ names are 1 to {PEST_NAME} characters with no spaces")
+    return name.lower()
+
+
+def write_pest_files(config: str | Path, parameters: Path, observations: Path, folder: Path, reals: int = 50,
+                     iterations: int = 3, python: str | None = None) -> Path:
+    """PEST++ IES files for an example, in ``folder``: ``parameters.csv.tpl`` (the parameter table with each value
+    a PEST++ marker), ``simulated.csv.ins`` (where each observation's value is in the forward model's output), a copy
+    of the observations, and ``basin.pst``, whose model command runs the forward model in the worker's own folder
+    (``python -m basinledger forward``). Parameters start at their values in ``parameters``; observations carry their
+    weights, grouped by kind and object. ``reals``: the ensemble's size; ``iterations``: IES's iterations
+    (NOPTMAX). Returns the control file."""
+    import shutil
+    import sys
+
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    params, obs = read_parameters(parameters), read_observations(observations)
+    pnames = [_pest_name("parameter", p.name) for p in params]
+    onames = [_pest_name("observation", o.name) for o in obs]
+    for kind, names in (("parameter", pnames), ("observation", onames)):
+        dup = sorted({n for n in names if names.count(n) > 1})
+        if dup:
+            raise ValueError(f"{kind} names {dup} repeat (PEST++ doesn't tell case apart)")
+    for p in params:
+        if p.transform not in ("none", "log"):
+            raise ValueError(f"parameter {p.name}: transform is none or log, not {p.transform!r}")
+        if p.transform == "log" and p.lower <= 0:
+            raise ValueError(f"parameter {p.name}: a log parameter's lower bound must be above 0")
+
+    with open(folder / "parameters.csv.tpl", "w", newline="") as f:
+        f.write("ptf ~\n")
+        w = csv.writer(f, lineterminator="\n")
+        w.writerow(["name", "model", "target", "value", "lower", "upper", "transform"])
+        for p, n in zip(params, pnames):
+            w.writerow([p.name, p.model, p.target, f"~{n:^24}~", p.lower, p.upper, p.transform])
+    with open(folder / "simulated.csv.ins", "w") as f:
+        f.write("pif ~\nl1\n" + "".join(f"l1 ~,~ !{n}!\n" for n in onames))
+    shutil.copyfile(observations, folder / "observations.csv")
+
+    groups = list(dict.fromkeys(p.model for p in params))
+    ogroups = [f"{o.kind}_{o.object}".lower() for o in obs]
+    py = python or sys.executable
+    lines = [
+        "pcf",
+        "* control data",
+        "restart estimation",
+        f"{len(params)} {len(obs)} {len(groups)} 0 {len(set(ogroups))}",
+        "1 1 single point 1 0 0",
+        "10.0 -3.0 0.3 0.03 10",
+        "10.0 10.0 0.001",
+        "0.1",
+        f"{iterations} 0.005 4 4 0.005 4",
+        "1 1 1",
+        "* parameter groups",
+        *[f"{g} relative 0.01 0.0 switch 2.0 parabolic" for g in groups],
+        "* parameter data",
+        *[f"{n} {p.transform} {'factor' if p.transform == 'log' else 'relative'} {p.value!r} {p.lower!r} "
+          f"{p.upper!r} {p.model} 1.0 0.0 1" for p, n in zip(params, pnames)],
+        "* observation groups",
+        *list(dict.fromkeys(ogroups)),
+        "* observation data",
+        *[f"{n} {o.value!r} {o.weight!r} {g}" for o, n, g in zip(obs, onames, ogroups)],
+        "* model command line",
+        f"{py} -m basinledger forward {Path(config).resolve()} parameters.csv observations.csv simulated.csv "
+        "--run-folder runs",
+        "* model input/output",
+        "parameters.csv.tpl parameters.csv",
+        "simulated.csv.ins simulated.csv",
+        f"++ ies_num_reals({reals})",
+    ]
+    pst = folder / "basin.pst"
+    pst.write_text("\n".join(lines) + "\n")
+    return pst
 
 
 USGS_DAILY = "https://api.waterdata.usgs.gov/ogcapi/v0/collections/daily/items"

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.0 (2026-11-11)
+
+The two-way exchange through SFR, and calibration parameters with PEST++ IES files. Needs swatplus-bmi 0.9.0, as
+0.5.1 did.
+
+- The two-way exchange through MODFLOW 6's streamflow routing package (`[exchange] package` an SFR package): each
+  coupled channel's water goes in at its top reach, SFR computes the stages (Manning's equation) and the leakage
+  inside the solve, so a reach can't lose more than it carries, and the channel's net exchange goes to SWAT+ the next
+  day, as with RIV (`exchange:<channel>:sfr_inflow`). SWAT+ stays the only model routing between channels: reaches
+  connected across channels, a channel with more than one top reach, diversions, the mover, SFR's storage option and
+  a Manning's constant for other units than meters and days are refused at start-up, as are `limit = false`,
+  `[rivers]` on the SFR package and transport with an SFR exchange. Maps can give reaches by number (`object,
+  reach`). The synthetic example `sfr.toml`; restarts match the unbroken run bit for bit.
+- Calibration parameters written into a run's copy of the models' files before they start
+  (`calibration.apply_parameters`): SWAT+ through its own `calibration.cal` (swatplus-bmi 0.9.0, which refuses
+  changes SWAT+ 62.0.1 wouldn't make as asked), with targets like `cn2:pctchg` or `awc:absval:layers=1-2`; MODFLOW 6
+  as multipliers on `npf.k`, `npf.k22`, `npf.k33`, `sto.sy`, `sto.ss`, `riv.cond`, `drn.cond`, `ghb.cond`, `sfr.rhk`
+  and `sfr.man`, everywhere, by layer or by zone (`[calibration] zones`). The example's own set (`[calibration]
+  parameters`) is applied on every run, with a calibration's values in place of any it names; `Basin(...,
+  parameters=...)`. Water users' parameters, and parameters for a model the example doesn't run, are refused.
+- PEST++ IES files (`calibration.write_pest_files`): the control file, a template of the parameter table and the
+  instructions for the simulated values, with `python -m basinledger forward` (new) as the model command, each
+  worker running in its own folder (`--run-folder`).
+
 ## 0.5.1 (2026-11-11)
 
 Needs swatplus-bmi 0.9.0. Its exchange protocol changed in 0.8.0, so a SWAT+ built by an earlier swatplus-bmi has to

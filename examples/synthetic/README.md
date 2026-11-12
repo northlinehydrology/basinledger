@@ -34,6 +34,8 @@ Two more configs use the same SWAT+ project:
   - Porosity 0.25, longitudinal dispersivity 5 m, a start of 0.01 kg/m³, all [A].
   - Recharge carries 0.03 kg/m³ and the river's losses 0.02 kg/m³ [A], so the aquifer's chloride rises.
   - The user (`intake_user.toml`) takes in the aquifer's chloride at its well, a day late, and returns all of it.
+- **`sfr.toml`:** `two_way.toml` with the river as MODFLOW 6's streamflow routing package (SFR): the channel's
+  water in at the top reach, SFR's stages and leakage back to the channel the next day.
 - **`disv.toml`:** `two_way.toml` on a vertex grid (DISV), with transport's chloride and a drawdown rule.
   - The same 10 ha aquifer as 4 × 4 cells of 79 m, the 2 × 2 block east of center refined to 40 m (`model.py`,
     `build_small_disv`), 28 cells. Each large cell beside the block lists the vertex mid-edge, so MODFLOW 6 connects

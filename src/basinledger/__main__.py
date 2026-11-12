@@ -3,11 +3,14 @@
     python -m basinledger run basin.toml [--run NAME] [--days N] [--baseline] [--out DIR]
                                          [--save-at DAY --save DIR] [--restart DIR]
     python -m basinledger status basin.toml
+    python -m basinledger forward basin.toml parameters.csv observations.csv simulated.csv [--run-folder DIR]
 
 ``run`` steps the example's models through its period (or ``--days``), checking the ledger every day, and writes
 ledger.csv, series.csv and summary.json to the run's outputs folder. ``--baseline`` runs it without its water users.
 ``--save-at`` stops after that day and saves the state to ``--save``; ``--restart`` carries on from a saved state.
-``status`` prints whether the example is calibrated or a screening run.
+``status`` prints whether the example is calibrated or a screening run. ``forward`` is the forward model PEST++
+runs (calibration.py): the parameter set applied, the example run, and its value at each observation written;
+``--run-folder`` puts the run's files there instead of the example's run folder.
 """
 
 from __future__ import annotations
@@ -34,7 +37,16 @@ def main(argv=None) -> int:
     r.add_argument("--restart", default=None, help="carry on from a saved state")
     s = sub.add_parser("status", help="calibrated or screening run")
     s.add_argument("config")
+    f = sub.add_parser("forward", help="the forward model for PEST++")
+    for name in ("config", "parameters", "observations", "out"):
+        f.add_argument(name)
+    f.add_argument("--run-folder", default=None, help="where the run's files go (default: the example's)")
     a = ap.parse_args(argv)
+
+    if a.cmd == "forward":
+        from .calibration import run_forward_model
+        run_forward_model(a.config, a.parameters, a.observations, a.out, run_folder=a.run_folder)
+        return 0
 
     if a.cmd == "status":
         cfg = C.load(a.config)

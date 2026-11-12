@@ -25,8 +25,9 @@ another in a process (finalize, then a new Modflow6), but not overlap.
 **Restarts.** MODFLOW 6's state, for the packages used so far, is its heads. A scenario restarts from a saved day with
 a simulation covering only the days left (``remaining_simulation``) and the saved heads put straight into memory
 (``set_heads``) after initialize and before the first step. MODFLOW 6 takes the start of a step's heads as its old
-heads, so the restarted run continues exactly. Writing the heads to the IC file would round them. Advanced packages
-with their own state (SFR stages, MAW, UZF) will need their state saved too.
+heads, so the restarted run continues exactly. Writing the heads to the IC file would round them. SFR without its
+storage option keeps no water from day to day; advanced packages with their own state (MAW, UZF, SFR with storage)
+will need their state saved too.
 """
 
 from __future__ import annotations

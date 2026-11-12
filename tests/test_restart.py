@@ -18,7 +18,7 @@ def config(name):
     return cfg
 
 
-@pytest.mark.parametrize("example", ["surface.toml", "two_way.toml"])
+@pytest.mark.parametrize("example", ["surface.toml", "two_way.toml", "sfr.toml"])
 def test_restart_matches_the_unbroken_run(example, swatplus):
     n, k = 500, 200
     tag = example.split(".")[0]

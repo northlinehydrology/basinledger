@@ -42,7 +42,7 @@ from . import config as C
 from . import rules as R
 from .chain import UtilityChain
 from .coupling import swatplus as S
-from .coupling.exchange import ChannelMap, StreamExchange, requests as exchange_requests
+from .coupling.exchange import ChannelMap, StreamExchange, package_type, requests as exchange_requests
 from .coupling.gwsoil import GroundwaterToSoil
 from .coupling.modflow6 import Modflow6, remaining_simulation
 from .coupling import recharge as RC
@@ -66,15 +66,30 @@ def _example_function(cfg: C.ExampleConfig, spec: str, default: str):
 class Basin:
     def __init__(self, cfg: C.ExampleConfig, run: str = "base", users: bool = True, days: int | None = None,
                  restart: str | Path | None = None, prepare=None, heads: np.ndarray | None = None,
-                 wrap_surface=None):
+                 wrap_surface=None, parameters: list | None = None):
         """``prepare(model, folder)``, if given, is called on the run's copy of each model's files ("swatplus",
-        "modflow6") before that model starts: where a calibration writes a parameter set. ``heads``: MODFLOW 6's
+        "modflow6") before that model starts, after the parameter set is written into them: the example's own
+        (``[calibration] parameters``) with ``parameters``' values in place of any it names (calibration.py's
+        ``apply_parameters``). ``heads``: MODFLOW 6's
         starting heads (per reduced node), in place of its input's, as from ``spin_up``. ``wrap_surface(model)``,
         if given, returns what the driver steps in place of the surface model once it has started: a study's way to
         hold or replace one of its values through BMI each day (a process substitution), with everything else
         passed through."""
         self.cfg = cfg
         self.status = cfg.calibration_status  # 'screening' unless the example's record says 'calibrated'
+        from .calibration import apply_parameters, merged, read_parameters
+        own = read_parameters(cfg.calibration_parameters) if cfg.calibration_parameters else []
+        self.parameters = merged(own, parameters or [])
+        unused = sorted({q.model for q in self.parameters} - set(cfg.models) - {"user"})
+        if unused:
+            raise ValueError(f"parameters for {', '.join(unused)}, which this example doesn't run ({cfg.models})")
+        user_prepare = prepare
+
+        def prepare(model, folder):
+            apply_parameters(model, folder, self.parameters, cfg.calibration_zones, cfg.mf6_model)
+            if user_prepare:
+                user_prepare(model, folder)
+
         self.folder = cfg.run_folder / run
         if self.folder.exists():
             shutil.rmtree(self.folder)
@@ -106,8 +121,7 @@ class Basin:
                 print_daily(swat_dir, ["lsunit_wb", "channel_sd"])
             if cfg.outputs.get("balance"):      # the whole-basin balance reads SWAT+'s daily land budget
                 print_daily(swat_dir, ["basin_wb", "channel_sd", "reservoir"])
-            if prepare:
-                prepare("swatplus", swat_dir)
+            prepare("swatplus", swat_dir)
             problems = S.coupling_problems(swat_dir, two_way=bool(ex))
             if problems:
                 raise ValueError("SWAT+ isn't set up to be coupled:\n- " + "\n- ".join(problems))
@@ -167,8 +181,7 @@ class Basin:
                 remaining_simulation(cfg.mf6_workspace, ws, self.day)
             else:
                 shutil.copytree(cfg.mf6_workspace, ws)
-            if prepare:
-                prepare("modflow6", ws)
+            prepare("modflow6", ws)
             self.mf6 = Modflow6(ws, cfg.mf6_model)
             if saved:
                 self.mf6.set_heads(np.load(Path(restart) / "heads.npy"))
@@ -348,6 +361,9 @@ class Basin:
         rv = self.cfg.rivers
         pkg = rv.get("package", "riv")
         if self.rivers is None:
+            if package_type(self.mf6, pkg) != "riv":
+                raise ValueError(f"[rivers] sets a river (RIV) package's stage; {pkg!r} is "
+                                 f"{package_type(self.mf6, pkg).upper()}")
             cmap = ChannelMap.from_spec(rv.get("map", ""), self.cfg.folder, self.mf6, pkg, self.sw.names(S.QOUT))
             self.rivers = (pkg, cmap, self.mf6.get("RBOT", self.mf6.model, pkg.upper()).astype(float),
                            self.mf6.get("STAGE", self.mf6.model, pkg.upper()).astype(float))
@@ -429,6 +445,9 @@ class Basin:
                 if self.exchange.drains is not None:
                     dp, dmap = self.exchange.drains
                     streams.append((dp, dmap.entry_channel, dmap.channels))
+            if self.exchange is not None and self.exchange.kind == "sfr":
+                raise NotImplementedError("transport with an SFR exchange needs MODFLOW 6's SFT package for the "
+                                          "streams' concentrations; not built")
             for sp, t in self.transport.items():
                 if not t.takes_inflow(rp):
                     raise ValueError(f"{t.model.lower()}: the recharge package {rp!r} isn't an AUX source in SSM "
@@ -596,6 +615,9 @@ class Basin:
                 drains = (dp, ChannelMap.from_spec(ex["drains"]["map"], self.cfg.folder, self.mf6, dp, names,
                                                    channels=list(self.due)))
             self.exchange = StreamExchange(self.mf6, ex.get("package", "riv"), cmap, drains)
+            if self.exchange.kind == "sfr" and ex.get("limit") is False:
+                raise ValueError("[exchange] limit = false: SFR limits a reach's loss to what it carries itself; the "
+                                 "limit is for a river (RIV) package")
         if self.transport:
             self._transport_day()
         sent = self.recharge.transfer()
@@ -608,16 +630,23 @@ class Basin:
         if self.cfg.rivers:
             self._rivers_day()
         limit = None
-        if self.exchange is not None and self.cfg.exchange.get("limit", True):
-            # a losing reach takes no more than its channel carries today, within the solve (exchange.limit)
-            # what each channel has without today's exchange, which won't be there tomorrow when this one is taken
+        sfr = self.exchange is not None and self.exchange.kind == "sfr"
+        if self.exchange is not None and (sfr or self.cfg.exchange.get("limit", True)):
+            # what each channel has without today's exchange, which won't be there tomorrow when this one is taken:
+            # SFR's inflow, or RIV's limit (a losing reach takes no more than its channel carries, exchange.limit)
             flow = dict(zip(self.sw.names(S.QOUT), self.sw.get(S.QOUT) * DAY))
             if self.direct_exchange:
                 applied = self._exchanged
             else:
                 applied = {c: L.today(f"route:swat:point_source:gw_{c}:delivered")
                            - L.today(f"route:swat:place_of_use:seep_{c}:delivered") for c in self.due}
-            limit = self.exchange.limit({c: max(flow[c] - applied[c], 0.0) for c in self.due})
+            available = {c: max(flow[c] - applied[c], 0.0) for c in self.due}
+            if sfr:
+                self.exchange.set_inflow(available)
+                for c, v in available.items():
+                    L.enter(f"exchange:{c}:sfr_inflow", v)
+            else:
+                limit = self.exchange.limit(available)
         if self.gw_soil is not None:
             if self.gw_soil.mf6 is None:
                 self.gw_soil.attach(self.mf6)

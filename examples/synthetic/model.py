@@ -93,6 +93,36 @@ def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevatio
     return ws
 
 
+SFR_WIDTH = 2.0      # m [A]
+SFR_SLOPE = 0.001    # [A]
+SFR_BED_K = 20.0 / (SFR_WIDTH * SMALL_CELL)  # m d-1 [A]: with a 1 m bed, a reach conducts as a RIV entry, 20 m2 d-1
+
+
+def build_small_sfr(workspace: str | Path, days: int, start: dt.date, unit_conversion: float | None = 86400.0,
+                    time_conversion: float | None = None, storage: bool = False, split: int | None = None) -> Path:
+    """``build_small`` with the river as a streamflow routing (SFR) package: a reach in each west-edge cell, a chain
+    from north to south, the streambed top falling from 88.0 m at SFR_SLOPE, and each reach's bed conductance the RIV
+    entries' (20 m2 d-1). Its inflow is set by Basin Ledger each day. For the coupling's refusals: ``unit_conversion``
+    and ``time_conversion`` (Manning's constant; None leaves MODFLOW 6's default), ``storage`` (kinematic-wave
+    routing) and ``split`` (the chain cut above that reach, so the channel has two top reaches)."""
+    build_small(workspace, days, start)
+    sim = flopy.mf6.MFSimulation.load(sim_ws=str(workspace), verbosity_level=0)
+    gwf = sim.get_model("gwf")
+    gwf.remove_package("riv")
+    n = 10
+    down = {r: r + 1 for r in range(n - 1) if r + 1 != split}
+    up = {d: u for u, d in down.items()}
+    conn = [[r] + ([up[r]] if r in up else []) + ([-down[r]] if r in down else []) for r in range(n)]
+    pd = [(r, (0, r, 0), SMALL_CELL, SFR_WIDTH, SFR_SLOPE, 88.0 - SFR_SLOPE * SMALL_CELL * r, 1.0, SFR_BED_K, 0.035,
+           len(conn[r]) - 1, 1.0, 0) for r in range(n)]
+    opts = {k: v for k, v in (("unit_conversion", unit_conversion), ("time_conversion", time_conversion))
+            if v is not None}
+    flopy.mf6.ModflowGwfsfr(gwf, pname="sfr", nreaches=n, packagedata=pd, connectiondata=conn,
+                            perioddata={0: [(0, "inflow", 0.0)]}, storage=storage or None, **opts)
+    sim.write_simulation(silent=True)
+    return Path(workspace)
+
+
 SMALL_SIDE = 10 * SMALL_CELL  # m: the small aquifer's side
 
 
