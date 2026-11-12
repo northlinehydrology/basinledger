@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 11, 2026, release 0.6.0). Built and tested on synthetic examples:
+Status (Nov 11, 2026, release 0.7.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -28,8 +28,9 @@ Status (Nov 11, 2026, release 0.6.0). Built and tested on synthetic examples:
   (`[weather]`, swatplus-bmi 0.7.0);
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site), with maps,
   wells, head outputs and rules naming cells in the grid's own form;
-- the ledger, the command line, and calibration: records, statistics, the forward model, parameters written into
-  SWAT+'s `calibration.cal` and MODFLOW 6's packages, and PEST++ IES files (Calibration).
+- the ledger, the command line (with `basinledger check`, every problem the start-up finds), and calibration:
+  records, statistics, the forward model, parameters written into SWAT+'s `calibration.cal` and MODFLOW 6's
+  packages, and PEST++ IES files (Calibration).
 
 The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. A
 study's coupled SWAT+ and MODFLOW 6 model, kept in its own repository, runs every function (testing.md, tier 5).
@@ -747,7 +748,7 @@ parameters were calibrated over the two years after a one-year warm-up, while th
 those parameters the soils settle far above field capacity, and the gage's flow settles at about twice what was
 observed. The fix is the study's: settle the soils before calibrating, then calibrate.
 
-**Checked before a run (built Nov 12, 2026; `basinledger check basin.toml`, `Basin.check`).** A run stops at its
+**Checked before a run (built Nov 11, 2026; `basinledger check basin.toml`, `Basin.check`).** A run stops at its
 first problem, and some problems show only on the first day, once MODFLOW 6 has read its packages. `check` starts
 the models as a run would, has MODFLOW 6 read its first day, builds every link and lists every problem it finds,
 without solving a day: SWAT+'s settings, parameters for models not run, the recharge map and its areas, the wells',
@@ -1101,7 +1102,7 @@ under NextGen geography), for a study's quadtree grid refined around its site.
 Done for 0.6.0 (Nov 11, 2026): the two-way exchange through SFR (Two-way: stream-aquifer exchange);
 calibration parameters written into SWAT+'s and MODFLOW 6's files, and PEST++ IES files (Calibration).
 
-Done since 0.6.0 (Nov 12, 2026, unreleased): SFR reaches built from SWAT+'s channel lines (Through SFR), and
+Done for 0.7.0 (Nov 11, 2026): SFR reaches built from SWAT+'s channel lines (Through SFR), and
 `basinledger check` (Conservation across links, checked at start-up).
 
 Next:

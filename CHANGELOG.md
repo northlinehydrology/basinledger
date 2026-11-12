@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-11-11)
+
+SFR's reaches built from SWAT+'s channel lines, and `basinledger check`. Needs swatplus-bmi 0.9.0, as 0.6.0
+did.
 
 - SFR reaches for the exchange, built from SWAT+'s channel lines (`coupling/sfr.py`): `channel_reaches` cuts each
   channel's line into reaches on a structured or vertex grid, in order downstream; `add_sfr` writes the package the

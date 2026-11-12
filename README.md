@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.6.0).** Built and tested:
+**Status: early (0.7.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -37,7 +37,7 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - feedback rules: curtailment, dry mode, drawdown limit;
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
   ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river, drain or
-  streamflow routing (SFR) packages, with SFR's reaches built from SWAT+'s channel lines (unreleased);
+  streamflow routing (SFR) packages, with SFR's reaches built from SWAT+'s channel lines;
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site): maps, wells,
   head outputs and rules name cells as `layer, row, col` or `layer, icell2d`;
 - groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
@@ -57,8 +57,7 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   concentration from the aquifer at its well;
 - NextGen as the surface model: a finished NGIAB run replayed day by day, with users on its own hourly forcing;
 - MODFLOW 6 recharge from NextGen (CFE's percolation), used as interim recharge in the Plaster Creek example;
-- the ledger and the command line, with `check`: every problem an example's start-up finds, without running a day
-  (unreleased);
+- the ledger and the command line, with `check`: every problem an example's start-up finds, without running a day;
 - calibration records per model. An example is a screening run unless every model it runs is calibrated;
 - calibration parameters written into a run's copy of the models' files: SWAT+ through its own `calibration.cal`
   (swatplus-bmi 0.9.0), MODFLOW 6 as multipliers on package values everywhere, by layer or by zone; and PEST++ IES
