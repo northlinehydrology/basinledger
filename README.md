@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.5.1).** Built and tested:
+**Status: early (0.6.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -37,7 +37,7 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - feedback rules: curtailment, dry mode, drawdown limit;
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
   ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river, drain or
-  streamflow routing (SFR) packages (SFR unreleased);
+  streamflow routing (SFR) packages;
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site): maps, wells,
   head outputs and rules name cells as `layer, row, col` or `layer, icell2d`;
 - groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
@@ -61,7 +61,7 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - calibration records per model. An example is a screening run unless every model it runs is calibrated;
 - calibration parameters written into a run's copy of the models' files: SWAT+ through its own `calibration.cal`
   (swatplus-bmi 0.9.0), MODFLOW 6 as multipliers on package values everywhere, by layer or by zone; and PEST++ IES
-  files with Basin Ledger's forward model as the model command (unreleased);
+  files with Basin Ledger's forward model as the model command;
 
 Examples:
 

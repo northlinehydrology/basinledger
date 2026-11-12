@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-11-11)
+
+The two-way exchange through SFR, and calibration parameters with PEST++ IES files. Needs swatplus-bmi 0.9.0, as
+0.5.1 did.
 
 - The two-way exchange through MODFLOW 6's streamflow routing package (`[exchange] package` an SFR package): each
   coupled channel's water goes in at its top reach, SFR computes the stages (Manning's equation) and the leakage

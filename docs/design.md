@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 11, 2026, release 0.5.1). Built and tested on synthetic examples:
+Status (Nov 11, 2026, release 0.6.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -1071,7 +1071,7 @@ built: the start-up check refusing EVT or UZF alongside groundwater into the soi
 Done for 0.5.0 (Nov 10, 2026): MODFLOW 6 vertex grids (DISV), cells as layer, icell2d throughout (Cells,
 under NextGen geography), for a study's quadtree grid refined around its site.
 
-Done since 0.5.1 (Nov 11, 2026, unreleased): the two-way exchange through SFR (Two-way: stream-aquifer exchange);
+Done for 0.6.0 (Nov 11, 2026): the two-way exchange through SFR (Two-way: stream-aquifer exchange);
 calibration parameters written into SWAT+'s and MODFLOW 6's files, and PEST++ IES files (Calibration).
 
 Next:
