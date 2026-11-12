@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 11, 2026, release 0.6.0). Built and tested on synthetic examples:
+Status (Nov 11, 2026, release 0.7.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -28,14 +28,15 @@ Status (Nov 11, 2026, release 0.6.0). Built and tested on synthetic examples:
   (`[weather]`, swatplus-bmi 0.7.0);
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site), with maps,
   wells, head outputs and rules naming cells in the grid's own form;
-- the ledger, the command line, and calibration: records, statistics, the forward model, parameters written into
-  SWAT+'s `calibration.cal` and MODFLOW 6's packages, and PEST++ IES files (Calibration).
+- the ledger, the command line (with `basinledger check`, every problem the start-up finds), and calibration:
+  records, statistics, the forward model, parameters written into SWAT+'s `calibration.cal` and MODFLOW 6's
+  packages, and PEST++ IES files (Calibration).
 
 The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. A
 study's coupled SWAT+ and MODFLOW 6 model, kept in its own repository, runs every function (testing.md, tier 5).
 
 Not built yet: water quality's second stage (through SWAT+'s streams), the SWAT+ hydrofabric builder, AORC forcing,
-applying calibration parameters, and PEST++. Each section says which parts are built.
+and MODFLOW 6 parameters by pilot point. Each section says which parts are built.
 
 ## Principles
 
@@ -64,6 +65,14 @@ applying calibration parameters, and PEST++. Each section says which parts are b
    study result (see Calibration).
 7. **NextGen geography throughout.** SWAT+ projects are built on the NextGen hydrofabric, and everything the engine
    reports is keyed to hydrofabric ids, so results compare with the National Water Model (see NextGen geography).
+8. **The links, not the models (Andrew, Nov 11, 2026).** Basin Ledger builds and checks the links between models
+   and never builds the models themselves. A link's part is in: its map (which HRU's water reaches which cell, which
+   reach belongs to which channel), the settings the coupling depends on, a helper that builds what the link needs
+   (`mapping.py`'s HRU map, `coupling/sfr.py`'s reaches), and its checks at start-up (`basinledger check`). A model's
+   own content is out: grids, hydrostratigraphy, DEM sampling, streambed elevations, bed properties, SWAT+ projects
+   and calibration choices belong to the study or to tools made for them (QSWAT+, flopy, SFRmaker). Where a helper
+   needs a model's numbers, they come in from the study, and a helper refuses what it can't use rather than fixing
+   it. Each new link (a reservoir, a lake, the grid) gets its map, its helper and its checks, and no more.
 
 ## Layout
 
@@ -601,6 +610,15 @@ through a river (RIV) or a streamflow routing (SFR) package, and that exchange r
     default, 1, is for meters and seconds; on it, a reach of the synthetic example a few centimeters deep came out
     eight meters deep. It is refused.
   - Maps give each reach's cell, or its 0-based number (`object, reach`), since several reaches can share a cell.
+  - **Built from the channels (Nov 11, 2026; `coupling/sfr.py`).** `channel_reaches` cuts each SWAT+ channel's line,
+    drawn downstream, into reaches on a structured or vertex grid (flopy's GridIntersect; a line back into a cell
+    makes a second reach there), in order downstream. `add_sfr` writes the package the exchange takes: reaches
+    chained within each channel only, Manning's constant for meters and days, no inflow of its own. `write_reach_map`
+    writes the map. The streambed top, width, thickness, conductivity, roughness and layer are the study's [A],
+    given per reach, per channel or once. Slopes come from the tops; a streambed rising downstream is refused (a DEM
+    shows culverts, ponds and bridges, and correcting them is the study's), a flat one needs `min_slope` [A]. USGS's
+    SFRmaker builds SFR from hydrography on structured grids, with DEM sampling and smoothing; a package from it, or
+    from anywhere, is checked the same way at start-up. The synthetic example's package is built with the helper.
   - Without storage, SFR keeps no state between days, so a restarted run matches the unbroken one bit for bit
     (tested).
   - In the synthetic example (`sfr.toml`: `two_way.toml` with the river as ten SFR reaches of the RIV entries' bed
@@ -729,6 +747,16 @@ matches it byte for byte, so the cause is the setup, not the tools. The project'
 parameters were calibrated over the two years after a one-year warm-up, while the soils were still filling. With
 those parameters the soils settle far above field capacity, and the gage's flow settles at about twice what was
 observed. The fix is the study's: settle the soils before calibrating, then calibrate.
+
+**Checked before a run (built Nov 11, 2026; `basinledger check basin.toml`, `Basin.check`).** A run stops at its
+first problem, and some problems show only on the first day, once MODFLOW 6 has read its packages. `check` starts
+the models as a run would, has MODFLOW 6 read its first day, builds every link and lists every problem it finds,
+without solving a day: SWAT+'s settings, parameters for models not run, the recharge map and its areas, the wells',
+head outputs' and rules' cells, the routes, users and rules, the exchange and its maps (SFR's checks included), the
+rivers, groundwater into the soil and transport. A part with a problem is listed and left out, and what depends on it
+isn't listed again (a user on a well whose cell is wrong); a problem that leaves a model unable to start ends the
+check there. The start-up's warnings come back as notes. A study runs it after each change to a model or a map,
+before a calibration's runs. The checks are the run's own code, so a check and a run can't disagree.
 
 ## Water quality across links (Andrew, Nov 6, 2026; written before the build)
 
@@ -1073,6 +1101,9 @@ under NextGen geography), for a study's quadtree grid refined around its site.
 
 Done for 0.6.0 (Nov 11, 2026): the two-way exchange through SFR (Two-way: stream-aquifer exchange);
 calibration parameters written into SWAT+'s and MODFLOW 6's files, and PEST++ IES files (Calibration).
+
+Done for 0.7.0 (Nov 11, 2026): SFR reaches built from SWAT+'s channel lines (Through SFR), and
+`basinledger check` (Conservation across links, checked at start-up).
 
 Next:
 

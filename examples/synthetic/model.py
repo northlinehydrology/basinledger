@@ -102,13 +102,24 @@ def build_small_sfr(workspace: str | Path, days: int, start: dt.date, unit_conve
                     time_conversion: float | None = None, storage: bool = False, split: int | None = None) -> Path:
     """``build_small`` with the river as a streamflow routing (SFR) package: a reach in each west-edge cell, a chain
     from north to south, the streambed top falling from 88.0 m at SFR_SLOPE, and each reach's bed conductance the RIV
-    entries' (20 m2 d-1). Its inflow is set by Basin Ledger each day. For the coupling's refusals: ``unit_conversion``
-    and ``time_conversion`` (Manning's constant; None leaves MODFLOW 6's default), ``storage`` (kinematic-wave
-    routing) and ``split`` (the chain cut above that reach, so the channel has two top reaches)."""
+    entries' (20 m2 d-1). Its inflow is set by Basin Ledger each day. Built by ``coupling.sfr`` from the channel's
+    line down the west column. For the coupling's refusals, a package the helper won't make, built by hand:
+    ``unit_conversion`` and ``time_conversion`` (Manning's constant; None leaves MODFLOW 6's default), ``storage``
+    (kinematic-wave routing) and ``split`` (the chain cut above that reach, so the channel has two top reaches)."""
     build_small(workspace, days, start)
     sim = flopy.mf6.MFSimulation.load(sim_ws=str(workspace), verbosity_level=0)
     gwf = sim.get_model("gwf")
     gwf.remove_package("riv")
+    if unit_conversion == 86400.0 and time_conversion is None and not storage and split is None:
+        import shapely
+
+        from basinledger.coupling.sfr import add_sfr, channel_reaches
+        line = shapely.LineString([(SMALL_CELL / 2, SMALL_SIDE), (SMALL_CELL / 2, 0.0)])  # north to south
+        reaches = channel_reaches(gwf.modelgrid, {"cha01": line})
+        add_sfr(gwf, reaches, top=[88.0 - SFR_SLOPE * (r.distance - SMALL_CELL / 2) for r in reaches],
+                width=SFR_WIDTH, thickness=1.0, k=SFR_BED_K, manning=0.035)
+        sim.write_simulation(silent=True)
+        return Path(workspace)
     n = 10
     down = {r: r + 1 for r in range(n - 1) if r + 1 != split}
     up = {d: u for u, d in down.items()}

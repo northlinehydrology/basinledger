@@ -3,14 +3,17 @@
     python -m basinledger run basin.toml [--run NAME] [--days N] [--baseline] [--out DIR]
                                          [--save-at DAY --save DIR] [--restart DIR]
     python -m basinledger status basin.toml
+    python -m basinledger check basin.toml [--baseline]
     python -m basinledger forward basin.toml parameters.csv observations.csv simulated.csv [--run-folder DIR]
 
 ``run`` steps the example's models through its period (or ``--days``), checking the ledger every day, and writes
 ledger.csv, series.csv and summary.json to the run's outputs folder. ``--baseline`` runs it without its water users.
 ``--save-at`` stops after that day and saves the state to ``--save``; ``--restart`` carries on from a saved state.
-``status`` prints whether the example is calibrated or a screening run. ``forward`` is the forward model PEST++
-runs (calibration.py): the parameter set applied, the example run, and its value at each observation written;
-``--run-folder`` puts the run's files there instead of the example's run folder.
+``status`` prints whether the example is calibrated or a screening run. ``check`` starts the example's models
+without running a day and lists every problem its start-up finds (``Basin.check``); it exits with 1 if there are
+any. ``forward`` is the forward model PEST++ runs (calibration.py): the parameter set applied, the example run, and
+its value at each observation written; ``--run-folder`` puts the run's files there instead of the example's run
+folder.
 """
 
 from __future__ import annotations
@@ -37,11 +40,27 @@ def main(argv=None) -> int:
     r.add_argument("--restart", default=None, help="carry on from a saved state")
     s = sub.add_parser("status", help="calibrated or screening run")
     s.add_argument("config")
+    k = sub.add_parser("check", help="every problem the start-up finds, without running a day")
+    k.add_argument("config")
+    k.add_argument("--baseline", action="store_true", help="without the example's water users")
     f = sub.add_parser("forward", help="the forward model for PEST++")
     for name in ("config", "parameters", "observations", "out"):
         f.add_argument(name)
     f.add_argument("--run-folder", default=None, help="where the run's files go (default: the example's)")
     a = ap.parse_args(argv)
+
+    if a.cmd == "check":
+        cfg = C.load(a.config)
+        problems, notes = Basin.check(cfg, users=not a.baseline)
+        for n in notes:
+            print(f"note: {n}")
+        if problems:
+            print(f"{cfg.name}: {len(problems)} problem{'s' if len(problems) > 1 else ''}")
+            for x in problems:
+                print("- " + x.replace("\n", "\n  "))
+            return 1
+        print(f"{cfg.name}: no problems found")
+        return 0
 
     if a.cmd == "forward":
         from .calibration import run_forward_model

@@ -60,6 +60,8 @@ not the basin.
 | two-way exchange, supply limit, drains | yes | yes | yes | MODFLOW 6 budget | settings | study |
 | groundwater up into the soil | yes (cell to HRU to layer split, drain elevation) | yes (sent, due, received) | yes (Osu_1hru, each rule and cap, restarts) | MODFLOW 6 budget, SWAT+'s gwsoilq | the config names a rule and a cap | |
 | calibration parameters and PEST++ files | yes (targets, multipliers by where, refusals, file agreement) | | yes (a zero change and a multiplier of one = the plain run; restarts) | | parameters for a model not run refused | |
+| SFR reaches from channel lines | yes (both grids, order, lengths, refusals) | | yes (the synthetic SFR example is built with it) | | | |
+| `basinledger check` | yes (several problems listed, knock-ons not) | | | | yes (exit codes) | |
 | two-way exchange through SFR | yes (inflow at the top reach, refusals, map rows by reach) | yes | yes (Osu_1hru, three years; restarts) | MODFLOW 6 budget | no reach loses more than it carries | |
 | vertex grids (DISV) | yes (cells to nodes, forms refused, map rows) | yes | yes (refined two-way with a rule and transport; uniform DISV = DIS) | MODFLOW 6 budget | | |
 | boundary flows, storage, closure | | yes | yes | | | study |
