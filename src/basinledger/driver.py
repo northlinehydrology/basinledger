@@ -872,18 +872,23 @@ class Basin:
         self.swat.finalize()
 
     @classmethod
-    def check(cls, cfg: C.ExampleConfig, users: bool = True, run: str = "check") -> tuple[list[str], list[str]]:
+    def check(cls, cfg: C.ExampleConfig, users: bool = True, run: str = "check", prepare=None,
+              heads: np.ndarray | None = None, wrap_surface=None,
+              parameters: list | None = None) -> tuple[list[str], list[str]]:
         """Every problem the example's start-up can find, without running a day: (problems, notes). The models start
         as for a run, MODFLOW 6 reads its first day (the packages have their entries then) and the links are built:
         the SWAT+ settings, the parameters, the recharge map and its areas, the wells', head outputs' and rules'
         cells, the routes, users and rules, the exchange and its maps (SFR's checks included), the rivers,
         groundwater into the soil and transport. A part with a problem is listed and left out, and the rest go on;
-        a problem that leaves a model unable to start ends the check there. Notes are the start-up's warnings."""
+        a problem that leaves a model unable to start ends the check there. Notes are the start-up's warnings.
+        ``prepare``, ``heads``, ``wrap_surface`` and ``parameters`` are the run's start-up hooks (``Basin``), so a
+        study checks what it runs: a prepare hook that rewrites a model's files is checked on the files it writes."""
         problems: list[str] = []
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             try:
-                b = cls(cfg, run=run, users=users, days=1, _problems=problems)
+                b = cls(cfg, run=run, users=users, days=1, prepare=prepare, heads=heads, wrap_surface=wrap_surface,
+                        parameters=parameters, _problems=problems)
             except Exception as e:  # noqa: BLE001
                 problems.append(f"the start-up stopped: {e}")
                 b = None

@@ -756,7 +756,10 @@ head outputs' and rules' cells, the routes, users and rules, the exchange and it
 rivers, groundwater into the soil and transport. A part with a problem is listed and left out, and what depends on it
 isn't listed again (a user on a well whose cell is wrong); a problem that leaves a model unable to start ends the
 check there. The start-up's warnings come back as notes. A study runs it after each change to a model or a map,
-before a calibration's runs. The checks are the run's own code, so a check and a run can't disagree.
+before a calibration's runs. The checks are the run's own code, so a check and a run can't disagree. Since Nov 13,
+2026 `check` takes the run's start-up hooks (`prepare`, `parameters`, `wrap_surface`, `heads`; the builder's
+arguments are in the config), so a study checks what it runs. Before, a study whose prepare hook rewrites SWAT+'s
+`calibration.cal` was told that the project's stored file turned `flo_min` back on.
 
 ## Water quality across links (Andrew, Nov 6, 2026; written before the build)
 

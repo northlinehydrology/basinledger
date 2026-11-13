@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `Basin.check` takes the run's start-up hooks (`prepare`, `parameters`, `wrap_surface`, `heads`), so a study checks
+  what it runs: a prepare hook that rewrites SWAT+'s `calibration.cal` is checked on the file it writes, not on the
+  project's stored one.
+
 ## 0.7.0 (2026-11-11)
 
 SFR's reaches built from SWAT+'s channel lines, and `basinledger check`. Needs swatplus-bmi 0.9.0, as 0.6.0
