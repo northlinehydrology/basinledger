@@ -23,14 +23,16 @@ class Ledger:
     def __init__(self, rtol: float = 1e-9, atol: float = 1e-6):
         self.rtol, self.atol = rtol, atol
         self.rows: dict[str, list[float]] = defaultdict(list)
-        self.pairs: list[tuple[str, tuple[str, ...], float]] = []
+        self.pairs: list[tuple[str, tuple[str, ...], float, str | None]] = []
         self.zeros: list[tuple[str, float]] = []
         self.days = 0
 
-    def pair(self, sent: str, received: str | list[str], rtol: float | None = None):
-        """Declare that ``sent`` equals ``received`` (or the sum of several accounts) every day."""
+    def pair(self, sent: str, received: str | list[str], rtol: float | None = None, bound: str | None = None):
+        """Declare that ``sent`` equals ``received`` (or the sum of several accounts) every day. ``bound``: an account
+        entered each day with how far the two may differ for a known reason (the precision of the files the models
+        read, say), added to the tolerance that day."""
         rec = (received,) if isinstance(received, str) else tuple(received)
-        self.pairs.append((sent, rec, self.rtol if rtol is None else rtol))
+        self.pairs.append((sent, rec, self.rtol if rtol is None else rtol, bound))
 
     def zero(self, account: str, atol: float | None = None):
         """Declare an account that must be zero every day (a flux a coupling has switched off)."""
@@ -51,10 +53,11 @@ class Ledger:
 
     def close_day(self):
         bad = []
-        for a, recs, rtol in self.pairs:
+        for a, recs, rtol, bound in self.pairs:
             x = self.today(a)
             y = sum(self.today(b) for b in recs)
-            if abs(x - y) > self.atol + rtol * max(abs(x), abs(y)):
+            extra = abs(self.today(bound)) if bound else 0.0
+            if abs(x - y) > self.atol + extra + rtol * max(abs(x), abs(y)):
                 bad.append(f"{a}={x!r} {'+'.join(recs)}={y!r}")
         for a, atol in self.zeros:
             if abs(self.today(a)) > atol:

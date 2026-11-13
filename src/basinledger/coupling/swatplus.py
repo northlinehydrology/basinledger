@@ -249,6 +249,39 @@ def hru_areas(project: Path) -> dict[str, float]:
     return {f[i]: float(f[a]) * 1e4 for f in (l.split() for l in lines[2:]) if f}
 
 
+def _half_ulp(text: str) -> float:
+    """Half a unit in the last digit of a number as written ("0.0000806" -> 5e-8; "2.61659" -> 5e-6)."""
+    t = text.lower().split("e")[0]
+    d = len(t.split(".")[1]) if "." in t else 0
+    e = int(text.lower().split("e")[1]) if "e" in text.lower() else 0
+    return 0.5 * 10.0 ** (e - d)
+
+
+def hru_area_precision(project: Path) -> dict[str, float]:
+    """How far each HRU's area as SWAT+ uses it can be from the area Basin Ledger reads, m2, from the precision the
+    project's files are written to: half the last digit of its area in hru.con, plus, where rout_unit.ele lists it,
+    half the last digit of its share of the routing unit times that unit's area (its area over its share). A small
+    HRU in a large unit, its share written to 7 decimals, can be off by 6e-4 of its area. Used to bound the daily pair
+    of percolation sent and SWAT+'s own aquifer recharge."""
+    lines = (Path(project) / "hru.con").read_text().splitlines()
+    cols = lines[1].split()
+    i, a, k = cols.index("name"), cols.index("area"), cols.index("id")
+    rows = [f for f in (ln.split() for ln in lines[2:]) if f]
+    out = {f[i]: _half_ulp(f[a]) * 1e4 for f in rows}
+    area = {f[i]: float(f[a]) * 1e4 for f in rows}
+    name_of = {int(f[k]): f[i] for f in rows}
+    ele = Path(project) / "rout_unit.ele"
+    if ele.exists():
+        lines = ele.read_text().splitlines()
+        cols = lines[1].split()
+        t, n, fr = cols.index("obj_typ"), cols.index("obj_id"), cols.index("frac")
+        for f in (ln.split() for ln in lines[2:]):
+            if f and f[t] == "hru" and int(f[n]) in name_of and float(f[fr]) > 0:
+                h = name_of[int(f[n])]
+                out[h] += _half_ulp(f[fr]) * area[h] / float(f[fr])
+    return out
+
+
 def _channels(project: Path) -> list[str]:
     if not (Path(project) / "chandeg.con").exists():  # a project of HRUs only (Ames_sub1)
         return []

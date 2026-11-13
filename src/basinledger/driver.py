@@ -342,7 +342,10 @@ class Basin:
             if aquifers:  # SWAT+'s own aquifer recharge, the same percolation summed by aquifer (recharge.py)
                 a = S.aquifer_areas(swat_dir)
                 self.aquifer_check = np.array([a[x] for x in aquifers])
-                L.pair("recharge:made", "recharge:swat_aquifers", rtol=RC.AQUIFER_RTOL)
+                # the files' precision bounds the pair on days a few small HRUs carry the recharge (Nov 13, 2026)
+                prec = S.hru_area_precision(swat_dir)
+                self.aquifer_bound = np.array([prec[h] for h in self.sw.names(RC.PERCOLATION)])
+                L.pair("recharge:made", "recharge:swat_aquifers", rtol=RC.AQUIFER_RTOL, bound="recharge:precision")
         self.recharge = RechargeLink(self.swat, self.mf6, self.map, cfg.recharge_package, source, var)
         # groundwater up into the soil: SWAT+'s side now, MODFLOW 6's on the first day (coupling/gwsoil.py)
         if cfg.groundwater_to_soil:
@@ -671,6 +674,7 @@ class Basin:
         L.enter("recharge:by_the_map", sent - self.recharge.made)
         if self.aquifer_check is not None:
             L.enter("recharge:swat_aquifers", float(np.sum(self.sw.get(RC.RECHARGE) * DAY * self.aquifer_check)))
+            L.enter("recharge:precision", float(np.sum(np.abs(self.sw.get(RC.PERCOLATION)) * DAY * self.aquifer_bound)))
         rt.apply_wells()
         if self.cfg.rivers:
             self._rivers_day()

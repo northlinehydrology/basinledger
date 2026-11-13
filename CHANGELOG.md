@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The daily pair of percolation sent and SWAT+'s own aquifer recharge (recharge by HRU) is bounded by the precision the project's files give each HRU's area and share (`hru.con`, `rout_unit.ele`), added to its tolerance each day (`recharge:precision`; a ledger pair's `bound`). On a study basin with groundwater up into the soil, a frozen day's 4.76 m3 of recharge, carried by a few small HRUs whose shares are written to 7 decimals, missed the fixed 1e-5 by 9e-5 m3 and stopped the run.
+
 - `Basin.check` takes the run's start-up hooks (`prepare`, `parameters`, `wrap_surface`, `heads`), so a study checks
   what it runs: a prepare hook that rewrites SWAT+'s `calibration.cal` is checked on the file it writes, not on the
   project's stored one.
