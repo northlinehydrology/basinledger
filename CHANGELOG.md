@@ -5,6 +5,14 @@
 - `Basin.check` takes the run's start-up hooks (`prepare`, `parameters`, `wrap_surface`, `heads`), so a study checks
   what it runs: a prepare hook that rewrites SWAT+'s `calibration.cal` is checked on the file it writes, not on the
   project's stored one.
+- Lakes at a fixed stage coupled to channels (`[exchange] lakes = {package, map}`): a RIV package of the lakes' own,
+  each lake cell mapped to its outlet channel, one of the exchange's coupled channels. The lakes' net exchange joins
+  that channel's the next day (`exchange:<channel>:lakes`), and the package's coupled entries aren't a boundary
+  flow. A lake takes no more than its channel has: with RIV the supply limit lowers a channel's river and lake
+  stages together; with SFR the lakes have a limit of their own, and a combined excess is a booked shortfall
+  (`exchange:<channel>:lake_stage_lowered_m`). Refused at start-up: a package that isn't RIV, the exchange's or the
+  drains' package, `[rivers]` on it, a channel the exchange doesn't couple, and transport with lakes. The synthetic
+  examples `lakes.toml` and `lakes_sfr.toml`; restarts match the unbroken run bit for bit.
 
 ## 0.7.0 (2026-11-11)
 
