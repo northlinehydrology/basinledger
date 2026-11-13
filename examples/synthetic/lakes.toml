@@ -1,0 +1,38 @@
+name = "synthetic-lakes"
+description = """two_way.toml with a small lake east of the well: four cells at a fixed surface (88.5 m) in a RIV
+package of their own, coupled through the channel the lake flows into (Osu_1hru's one channel). The lake gains when
+the water table is above its surface and loses when the well and dry weather draw it down; its net exchange joins
+the channel's the next day. For the engine's tests only."""
+
+[run]
+folder = "../../runs/synthetic-lakes"
+
+[swatplus]
+project = "{swatplus_refdata}/Osu_1hru"
+
+[modflow6]
+builder = "model:build_small"
+builder_args = {lake_stage = 88.5}
+
+[recharge]
+map = "all:aqu001"
+area_rtol = 1e-6          # the grid is exactly Osu_1hru's 10 ha aquifer
+
+[exchange]
+package = "riv"
+map = "all:cha01"
+lakes = {package = "lakes", map = "maps/lakes.csv"}   # object, layer, row, col: each lake cell to its outlet channel
+
+[[wells]]
+name = "pw1"
+cell = [0, 5, 6]
+
+[[users]]
+name = "plant"
+component = "basinledger.testing:SyntheticUser"
+config = "small_user.toml"
+withdrawal = "well:pw1"
+return = "outfall:offsite"
+
+[outputs]
+heads = [{name = "pw1", cell = [0, 5, 6]}, {name = "lake", cell = [0, 5, 8]}]

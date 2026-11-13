@@ -42,7 +42,8 @@ from . import config as C
 from . import rules as R
 from .chain import UtilityChain
 from .coupling import swatplus as S
-from .coupling.exchange import ChannelMap, StreamExchange, package_type, requests as exchange_requests
+from .coupling.exchange import (ChannelMap, StreamExchange, check_lake_package, lake_map, package_type,
+                                requests as exchange_requests)
 from .coupling.gwsoil import GroundwaterToSoil
 from .coupling.modflow6 import Modflow6, remaining_simulation
 from .coupling import recharge as RC
@@ -497,6 +498,9 @@ class Basin:
         if self.exchange is not None and self.exchange.kind == "sfr":
             raise NotImplementedError("transport with an SFR exchange needs MODFLOW 6's SFT package for the "
                                       "streams' concentrations; not built")
+        if self.exchange is not None and self.exchange.lakes is not None:
+            raise NotImplementedError("transport with [exchange] lakes needs the lakes' own concentrations for what "
+                                      "they lose to the aquifer; not built")
         for sp, t in self.transport.items():
             if not t.takes_inflow(rp):
                 raise ValueError(f"{t.model.lower()}: the recharge package {rp!r} isn't an AUX source in SSM "
@@ -686,7 +690,7 @@ class Basin:
                 self.exchange.set_inflow(available)
                 for c, v in available.items():
                     L.enter(f"exchange:{c}:sfr_inflow", v)
-            else:
+            if not sfr or self.exchange.lakes is not None:  # SFR's lakes have a limit of their own
                 limit = self.exchange.limit(available)
         if self.gw_soil is not None:
             if self.gw_soil.mf6 is None:
@@ -694,8 +698,12 @@ class Basin:
             self.gw_soil.before_solve()
         self.mf6.solve_day(limit)
         if limit is not None:
-            for c, d in self.exchange.lowered.items():
-                L.enter(f"exchange:{c}:stage_lowered_m", d)
+            if not sfr:
+                for c, d in self.exchange.lowered.items():
+                    L.enter(f"exchange:{c}:stage_lowered_m", d)
+            if self.exchange.lakes is not None:
+                for c, d in self.exchange.lake_lowered.items():
+                    L.enter(f"exchange:{c}:lake_stage_lowered_m", d)
             self.exchange.end_day()
         L.enter("recharge:received", self.recharge.received())
         if self.gw_soil is not None:
@@ -727,7 +735,15 @@ class Basin:
             dp = ex["drains"].get("package", "drn")
             drains = (dp, ChannelMap.from_spec(ex["drains"]["map"], self.cfg.folder, self.mf6, dp, names,
                                                channels=list(self.due)))
-        self.exchange = StreamExchange(self.mf6, ex.get("package", "riv"), cmap, drains)
+        lakes = None
+        if ex.get("lakes"):
+            lp = ex["lakes"]["package"]
+            if self.cfg.rivers and self.cfg.rivers.get("package", "riv").lower() == lp.lower():
+                raise ValueError(f"[exchange] lakes: [rivers] sets the stages of {lp!r}; a lake's stage is fixed in "
+                                 "the package's input")
+            check_lake_package(self.mf6, lp, ex.get("package", "riv"), drains[0] if drains else None)
+            lakes = (lp, lake_map(ex["lakes"]["map"], self.cfg.folder, self.mf6, lp, names, list(self.due)))
+        self.exchange = StreamExchange(self.mf6, ex.get("package", "riv"), cmap, drains, lakes)
         if self.exchange.kind == "sfr" and ex.get("limit") is False:
             raise ValueError("[exchange] limit = false: SFR limits a reach's loss to what it carries itself; the "
                              "limit is for a river (RIV) package")
@@ -752,6 +768,8 @@ class Basin:
                     m |= self.exchange.map.entry_channel[:n] >= 0
                 if self.exchange is not None and self.exchange.drains and p == self.exchange.drains[0].upper():
                     m |= self.exchange.drains[1].entry_channel[:n] >= 0
+                if self.exchange is not None and self.exchange.lakes and p == self.exchange.lakes[0].upper():
+                    m |= self.exchange.lakes[1].entry_channel[:n] >= 0
                 if self.gw_soil is not None and p == self.gw_soil.package.upper():
                     m[:] = True
                 for w in self.cfg.wells:
@@ -796,6 +814,8 @@ class Basin:
             L.enter(f"exchange:{c}:to_stream", net)
             if self.exchange.drains is not None:
                 L.enter(f"exchange:{c}:seepage", self.exchange.seepage[c])  # the drains' part of to_stream
+            if self.exchange.lakes is not None:
+                L.enter(f"exchange:{c}:lakes", self.exchange.lake_flow[c])  # the lakes' part of to_stream
 
     def run(self, days: int | None = None):
         n = self.days - self.day if days is None else days
