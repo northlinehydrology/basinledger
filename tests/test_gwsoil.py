@@ -204,3 +204,30 @@ def test_the_config_names_a_rule_and_a_cap(tmp_path):
         C.load(tmp_path / "c.toml")
     (tmp_path / "d.toml").write_text(base + '[groundwater_to_soil]\nrule = "gwflow"\ncap = "room"\npackage = "soil"\n')
     assert C.load(tmp_path / "d.toml").groundwater_to_soil == {"rule": "gwflow", "cap": "room", "package": "soil"}
+
+
+def test_to_layers_vectorized_matches_the_loop():
+    """The vectorized split (Nov 13, 2026) against the row-by-row one it replaced, on random HRUs, layers, rows and
+    water tables, including rows with no water, rows whose water table is below the profile and HRUs with layers out
+    of order in the flat arrays."""
+    from types import SimpleNamespace
+
+    from basinledger.coupling.gwsoil import to_layers, to_layers_loop
+    rng = np.random.default_rng(13)
+    n_hru = 40
+    nlay = rng.integers(1, 6, n_hru)
+    layer_hru = np.concatenate([np.full(k, h) for h, k in enumerate(nlay)])
+    layer_bottom = np.concatenate([np.cumsum(rng.uniform(0.05, 0.6, k)) for k in nlay])
+    perm = rng.permutation(len(layer_hru))  # layers of one HRU needn't be together, only in order
+    keep = np.argsort(layer_hru[perm], kind="stable")
+    layer_hru, layer_bottom = layer_hru[perm][keep], layer_bottom[perm][keep]
+    rows = 500
+    amap = SimpleNamespace(obj=rng.integers(0, n_hru, rows))
+    vol = np.where(rng.random(rows) < 0.2, 0.0, rng.uniform(0, 50, rows))
+    wd = rng.uniform(-0.5, 3.0, rows)
+    a, ab = to_layers(vol, wd, amap, layer_hru, layer_bottom)
+    b, bb = to_layers_loop(vol, wd, amap, layer_hru, layer_bottom)
+    assert np.allclose(a, b, rtol=1e-12, atol=1e-12)
+    assert ab == pytest.approx(bb, rel=1e-12)
+    assert a.sum() == pytest.approx(vol.sum(), rel=1e-12)  # every m3 goes to a layer
+    assert ab > 0

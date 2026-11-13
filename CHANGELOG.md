@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Groundwater up into the soil splits each day's water among HRUs and layers for all map rows at once (`gwsoil.to_layers`, vectorized; the row-by-row version stays as `to_layers_loop`, the reference it is tested against to 1e-12). On a study basin (2,371 HRUs, 11,400 rows) the loop was half of a coupled day; a year went from 103 s to 68 s with the same results.
+
 - The daily pair of percolation sent and SWAT+'s own aquifer recharge (recharge by HRU) is bounded by the precision the project's files give each HRU's area and share (`hru.con`, `rout_unit.ele`), added to its tolerance each day (`recharge:precision`; a ledger pair's `bound`). On a study basin with groundwater up into the soil, a frozen day's 4.76 m3 of recharge, carried by a few small HRUs whose shares are written to 7 decimals, missed the fixed 1e-5 by 9e-5 m3 and stopped the run.
 
 - `Basin.check` takes the run's start-up hooks (`prepare`, `parameters`, `wrap_surface`, `heads`), so a study checks
