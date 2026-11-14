@@ -34,11 +34,19 @@ above) goes in as the inflow of the channel's first reach; the reaches below car
 the aquifer gives. The channel's net exchange goes to SWAT+ the next day, as with RIV; SFR's own outflow from the
 channel's last reach isn't entered anywhere, since SWAT+ routes the channel's water on. So SFR stands in for RIV's
 fixed stage and for the stage-lowering limit, and SWAT+ stays the only model routing water between channels. Refused
-at start-up (``sfr_problems``): a reach connected to a reach of another channel, or to one not coupled (SFR would
-route between channels too, counting their water twice); a channel whose reaches have more than one top reach;
+at start-up (``sfr_problems``): a connection between channels anywhere but from one's last reach into another's
+top reach, and a coupled channel flowing into a reach not coupled (SFR would route between channels too, counting
+their water twice); a channel whose reaches aren't one chain from one top reach;
 diversions, the mover and SFR's storage option (kinematic-wave routing: stored water a restart would need); and a
 Manning's constant for other units than meters and days (UNIT_CONVERSION 86400). MODFLOW 6's default, 1, is for
 meters and seconds, and makes a stream centimeters deep come out meters deep.
+
+**SFR networks Basin Ledger didn't build** (an existing model's, docs/design.md): connections between channels are
+allowed where they line up with SWAT+'s network, from one channel's last reach into another's top reach (or from the
+model's own reaches into a channel's top reach), and are cut each day by setting the top reach's upstream fraction to
+0. A confluence inside a channel is refused by name (``sfr_problems``); the study puts a SWAT+ outlet there
+(``gridmaps.sfr_confluences`` lists them). A package built from SWAT+'s channel lines has no such connections and runs
+as before.
 
 Other limits of this version:
 - MODFLOW 6's river stage is fixed in its input unless the example's ``[rivers]`` section sets it from the surface
@@ -120,8 +128,17 @@ def sfr_reach_links(mf6: Modflow6, package: str) -> list[tuple[int, int]]:
     return [(i, int(ja[k])) for i in range(len(ia) - 1) for k in range(ia[i], ia[i + 1]) if idir[k] == -1]
 
 
-def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> tuple[list[str], dict[str, int]]:
-    """What stops an SFR package from being coupled (see the module's docstring), and each channel's top reach."""
+def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> tuple[list[str], dict[str, int], list[int]]:
+    """What stops an SFR package from being coupled (see the module's docstring), each channel's top reach, and the
+    top reaches to cut from what flows into them at run time (their upstream fraction set to 0).
+
+    The line-up rule, the same for a package Basin Ledger built from SWAT+'s channel lines and for one a study
+    brought (docs/design.md, "Extending an existing MODFLOW 6 model"): each reach maps to one channel, or none and
+    stays the model's; each channel's reaches form one connected path from one top reach; and every confluence falls
+    on a channel boundary: a connection into a coupled channel goes into its top reach, from another channel's last
+    reach or from a reach no channel has. Such a connection is cut each day, so SWAT+ alone carries water from one
+    channel to the next. A coupled channel flowing into a reach no channel has is refused: SFR would carry SWAT+'s
+    water on."""
     P = package.upper()
     g = lambda v: mf6.get(v, mf6.model, P)  # noqa: E731
     out = []
@@ -139,20 +156,45 @@ def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> tuple[list[st
     e = cmap.entry_channel
     name = lambda i: cmap.channels[e[i]] if e[i] >= 0 else "no channel"  # noqa: E731
     links = sfr_reach_links(mf6, package)
-    for up, down in links:
-        if e[up] != e[down]:
-            out.append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}); SWAT+ routes "
-                       "water between channels, so SFR's reaches connect only within a channel (cut that connection)")
-    fed = {down for _, down in links}
-    top = {}
+    within = [(u, d) for u, d in links if e[u] == e[d] and e[u] >= 0]
+    fed = {d for _, d in within}
+    top, last = {}, {}
     for i, ch in enumerate(cmap.channels):
-        tops = [int(r) for r in np.flatnonzero(e == i) if r not in fed]
+        mine = [int(r) for r in np.flatnonzero(e == i)]
+        tops = [r for r in mine if r not in fed]
         if len(tops) != 1:
             out.append(f"{package}: channel {ch} has {len(tops)} top reaches ({tops}); its reaches must be one chain "
                        "from one top reach, where the channel's water goes in")
+            continue
+        down = {}
+        for u, d in within:
+            if e[u] == i:
+                down.setdefault(u, []).append(d)
+        split = [u for u, ds in down.items() if len(ds) > 1]
+        if split:
+            out.append(f"{package}: channel {ch} branches below reach {split[0]} (into {down[split[0]]}); its reaches "
+                       "must be one chain")
+            continue
+        top[ch] = tops[0]
+        last[ch] = [r for r in mine if r not in down][0]
+    cut = set()
+    for up, down in links:
+        if e[up] == e[down]:
+            continue
+        if e[down] < 0:
+            out.append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}); SWAT+ routes "
+                       "water between channels, so SFR would carry the channel's water on (cut that connection, or "
+                       "give the reaches below a channel)")
+        elif top.get(name(down)) != down:
+            out.append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}), inside channel "
+                       f"{name(down)}; every confluence must fall on a channel boundary (a SWAT+ outlet at reach "
+                       f"{down}'s top)")
+        elif e[up] >= 0 and last.get(name(up)) != up:
+            out.append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}) from inside "
+                       f"channel {name(up)}; a channel leaves SFR only from its last reach")
         else:
-            top[ch] = tops[0]
-    return out, top
+            cut.add(int(down))
+    return out, top, sorted(cut)
 
 
 STAGE_TOLERANCE_M = 1e-3  # the supply limit's stages agree with the heads when no stage moves more than this
@@ -216,7 +258,7 @@ class StreamExchange:
         P = package.upper()
         self.kind = package_type(mf6, package)
         if self.kind == "sfr":
-            problems, self._top = sfr_problems(mf6, package, cmap)
+            problems, self._top, self._cut = sfr_problems(mf6, package, cmap)
             if problems:
                 raise ValueError("the SFR package can't be coupled:\n- " + "\n- ".join(problems))
         elif self.kind == "riv":
@@ -228,13 +270,19 @@ class StreamExchange:
 
     def set_inflow(self, available: dict[str, float]):
         """SFR: each channel's water for the day (m3) into its top reach, for today's solve; the channel's other
-        reaches get none from outside. Reaches not coupled keep their own inflow."""
+        reaches get none from outside. Reaches not coupled keep their own inflow. A top reach fed by another channel's
+        last reach, or by the model's own reaches, has its upstream fraction set to 0: that water leaves SFR there
+        (booked as SFR's external outflow), and SWAT+ carries it on."""
         P = self.package.upper()
         inflow = self.mf6.get("INFLOW", self.mf6.model, P).astype(float)
         inflow[self.map.entry_channel[: len(inflow)] >= 0] = 0.0
         for ch, r in self._top.items():
             inflow[r] = max(float(available[ch]), 0.0)
         self.mf6.set("INFLOW", P, inflow)
+        if self._cut:  # what flows into a channel from another, or from the model's own reaches, leaves SFR there
+            ustrf = self.mf6.get("USTRF", self.mf6.model, P).astype(float)
+            ustrf[self._cut] = 0.0
+            self.mf6.set("USTRF", P, ustrf)
 
     def limit(self, available: dict[str, float]):
         """The supply limit for today's solve, as a callback for ``Modflow6.solve_day``: after each converged outer

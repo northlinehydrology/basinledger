@@ -16,6 +16,9 @@ doesn't fit rather than fixing it:
   are reported separately. A cell crossed by several channels goes to the longest and is reported as shared. Each
   channel's length is checked (``StreamMap.problems``): its line inside the model's active area against its length
   through the cells it was given, and, for SFR, against its reaches' own lengths.
+- **SFR confluences** (``sfr_confluences``): the reaches more than one reach flows into, with their cells and
+  places. Building SWAT+ on a model's SFR network with an outlet at each puts every confluence on a channel boundary,
+  as the exchange's line-up rule asks.
 
 Channel lines are drawn downstream and polygons are given in the grid's world coordinates. Needs shapely (``pip
 install basinledger[gis]``). DISU grids aren't supported.
@@ -301,3 +304,58 @@ def channel_map(grid, entries: list[Entry], lines: dict, reach_m: float = 0.0) -
         if e.length is not None:
             rl[ch] += e.length
     return StreamMap(rows, unreached, by_distance, shared, in_grid, on, rl, grid.grid_type)
+
+
+# ---------- SFR confluences, where SWAT+ needs an outlet ----------
+
+@dataclass
+class Confluence:
+    reach: int                    # the reach below the confluence, 0-based
+    upstream: list[int]           # the reaches flowing into it, 0-based
+    cell: tuple[int, ...] | None  # its cell, (layer, row, col) or (layer, icell2d); None for a reach off the grid
+    xy: tuple[float, float] | None  # its cell's center, in the grid's world coordinates
+
+
+def sfr_links(gwf, package: str) -> list[tuple[int, int]]:
+    """Each (upstream, downstream) pair of an SFR package's reaches, 0-based, read from its CONNECTIONDATA block as
+    written (1-based, a negative number for a reach downstream), so the sign of reach 1 isn't lost."""
+    pkg = gwf.get_package(package)
+    if pkg is None or pkg.package_type.lower() != "sfr":
+        raise KeyError(f"no SFR package {package!r} in {gwf.name}")
+    path = Path(gwf.simulation_data.mfpath.get_sim_path()) / pkg.filename
+    links, inside = set(), False
+    for line in path.read_text().splitlines():
+        words = line.split("#")[0].split()
+        if not words:
+            continue
+        if words[0].upper() == "BEGIN" and words[1].upper() == "CONNECTIONDATA":
+            inside = True
+        elif words[0].upper() == "END" and inside:
+            break
+        elif inside:
+            r = int(words[0]) - 1
+            for w in words[1:]:
+                c = int(float(w))
+                links.add((r, -c - 1) if c < 0 else (c - 1, r))
+    return sorted(links)
+
+
+def sfr_confluences(gwf, package: str) -> list[Confluence]:
+    """The reaches more than one reach flows into, with where they are: for a study building SWAT+ on a model's SFR
+    network, a SWAT+ outlet at each one's top puts every confluence on a channel boundary, as the exchange's line-up
+    rule asks (coupling/exchange.py, ``sfr_problems``)."""
+    grid = gwf.modelgrid
+    ups: dict[int, list[int]] = {}
+    for u, d in sfr_links(gwf, package):
+        ups.setdefault(d, []).append(u)
+    cells = {e.reach: e.cell for e in stream_entries(gwf, package)}
+    out = []
+    for r in sorted(r for r, u in ups.items() if len(u) > 1):
+        cell = cells.get(r)
+        xy = None
+        if cell is not None:
+            col = _column(grid, cell[1:])
+            xs, ys = np.asarray(grid.xcellcenters).ravel(), np.asarray(grid.ycellcenters).ravel()
+            xy = (float(xs[col]), float(ys[col]))
+        out.append(Confluence(r, sorted(ups[r]), cell, xy))
+    return out
