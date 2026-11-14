@@ -1,7 +1,7 @@
 # Prior art: coupling SWAT and SWAT+ with MODFLOW
 
 What earlier couplings exchange, how often, how they map SWAT units to grid cells, and whether their code is public.
-Compiled Nov 4, 2026; SWATGenX added Nov 14, 2026. Where a detail comes from a tutorial, code or a later paper rather than the paper itself, it says
+Compiled Nov 4, 2026; SWATGenX added and Basin Ledger's row brought up to 0.7.0 on Nov 14, 2026. Where a detail comes from a tutorial, code or a later paper rather than the paper itself, it says
 so. Details not confirmed are marked.
 
 | Work | Models | Exchanged | How often | Units to cells | Code |
@@ -12,7 +12,7 @@ so. Details not confirmed are marked.
 | Bailey et al. 2025, SWAT+MODFLOW (GMD 18:5681) | SWAT+ rev 61 + MODFLOW-NWT, one executable | recharge and soil transfer, groundwater ET, channel and canal exchange, tile drains, reservoirs, irrigation pumping | daily | HRU recharge × fraction of HRU in cell; channel length per cell | public (Zenodo) |
 | Nikiel and Żurek 2026 (EGU26-22367) | SWAT+ + MODFLOW 6, through Python scripts | recharge and river flow, both ways | not stated | "upscaling" HRUs to the grid; method not described | none found |
 | SWATGenX, SWAT+ with MODFLOW 6 (Rafiei, 2026) | a SWAT+ fork calling MODFLOW 6 (libmf6, XMI), one program | recharge; groundwater discharge to channels (SFR); PFAS in soil, aquifer and channels | daily | HRU to cell by area; reaches to channels by map file | engine public (LGPL-2.1); model generator not public |
-| **Basin Ledger** | SWAT+ 62.0.1 (swatplus-bmi) + MODFLOW 6 (libmf6) + water-user BMI components, separate programs | one-way built: recharge, well pumping. Two-way designed: stream-aquifer exchange | daily, with a ledger check each day | area maps from config (aquifer or HRU to cell); channel length maps planned | this repository |
+| **Basin Ledger** | SWAT+ 62.0.1 (swatplus-bmi) + MODFLOW 6 (libmf6) + water-user BMI components, separate programs | recharge (per aquifer or per HRU); well pumping; stream-aquifer exchange both ways (RIV with a supply limit, or SFR); groundwater up into the soil | daily, discharge returned the next day, with a ledger check each day | area maps (aquifer or HRU to cell); flowpath lengths per cell | this repository |
 
 ## Hughes et al. 2022: the MODFLOW API
 
