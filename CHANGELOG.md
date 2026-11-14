@@ -19,6 +19,14 @@ MODFLOW 6 model").
   channels to a RIV, DRN or SFR package's entries by length, with entries no channel reaches reported (or reached
   within a distance the study sets), shared cells reported, and each channel's length checked. DIS and DISV grids,
   rotated and georeferenced.
+- The SFR line-up rule, the same for a package Basin Ledger built and one a study brought: a connection between
+  channels is allowed from a channel's last reach into another's top reach (or from the model's own reaches into a
+  top reach) and is cut each day (the top reach's upstream fraction set to 0), so SWAT+ alone carries water between
+  channels. A confluence inside a channel is refused by name; `gridmaps.sfr_confluences` lists where SWAT+ needs an
+  outlet. Packages built from channel lines are unchanged.
+- Andrew's leaning on who owns a calibrated SFR's water, written into the design: A (SFR routes within each channel,
+  SWAT+ between) in both paths, B (a fixed stage from SWAT+'s depth) for what can't be lined up, proposed per study
+  and applied per channel; not built.
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS

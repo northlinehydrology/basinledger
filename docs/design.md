@@ -1163,7 +1163,7 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
        (`gridmaps.sfr_confluences`). With the networks lined up, every connection between channels runs from one
        channel's last reach to another's top reach, so setting the top reaches' upstream fraction to 0 cuts exactly
        the water SWAT+ carries, and the per-reach cut at a confluence (point 2) is no longer a problem.
-     - **One line-up rule for both paths, checked at start-up** (`sfr_problems`): each SFR reach maps to one channel
+     - **One line-up rule for both paths, checked at start-up** (`sfr_problems`, built): each SFR reach maps to one channel
        (or none, and stays the model's); each channel's reaches form one connected path from one top reach; every
        confluence falls on a channel boundary, which means a connection between two channels goes from the first's
        last reach to the second's top reach, and no reach inside a channel takes water from another channel or from
@@ -1237,6 +1237,15 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
   over the recharge, 10 of the creek's 12 entries and one city well. Coupled both ways for 75 days, the ledger closes
   every day across three stress periods, and DISV gives DIS's heads to 1e-6 m. A month of one step is refused, as
   before, until the time discretization is rewritten (the next step).
+- **The SFR line-up rule** (`sfr_problems`, the same in both paths): connections between channels are allowed from
+  one channel's last reach into another's top reach, or from the model's own reaches into a top reach, and are cut
+  each day by setting that top reach's upstream fraction to 0. Nothing new enters the ledger: the cut water leaves
+  SFR as its external outflow, and SWAT+ carries it. Refused, by reach and channel: a confluence inside a
+  channel, a channel leaving SFR from any reach but its last, a coupled channel flowing into a reach no channel has,
+  and a channel that isn't one chain. A package built from SWAT+'s channel lines has nothing to cut and runs as
+  before. `gridmaps.sfr_confluences` lists the reaches more than one reach flows into, with their cells and places,
+  for the outlets a study puts in SWAT+. Tested on a hand-built network with a tributary (`tests/test_sfr_lineup.py`):
+  lined up, each channel's reaches carry only that channel's water. B is not built.
 
 **Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
 on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a
