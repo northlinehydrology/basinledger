@@ -1121,8 +1121,8 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
    - **Switching the routing off** means the water SFR routes isn't counted anywhere outside SFR: what leaves a
      channel's last reach goes to SFR's external outflow, and SWAT+ is the model that carries the river on. The
      exchange (each reach's leakage or gain) is what crosses to SWAT+.
-3. **One owner per water body, for a model whose SFR was calibrated as the river.** Not decided; Andrew wants to
-   understand it first. In the model as calibrated, SFR is the river: its reaches carry the flow the modeler set at
+3. **One owner per water body, for a model whose SFR was calibrated as the river.** *Andrew's leaning (Nov 14,
+   2026), not final: "probably it's A and B"* (worked out below the options). In the model as calibrated, SFR is the river: its reaches carry the flow the modeler set at
    the network's upstream ends (and runoff, often from a soil-water-balance model), each reach's stage comes from that
    flow and the reach's width, slope and roughness, and its streambed conductance was calibrated so heads and the
    routed flows at gages (often low flows, or base flow separated from them) match. Coupling SWAT+ takes over the
@@ -1152,6 +1152,32 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
      (the setting for groundwater parameters fixed or free, above). A RIV or DRN model has no routing to give up, so
      A and B only matter for SFR. Lakes follow the same choice: LAK active with SWAT+'s rain, evaporation and runoff
      set each day (point 1), or the lake as SWAT+'s reservoir with LAK's stage set and its routing (outlets) off.
+   - **The leaning, A and B, worked out.** Extending an existing model is one use of Basin Ledger and a test of its
+     design; building both models (the Clam's path) may be the main one. So the choice is made for both paths at once:
+     - **A is the main option in both.** It is the structure the exchange already has when Basin Ledger builds SFR
+       from SWAT+'s channel lines (`channel_reaches`, `coupling/sfr.py`): each channel its own run of reaches, SWAT+
+       carrying water from one channel to the next. Nothing changes in the build-both path.
+     - **For an existing model, the networks are made to line up** by building SWAT+ on the model's SFR network: its
+       stream lines burned into the DEM, and a SWAT+ outlet at every SFR confluence. That is the study's work, in
+       QSWAT+ or its own scripts (principle 8); Basin Ledger lists the confluences and where they are
+       (`gridmaps.sfr_confluences`). With the networks lined up, every connection between channels runs from one
+       channel's last reach to another's top reach, so setting the top reaches' upstream fraction to 0 cuts exactly
+       the water SWAT+ carries, and the per-reach cut at a confluence (point 2) is no longer a problem.
+     - **One line-up rule for both paths, checked at start-up** (`sfr_problems`): each SFR reach maps to one channel
+       (or none, and stays the model's); each channel's reaches form one connected path from one top reach; every
+       confluence falls on a channel boundary, which means a connection between two channels goes from the first's
+       last reach to the second's top reach, and no reach inside a channel takes water from another channel or from
+       a reach no channel has. A coupled channel flowing into a reach no channel has is refused too: SFR would carry
+       SWAT+'s water on. A mismatch is refused, by reach and channel name. A package Basin Ledger built from channel
+       lines has no connections between channels and passes as it does now.
+     - **B for what can't be lined up.** Proposed: chosen per study, applied per channel. `[exchange] sfr = "route"`
+       (A everywhere; a mismatch is refused, the default), `"route_or_stage"` (A where a channel lines up, B for a
+       channel that doesn't, each named), or `"stage"` (B everywhere). Per channel rather than per reach, because A
+       routes a channel's water down all of its reaches, and a channel half routed and half at a fixed stage would
+       have a stage that jumps between reaches. B still takes the channel's water at its top reach (a reach at a fixed
+       stage still routes what reaches it and loses no more), so it needs the same cuts as A, and a channel that can't
+       be cut at its boundaries can't run as B either. The start-up check lists each coupled channel with A or B and,
+       for B, the line-up problem that put it there. Not built: it waits for Andrew's yes on per study, per channel.
 4. **The test model.** No USGS-published MODFLOW 6 model of a Michigan basin turned up (searches of USGS data
    releases and ScienceBase, Nov 14, 2026). Candidates, none downloaded:
    - **Kalamazoo River basin (HUC8), Michigan**: the steady MODFLOW-NWT inset model cut from USGS's Lake Michigan
@@ -1161,8 +1187,16 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
      specific yield and storage added, which is the study's choice, not Basin Ledger's.
    - **Wisconsin Central Sands**: MODFLOW 6 inset models around lakes on glacial outwash, transient 2012–2018
      (Fienen, Haserodt and Leaf, doi:10.5066/P9BVFSGJ; report SIR 2022–5046). Native MODFLOW 6, transient, with lakes
-     and streams, built by another hand (modflow-setup); the closest to what a consultant would bring. Whether its
-     inset models use SFR and LAK is still to check in its files.
+     and streams, built by another hand (modflow-setup); the closest to what a consultant would bring. From
+     published descriptions only (the release's metadata names no packages, and its full metadata and the report
+     didn't load): Leaf and Fienen's modflow-setup paper (Frontiers in Earth Science, 2022,
+     doi:10.3389/feart.2022.903965) describes the Pleasant Lake inset with LAK (lake extent, bathymetry, lakebed
+     leakance zones), SFR from SFRmaker, the mover (MVR) keeping SFR's flow continuous across the inset's boundary,
+     recharge from SWB and irrigation wells. Its first period is steady and the rest are monthly. The refined inset is
+     a second GWF model in the same simulation, joined to its parent by a GWF-GWF exchange solved in the same matrix.
+     Basin Ledger couples one GWF model per simulation and refuses the mover, so this model needs both before it can
+     be coupled whole. That is a reason to choose it as the test (consultants use insets and the mover too), or to
+     start with the intermediate inset alone, as a single GWF model. The archive's files still need checking.
    - **CONUS surficial models** (Zell and Sanford, doi:10.5066/P91LFFN1): 75 steady, one-layer MODFLOW 6 models, one
      covering the Lower Peninsula; streams as drains. A real foreign MODFLOW 6 grid over Michigan for the maps, too
      simple for the exchange.
