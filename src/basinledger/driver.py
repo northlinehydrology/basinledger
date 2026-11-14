@@ -692,7 +692,12 @@ class Basin:
                            - L.today(f"route:swat:place_of_use:seep_{c}:delivered") for c in self.due}
             available = {c: max(flow[c] - applied[c], 0.0) for c in self.due}
             if sfr:
-                self.exchange.set_inflow(available)
+                depth = None
+                if self.exchange._stage:  # B: the stage from SWAT+'s depth for the day just run
+                    depth = dict(zip(self.sw.names(S.DEPTH), self.sw.get(S.DEPTH)))
+                    for c in self.exchange._stage:
+                        L.enter(f"exchange:{c}:sfr_depth_m", float(depth[c]))
+                self.exchange.set_inflow(available, depth)
                 for c, v in available.items():
                     L.enter(f"exchange:{c}:sfr_inflow", v)
             else:
@@ -736,7 +741,12 @@ class Basin:
             dp = ex["drains"].get("package", "drn")
             drains = (dp, ChannelMap.from_spec(ex["drains"]["map"], self.cfg.folder, self.mf6, dp, names,
                                                channels=list(self.due)))
-        self.exchange = StreamExchange(self.mf6, ex.get("package", "riv"), cmap, drains)
+        if "sfr" in ex and package_type(self.mf6, ex.get("package", "riv")) != "sfr":
+            raise ValueError("[exchange] sfr chooses how an SFR package's channels run; this exchange is on a "
+                             f"{package_type(self.mf6, ex.get('package', 'riv')).upper()} package")
+        self.exchange = StreamExchange(self.mf6, ex.get("package", "riv"), cmap, drains, sfr=ex.get("sfr", "route"))
+        if any(m == "stage" for m, _ in self.exchange.modes.values()) and not self.sw.has(S.DEPTH):
+            raise ValueError("SFR channels at a fixed stage take SWAT+'s channel depth (swatplus-bmi 0.2.0)")
         if self.exchange.kind == "sfr" and ex.get("limit") is False:
             raise ValueError("[exchange] limit = false: SFR limits a reach's loss to what it carries itself; the "
                              "limit is for a river (RIV) package")
@@ -764,7 +774,10 @@ class Basin:
             if p == self.cfg.recharge_package.upper() and self.recharge is not None:
                 take(np.ones(n, bool), "recharge from SWAT+")
             if ex is not None and p == ex.package.upper():
-                take(ex.map.entry_channel[:n] >= 0, "stream exchange with SWAT+'s channels")
+                modes = [m for m, _ in ex.modes.values()]
+                how = (f" (routed: {modes.count('route')} channels, at SWAT+'s stage: {modes.count('stage')})"
+                       if "stage" in modes else "")
+                take(ex.map.entry_channel[:n] >= 0, "stream exchange with SWAT+'s channels" + how)
             if ex is not None and ex.drains and p == ex.drains[0].upper():
                 take(ex.drains[1].entry_channel[:n] >= 0, "seepage to SWAT+'s channels")
             if self.gw_soil is not None and p == self.gw_soil.package.upper():
@@ -790,6 +803,13 @@ class Basin:
         self._gw_packages = {p: m for p, (m, _) in coupled.items()}
         self.takeover = EX.roles(self.mf6, coupled)
         bad, notes = EX.problems(self.takeover, self.gw_soil is not None)
+        if self.exchange is not None and any(m == "stage" for m, _ in self.exchange.modes.values()):
+            routed = [c for c, (m, _) in self.exchange.modes.items() if m == "route"]
+            notes.append(f"{self.exchange.package}: channels routed by SFR (A): {', '.join(routed) or 'none'}")
+            for c, (m, why) in self.exchange.modes.items():
+                if m == "stage":
+                    notes.append(f"{self.exchange.package}: channel {c} at a fixed stage from SWAT+'s depth (B): "
+                                 + "; ".join(w.split(": ", 1)[-1] for w in why))
         if self.cfg.rivers:
             notes.append(f"{self.cfg.rivers.get('package', 'riv')}: [rivers] sets its stage from the surface model's "
                          "depth; its flow stays the model's")

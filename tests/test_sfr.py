@@ -202,3 +202,39 @@ def test_nothing_comes_from_outside(sfr):
     for k in [k for k in t if k.startswith("groundwater:boundary:")]:
         assert np.abs(t[k]).max() < 1e-9, k
     assert np.abs(t["groundwater:closure_share"]).max() < 1e-6
+
+
+# ---------- B: the channel at a fixed stage from SWAT+'s depth (Osu_1hru, a year) ----------
+
+def test_at_a_fixed_stage_the_ledger_closes_and_the_stage_is_swats(swatplus):
+    rows = []
+    found, notes = Basin.check(config(sfr="stage"), run="sfr-stage-check", takeover=rows)
+    assert found == [] and any("channel cha01 at a fixed stage from SWAT+'s depth (B)" in n for n in notes)
+    assert "at SWAT+'s stage: 1" in next(r for r in rows if r.package == "sfr").what
+    b = Basin(config(sfr="stage"), run="sfr-stage", days=365)
+    try:
+        b.run()
+        t = b.ledger.table()
+        P = "SFR"
+        stage = b.mf6.get("STAGE", b.mf6.model, P)
+        top = b.mf6.get("STRTOP", b.mf6.model, P)
+        depth = t["exchange:cha01:sfr_depth_m"][-1]
+        status = b.mf6.get("IBOUNDPAK", b.mf6.model, P)
+    finally:
+        b.finalize()
+    assert (status == -1).all()
+    # each reach's stage is its streambed top plus SWAT+'s depth, unless it lost all it had and dropped to its top
+    assert np.all((np.abs(stage - (top + depth)) < 1e-9) | (np.abs(stage - top) < 1e-9))
+    x, inflow = t["exchange:cha01:to_stream"], t["exchange:cha01:sfr_inflow"]
+    assert (-x <= inflow * (1 + 1e-9) + 1e-9).all()  # no more lost than went in
+    k = "exchange:cha01:"
+    np.testing.assert_allclose(t[k + "due"], t[k + "applied"] + t[k + "shortfall"], rtol=1e-6, atol=1e-6)
+    assert np.abs(t["groundwater:closure_share"]).max() < 1e-6
+
+
+def test_sfr_mode_on_a_river_package_is_refused(swatplus):
+    cfg = C.load(SYNTHETIC / "two_way.toml")
+    cfg.run_folder = RUNS
+    cfg.exchange = dict(cfg.exchange, sfr="stage")
+    found, _ = Basin.check(cfg, run="riv-sfr-mode")
+    assert any("[exchange] sfr chooses how an SFR package's channels run" in f for f in found)

@@ -56,6 +56,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
                                         #   object, reach for SFR's 0-based reach numbers)
     limit = true                        # RIV: a losing reach takes no more than its channel carries (default; SFR
                                         #   does this itself)
+    sfr = "route"                       # SFR: "route" (each channel's reaches route its water, A; a channel that
+                                        #   doesn't line up is refused), "route_or_stage" (A where a channel lines up,
+                                        #   a fixed stage from SWAT+'s depth where it doesn't, B) or "stage" (B for all)
     drains = {package = "drn", map = "maps/drains.csv"}   # optional: seepage cells, to their channels the next day
 
     [transport.chloride]                # optional: a MODFLOW 6 transport model per species (coupling/transport.py),

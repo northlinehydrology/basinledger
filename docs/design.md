@@ -1152,6 +1152,7 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
      (the setting for groundwater parameters fixed or free, above). A RIV or DRN model has no routing to give up, so
      A and B only matter for SFR. Lakes follow the same choice: LAK active with SWAT+'s rain, evaporation and runoff
      set each day (point 1), or the lake as SWAT+'s reservoir with LAK's stage set and its routing (outlets) off.
+   - **Decided (Andrew, Nov 14, 2026): A and B, B chosen per study and applied per channel.** Built as below.
    - **The leaning, A and B, worked out.** Extending an existing model is one use of Basin Ledger and a test of its
      design; building both models (the Clam's path) may be the main one. So the choice is made for both paths at once:
      - **A is the main option in both.** It is the structure the exchange already has when Basin Ledger builds SFR
@@ -1170,14 +1171,23 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
        a reach no channel has. A coupled channel flowing into a reach no channel has is refused too: SFR would carry
        SWAT+'s water on. A mismatch is refused, by reach and channel name. A package Basin Ledger built from channel
        lines has no connections between channels and passes as it does now.
-     - **B for what can't be lined up.** Proposed: chosen per study, applied per channel. `[exchange] sfr = "route"`
+     - **B for what can't be lined up** (built). Chosen per study, applied per channel. `[exchange] sfr = "route"`
        (A everywhere; a mismatch is refused, the default), `"route_or_stage"` (A where a channel lines up, B for a
        channel that doesn't, each named), or `"stage"` (B everywhere). Per channel rather than per reach, because A
        routes a channel's water down all of its reaches, and a channel half routed and half at a fixed stage would
        have a stage that jumps between reaches. B still takes the channel's water at its top reach (a reach at a fixed
        stage still routes what reaches it and loses no more), so it needs the same cuts as A, and a channel that can't
        be cut at its boundaries can't run as B either. The start-up check lists each coupled channel with A or B and,
-       for B, the line-up problem that put it there. Not built: it waits for Andrew's yes on per study, per channel.
+       for B, the line-up problem that put it there.
+     - **How B runs** (`StreamExchange.set_inflow`): each of the channel's reaches takes status simple, its stage
+       its streambed top (`STRTOP`) plus SWAT+'s channel depth for the day just run (`channel_water__depth`, booked
+       as `exchange:<channel>:sfr_depth_m`). Its water goes in at its entries, the reaches nothing in the channel
+       flows into and the reaches cut from water coming from outside it (a confluence inside the channel), each by
+       the share of the channel's reach length from it down to the next entry. Each reach still routes what reaches
+       it and loses no more. The connections into the channel are cut wherever they fall. Still refused under B: a
+       coupled channel flowing into a reach no channel has, and the package settings (units, storage, diversions,
+       the mover). A loss that, split this way, comes to more than SWAT+'s channel has the next day is the
+       exchange's shortfall, booked as with A and RIV.
 4. **The test model.** No USGS-published MODFLOW 6 model of a Michigan basin turned up (searches of USGS data
    releases and ScienceBase, Nov 14, 2026). Candidates, none downloaded:
    - **Kalamazoo River basin (HUC8), Michigan**: the steady MODFLOW-NWT inset model cut from USGS's Lake Michigan
@@ -1245,7 +1255,12 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
   and a channel that isn't one chain. A package built from SWAT+'s channel lines has nothing to cut and runs as
   before. `gridmaps.sfr_confluences` lists the reaches more than one reach flows into, with their cells and places,
   for the outlets a study puts in SWAT+. Tested on a hand-built network with a tributary (`tests/test_sfr_lineup.py`):
-  lined up, each channel's reaches carry only that channel's water. B is not built.
+  lined up, each channel's reaches carry only that channel's water.
+- **B, a fixed stage from SWAT+'s depth** (`[exchange] sfr = "route"`, the default, `"route_or_stage"` or
+  `"stage"`): as described under point 3. Tested by hand on the tributary network (a channel with a confluence inside
+  it runs as B, its water in at its top and at the confluence by length; every channel at a stage loses no more than
+  went in), and coupled on Osu_1hru for a year: the ledger closes, each reach's stage is its streambed top plus
+  SWAT+'s depth (or its top, where it lost all it had), and no day's loss is more than the channel's inflow.
 
 **Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
 on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a

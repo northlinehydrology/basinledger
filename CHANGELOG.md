@@ -24,9 +24,12 @@ MODFLOW 6 model").
   top reach) and is cut each day (the top reach's upstream fraction set to 0), so SWAT+ alone carries water between
   channels. A confluence inside a channel is refused by name; `gridmaps.sfr_confluences` lists where SWAT+ needs an
   outlet. Packages built from channel lines are unchanged.
-- Andrew's leaning on who owns a calibrated SFR's water, written into the design: A (SFR routes within each channel,
-  SWAT+ between) in both paths, B (a fixed stage from SWAT+'s depth) for what can't be lined up, proposed per study
-  and applied per channel; not built.
+- Who owns a calibrated SFR's water (Andrew): A, SFR routing within each channel and SWAT+ between, in both paths;
+  and B, a fixed stage from SWAT+'s channel depth, for channels that can't be lined up. `[exchange] sfr = "route"`
+  (the default: a channel that doesn't line up is refused), `"route_or_stage"` or `"stage"`, chosen per study and
+  applied per channel. A channel at a fixed stage takes status simple, its stage its streambed top plus SWAT+'s
+  depth (`exchange:<channel>:sfr_depth_m`), and its water in at its entries by reach length. The start-up check
+  lists which channels run as A and which as B, and why.
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS

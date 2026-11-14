@@ -153,3 +153,56 @@ def test_the_confluences_for_swat_outlets(libmf6):
     (c,) = G.sfr_confluences(gwf, "sfr_river")
     assert c.reach == INTO and c.upstream == [4, 12] and c.cell == (0, 5, 0)
     assert c.xy == pytest.approx((M.SMALL_CELL / 2, M.SMALL_CELL * 4.5))
+
+
+# ---------- B: a channel at a fixed stage from SWAT+'s depth ----------
+
+def test_route_or_stage_puts_a_channel_that_doesnt_line_up_at_a_fixed_stage(model):
+    ex = StreamExchange(model, "sfr_river", channels(main=MAIN, trib=TRIBUTARY), sfr="route_or_stage")
+    assert ex.modes["trib"] == ("route", []) and ex.modes["main"][0] == "stage"
+    assert "inside channel main" in ex.modes["main"][1][0]
+    # main's water goes in at its top and where the tributary joins (cut there), by the length below each
+    assert ex._stage["main"] == {0: pytest.approx(0.5), INTO: pytest.approx(0.5)} and ex._cut == [INTO]
+    ex.set_inflow({"main": 1000.0, "trib": 200.0}, depth={"main": 0.3, "trib": 0.1})
+    P = "SFR_RIVER"
+    inflow = model.get("INFLOW", model.model, P)
+    assert inflow[0] == inflow[INTO] == 500.0 and inflow[10] == 200.0
+    assert (model.get("IBOUNDPAK", model.model, P)[MAIN] == -1).all()
+    assert (model.get("IBOUNDPAK", model.model, P)[TRIBUTARY] == 1).all()  # routed, as the model had it
+    top = model.get("STRTOP", model.model, P)
+    model.solve_day()
+    stage = model.get("STAGE", model.model, P)
+    np.testing.assert_allclose(stage[MAIN], top[MAIN] + 0.3)  # the head is below: each reach loses at that stage
+    leak = model.simvals("sfr_river")
+    q = -model.get("QOUTFLOW", model.model, P)
+    assert q[INTO] == pytest.approx(500.0 - leak[INTO], rel=1e-9)  # the reach below the cut: its own share only
+
+
+def test_stage_everywhere_and_the_loss_held_to_the_inflow(libmf6):
+    ws = build("sfr-lineup-stage-dry")
+    sim = flopy.mf6.MFSimulation.load(sim_ws=str(ws), verbosity_level=0)
+    sim.get_model("gwf").ic.strt = 80.0  # the water table far below the streambed
+    sim.write_simulation(silent=True)
+    mf = Modflow6(ws)
+    try:
+        mf.prepare_day()
+        ex = StreamExchange(mf, "sfr_river", channels(up=MAIN[:5], trib=TRIBUTARY, down=MAIN[5:]), sfr="stage")
+        assert {c: m for c, (m, _) in ex.modes.items()} == dict.fromkeys(["up", "trib", "down"], "stage")
+        assert ex._stage["up"] == {0: pytest.approx(1.0)}
+        ex.set_inflow({"up": 40.0, "trib": 10.0, "down": 25.0}, depth=dict.fromkeys(["up", "trib", "down"], 2.0))
+        mf.solve_day()
+        net = ex.after_solve()  # positive to the stream
+        assert net == {"up": pytest.approx(-40.0), "trib": pytest.approx(-10.0), "down": pytest.approx(-25.0)}
+    finally:
+        mf.finalize()
+
+
+def test_what_no_mode_takes(model):
+    for mode in ("route_or_stage", "stage"):  # a coupled channel flowing into the model's own reaches
+        with pytest.raises(ValueError, match="reach 4 \\(up\\) flows into reach 5 \\(no channel\\)"):
+            StreamExchange(model, "sfr_river", channels(up=MAIN[:5]), sfr=mode)
+    with pytest.raises(ValueError, match="\\[exchange\\] sfr = 'fixed'"):
+        StreamExchange(model, "sfr_river", channels(up=MAIN[:5], down=MAIN[5:]), sfr="fixed")
+    ex = StreamExchange(model, "sfr_river", channels(main=MAIN, trib=TRIBUTARY), sfr="route_or_stage")
+    with pytest.raises(ValueError, match="need SWAT\\+'s channel depth"):
+        ex.set_inflow({"main": 1.0, "trib": 1.0})

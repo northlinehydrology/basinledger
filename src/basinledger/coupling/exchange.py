@@ -57,6 +57,7 @@ Other limits of this version:
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -128,17 +129,32 @@ def sfr_reach_links(mf6: Modflow6, package: str) -> list[tuple[int, int]]:
     return [(i, int(ja[k])) for i in range(len(ia) - 1) for k in range(ia[i], ia[i + 1]) if idir[k] == -1]
 
 
-def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> tuple[list[str], dict[str, int], list[int]]:
-    """What stops an SFR package from being coupled (see the module's docstring), each channel's top reach, and the
-    top reaches to cut from what flows into them at run time (their upstream fraction set to 0).
+SFR_MODES = ("route", "route_or_stage", "stage")  # [exchange] sfr: A everywhere, A where a channel lines up, B everywhere
+
+
+@dataclass
+class SfrLayout:
+    """How an SFR package lines up with SWAT+'s channels (``sfr_problems``)."""
+    problems: list[str]                    # refused whatever the mode
+    channel_problems: dict[str, list[str]]  # what keeps a channel from routing (A); it can run at a fixed stage (B)
+    top: dict[str, int]                    # each channel's top reach, where it lines up
+    last: dict[str, int]                   # each channel's last reach, where it lines up
+    cut: list[int]                         # reaches whose upstream fraction is set to 0 each day
+
+
+def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> SfrLayout:
+    """How an SFR package lines up with SWAT+'s channels: what is refused, what keeps each channel from routing its
+    own water (A), each channel's top and last reach, and the reaches to cut from what flows into them at run time
+    (their upstream fraction set to 0).
 
     The line-up rule, the same for a package Basin Ledger built from SWAT+'s channel lines and for one a study
     brought (docs/design.md, "Extending an existing MODFLOW 6 model"): each reach maps to one channel, or none and
     stays the model's; each channel's reaches form one connected path from one top reach; and every confluence falls
     on a channel boundary: a connection into a coupled channel goes into its top reach, from another channel's last
     reach or from a reach no channel has. Such a connection is cut each day, so SWAT+ alone carries water from one
-    channel to the next. A coupled channel flowing into a reach no channel has is refused: SFR would carry SWAT+'s
-    water on."""
+    channel to the next. A channel that breaks the rule can't route (A), but can run at a fixed stage (B,
+    ``[exchange] sfr``); its incoming connections are cut wherever they are. Refused whatever the mode: the package's
+    settings below, and a coupled channel flowing into a reach no channel has (SFR would carry SWAT+'s water on)."""
     P = package.upper()
     g = lambda v: mf6.get(v, mf6.model, P)  # noqa: E731
     out = []
@@ -158,13 +174,14 @@ def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> tuple[list[st
     links = sfr_reach_links(mf6, package)
     within = [(u, d) for u, d in links if e[u] == e[d] and e[u] >= 0]
     fed = {d for _, d in within}
+    bad: dict[str, list[str]] = {ch: [] for ch in cmap.channels}
     top, last = {}, {}
     for i, ch in enumerate(cmap.channels):
         mine = [int(r) for r in np.flatnonzero(e == i)]
         tops = [r for r in mine if r not in fed]
         if len(tops) != 1:
-            out.append(f"{package}: channel {ch} has {len(tops)} top reaches ({tops}); its reaches must be one chain "
-                       "from one top reach, where the channel's water goes in")
+            bad[ch].append(f"{package}: channel {ch} has {len(tops)} top reaches ({tops}); its reaches must be one "
+                           "chain from one top reach, where the channel's water goes in")
             continue
         down = {}
         for u, d in within:
@@ -172,8 +189,8 @@ def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> tuple[list[st
                 down.setdefault(u, []).append(d)
         split = [u for u, ds in down.items() if len(ds) > 1]
         if split:
-            out.append(f"{package}: channel {ch} branches below reach {split[0]} (into {down[split[0]]}); its reaches "
-                       "must be one chain")
+            bad[ch].append(f"{package}: channel {ch} branches below reach {split[0]} (into {down[split[0]]}); its "
+                           "reaches must be one chain")
             continue
         top[ch] = tops[0]
         last[ch] = [r for r in mine if r not in down][0]
@@ -185,16 +202,48 @@ def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> tuple[list[st
             out.append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}); SWAT+ routes "
                        "water between channels, so SFR would carry the channel's water on (cut that connection, or "
                        "give the reaches below a channel)")
-        elif top.get(name(down)) != down:
-            out.append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}), inside channel "
-                       f"{name(down)}; every confluence must fall on a channel boundary (a SWAT+ outlet at reach "
-                       f"{down}'s top)")
-        elif e[up] >= 0 and last.get(name(up)) != up:
-            out.append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}) from inside "
-                       f"channel {name(up)}; a channel leaves SFR only from its last reach")
-        else:
-            cut.add(int(down))
-    return out, top, sorted(cut)
+            continue
+        cut.add(int(down))
+        if top.get(name(down)) != down:
+            bad[name(down)].append(
+                f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}), inside channel "
+                f"{name(down)}; every confluence must fall on a channel boundary (a SWAT+ outlet at reach {down}'s top)")
+        if e[up] >= 0 and last.get(name(up)) != up:
+            bad[name(up)].append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}) from "
+                                 f"inside channel {name(up)}; a channel leaves SFR only from its last reach")
+    bad = {ch: v for ch, v in bad.items() if v}
+    for ch in bad:
+        top.pop(ch, None)
+        last.pop(ch, None)
+    return SfrLayout(out, bad, top, last, sorted(cut))
+
+
+def stage_entries(mf6: Modflow6, package: str, cmap: ChannelMap, channel: str, cut: list[int]) -> dict[int, float]:
+    """For a channel at a fixed stage (B): where its water goes in, and each place's share of it. The places are the
+    channel's reaches nothing in the channel flows into, and its reaches cut from water coming from outside it; each
+    takes the share of the channel's reach length from it down to the next such place (SFR's reach lengths)."""
+    i = cmap.channels.index(channel)
+    e = cmap.entry_channel
+    mine = [int(r) for r in np.flatnonzero(e == i)]
+    within = [(u, d) for u, d in sfr_reach_links(mf6, package) if e[u] == i and e[d] == i]
+    fed = {d for _, d in within}
+    entries = [r for r in mine if r not in fed or r in cut]
+    down: dict[int, list[int]] = {}
+    for u, d in within:
+        down.setdefault(u, []).append(d)
+    length = mf6.get("LENGTH", mf6.model, package.upper()).astype(float)
+    owner: dict[int, int] = {}
+    for r0 in entries:
+        stack = [r0]
+        while stack:
+            r = stack.pop()
+            if r in owner or (r != r0 and r in entries):
+                continue
+            owner[r] = r0
+            stack.extend(down.get(r, []))
+    total = sum(length[r] for r in owner)
+    share = {r0: sum(length[r] for r, o in owner.items() if o == r0) / total for r0 in entries}
+    return share
 
 
 STAGE_TOLERANCE_M = 1e-3  # the supply limit's stages agree with the heads when no stage moves more than this
@@ -250,17 +299,37 @@ class StreamExchange:
     (``drains``: package, map). Drains only take water from the aquifer (seepage at land surface) and give it to
     their channel the next day, as the rivers' gains do."""
 
-    def __init__(self, mf6: Modflow6, package: str, cmap: ChannelMap, drains: tuple[str, ChannelMap] | None = None):
+    def __init__(self, mf6: Modflow6, package: str, cmap: ChannelMap, drains: tuple[str, ChannelMap] | None = None,
+                 sfr: str = "route"):
         self.mf6, self.package, self.map = mf6, package, cmap
         self.drains = drains
         if drains is not None and drains[1].channels != cmap.channels:
             raise ValueError("the drains' channels must be the rivers' channels, in the same order")
         P = package.upper()
         self.kind = package_type(mf6, package)
+        self.modes: dict[str, tuple[str, list[str]]] = {}  # SFR: channel -> ("route" or "stage", why)
         if self.kind == "sfr":
-            problems, self._top, self._cut = sfr_problems(mf6, package, cmap)
+            if sfr not in SFR_MODES:
+                raise ValueError(f"[exchange] sfr = {sfr!r}: one of {SFR_MODES}")
+            lay = sfr_problems(mf6, package, cmap)
+            problems = list(lay.problems)
+            if sfr == "route":
+                problems += [m for ms in lay.channel_problems.values() for m in ms]
             if problems:
                 raise ValueError("the SFR package can't be coupled:\n- " + "\n- ".join(problems))
+            self._cut = lay.cut
+            for ch in cmap.channels:
+                if sfr == "stage" or ch in lay.channel_problems:
+                    why = lay.channel_problems.get(ch, ["[exchange] sfr = \"stage\""])
+                    self.modes[ch] = ("stage", why)
+                else:
+                    self.modes[ch] = ("route", [])
+            self._top = {ch: r for ch, r in lay.top.items() if self.modes[ch][0] == "route"}
+            self._stage = {ch: stage_entries(mf6, package, cmap, ch, lay.cut) for ch, (m, _) in self.modes.items()
+                           if m == "stage"}
+            e = cmap.entry_channel
+            self._stage_reaches = np.flatnonzero(np.isin(e, [cmap.channels.index(c) for c in self._stage]))
+            self._strtop = mf6.get("STRTOP", mf6.model, P).astype(float)
         elif self.kind == "riv":
             self._cond = mf6.get("COND", mf6.model, P).astype(float)
             self._rbot = mf6.get("RBOT", mf6.model, P).astype(float)
@@ -268,21 +337,40 @@ class StreamExchange:
             raise ValueError(f"[exchange] package {package!r} is {self.kind.upper()}; the exchange takes a river (RIV) "
                              "or a streamflow routing (SFR) package")
 
-    def set_inflow(self, available: dict[str, float]):
+    def set_inflow(self, available: dict[str, float], depth: dict[str, float] | None = None):
         """SFR: each channel's water for the day (m3) into its top reach, for today's solve; the channel's other
-        reaches get none from outside. Reaches not coupled keep their own inflow. A top reach fed by another channel's
+        reaches get none from outside. Reaches not coupled keep their own inflow. A reach fed by another channel's
         last reach, or by the model's own reaches, has its upstream fraction set to 0: that water leaves SFR there
-        (booked as SFR's external outflow), and SWAT+ carries it on."""
+        (booked as SFR's external outflow), and SWAT+ carries it on.
+
+        A channel at a fixed stage (B, ``modes``): its reaches take status simple, each one's stage its streambed top
+        plus SWAT+'s channel depth for the day (``depth``, m), and its water goes in at its entries
+        (``stage_entries``), each by its share. A reach at a fixed stage still routes what reaches it and loses no
+        more than that."""
         P = self.package.upper()
         inflow = self.mf6.get("INFLOW", self.mf6.model, P).astype(float)
         inflow[self.map.entry_channel[: len(inflow)] >= 0] = 0.0
         for ch, r in self._top.items():
             inflow[r] = max(float(available[ch]), 0.0)
+        for ch, shares in self._stage.items():
+            for r, f in shares.items():
+                inflow[r] = max(float(available[ch]), 0.0) * f
         self.mf6.set("INFLOW", P, inflow)
         if self._cut:  # what flows into a channel from another, or from the model's own reaches, leaves SFR there
             ustrf = self.mf6.get("USTRF", self.mf6.model, P).astype(float)
             ustrf[self._cut] = 0.0
             self.mf6.set("USTRF", P, ustrf)
+        if self._stage:
+            if depth is None:
+                raise ValueError("SFR channels at a fixed stage need SWAT+'s channel depth for the day")
+            e = self.map.entry_channel
+            status = self.mf6.get("IBOUNDPAK", self.mf6.model, P)
+            stage = self.mf6.get("SSTAGE", self.mf6.model, P).astype(float)
+            r = self._stage_reaches
+            status[r] = -1
+            stage[r] = self._strtop[r] + np.array([max(float(depth[self.map.channels[e[k]]]), 0.0) for k in r])
+            self.mf6.set("IBOUNDPAK", P, status)
+            self.mf6.set("SSTAGE", P, stage)
 
     def limit(self, available: dict[str, float]):
         """The supply limit for today's solve, as a callback for ``Modflow6.solve_day``: after each converged outer
