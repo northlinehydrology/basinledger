@@ -9,7 +9,7 @@ so. Details not confirmed are marked.
 | Hughes et al. 2022 | MODFLOW 6 API (BMI + XMI) | anything in MODFLOW 6's memory | per time step or per outer iteration | n/a | MODFLOW 6, xmipy, modflowapi (public) |
 | Bailey et al. 2016, SWAT-MODFLOW | SWAT 2012 + MODFLOW-NWT, one executable | recharge; stream-aquifer exchange (RIV) to subbasin channels; water table to HRUs; later pumping and EVT | daily | HRUs split into located parts (DHRUs), intersected with the grid, by area | public (swat.tamu.edu) |
 | Bailey et al. 2020, SWAT+ gwflow | SWAT+ with its own gridded groundwater module | recharge, lateral flow, groundwater ET, pumping, streambed exchange, saturation excess | daily | HRU-cell overlap areas; channel cells by intersection | inside SWAT+ |
-| Bailey et al. 2025, SWAT+MODFLOW (egusphere-2025-300) | SWAT+ rev 61 + MODFLOW-NWT, one executable | recharge and soil transfer, groundwater ET, channel and canal exchange, tile drains, reservoirs, irrigation pumping | daily | HRU recharge × fraction of HRU in cell; channel length per cell | public (Zenodo) |
+| Bailey et al. 2025, SWAT+MODFLOW (GMD 18:5681) | SWAT+ rev 61 + MODFLOW-NWT, one executable | recharge and soil transfer, groundwater ET, channel and canal exchange, tile drains, reservoirs, irrigation pumping | daily | HRU recharge × fraction of HRU in cell; channel length per cell | public (Zenodo) |
 | Nikiel and Żurek 2026 (EGU26-22367) | SWAT+ + MODFLOW 6, through Python scripts | recharge and river flow, both ways | not stated | "upscaling" HRUs to the grid; method not described | none found |
 | **Basin Ledger** | SWAT+ 62.0.1 (swatplus-bmi) + MODFLOW 6 (libmf6) + water-user BMI components, separate programs | one-way built: recharge, well pumping. Two-way designed: stream-aquifer exchange | daily, with a ledger check each day | area maps from config (aquifer or HRU to cell); channel length maps planned | this repository |
 
@@ -83,7 +83,7 @@ the choice when a study needs a layered aquifer, a regional model that already e
 have one), or MODFLOW's packages: wells screened in several layers, SFR, transport. swatplus-bmi's saved states don't
 yet cover gwflow (swatplus-bmi README).
 
-## Bailey et al. 2025: SWAT+MODFLOW (egusphere-2025-300)
+## Bailey et al. 2025: SWAT+MODFLOW (GMD 18:5681)
 
 Bailey, R.T., Abbas, S., Arnold, J.G., White, M.J., 2025. SWAT+MODFLOW: a new hydrologic model for simulating
 surface–subsurface flow in managed watersheds. *Geoscientific Model Development* 18, 5681–5697.
