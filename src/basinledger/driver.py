@@ -755,9 +755,7 @@ class Basin:
         """Each MODFLOW 6 package with flows (SIMVALS), by upper-case name, with a mask of the entries a link sets and
         the links that set them. Entries no link sets are the model's (coupling/existing.py)."""
         mf = self.mf6
-        prefix = mf.model.upper() + "/"
-        names = set(mf.api.get_input_var_names()) | set(mf.api.get_output_var_names())
-        pkgs = sorted({n.split("/")[1] for n in names if n.startswith(prefix) and n.endswith("/SIMVALS")})
+        pkgs = EX.flow_packages(mf)
         ex = self.exchange
         out = {}
         for p in pkgs:

@@ -340,6 +340,17 @@ def sfr_links(gwf, package: str) -> list[tuple[int, int]]:
     return sorted(links)
 
 
+def sfr_aux(gwf, package: str, name: str) -> list:
+    """An auxiliary value of each SFR reach, in reach order: SFRmaker writes ``line_id``, the hydrography line each
+    reach was cut from. Where SWAT+'s channels are built on the same lines, it is the channel map (``object,
+    reach``) once each line is given its channel's name."""
+    pd = gwf.get_package(package).packagedata.get_data()
+    if name not in pd.dtype.names:
+        raise KeyError(f"{package}: no auxiliary {name!r} (it has {list(pd.dtype.names)})")
+    number = "ifno" if "ifno" in pd.dtype.names else "rno"
+    return [r[name] for r in sorted(pd, key=lambda x: int(x[number]))]
+
+
 def sfr_confluences(gwf, package: str) -> list[Confluence]:
     """The reaches more than one reach flows into, with where they are: for a study building SWAT+ on a model's SFR
     network, a SWAT+ outlet at each one's top puts every confluence on a channel boundary, as the exchange's line-up

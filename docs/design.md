@@ -1212,9 +1212,35 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
      simple for the exchange.
    - **Michigan Hydrologic Framework** (EGLE, MSU and USGS): a platform hosting Michigan groundwater models and
      inset extraction. If Andrew has access, it may hold the Michigan MODFLOW 6 model the search didn't find.
-   Suggested order: the Central Sands inset for SFR and LAK in a native MODFLOW 6 model, then the Kalamazoo model
-   through mf5to6 as the Michigan example. Sizes aren't confirmed; Andrew decides before anything is downloaded.
-   Until then, the synthetic foreign model (below) stands in.
+   *Chosen (Andrew, Nov 14, 2026): the best one first, more than one likely.* The first is the Central Sands
+   **Pleasant Lake model** (16 MB; `examples/central-sands`, `tests/test_central_sands.py`). The Kalamazoo model
+   through mf5to6 is the likely second, as the Michigan example. What Pleasant Lake holds, from its files:
+   - **Two groundwater models in one simulation.** A parent (5 layers, 100 × 100, CHD edges, 244 irrigation wells,
+     551 SFR reaches) and an LGR inset of 20 m cells around the lake (5 layers, 100 × 120, 25 SFR reaches, one lake
+     of 1,382 connections with no outlets), joined by a GWF-GWF exchange with ghost nodes.
+   - **The mover**, in that exchange, carrying the inset's two outlet reaches into the parent's SFR.
+   - **Recharge from SWB in both models, Newton, and a steady first day** followed by 84 monthly periods of five
+     steps growing by 1.2.
+   - **Meters and days**, on a structured grid in Wisconsin Transverse Mercator.
+
+   What Basin Ledger does with it already: reads it as given; lists both models' packages; and solves its steady
+   first day. It puts both SFR networks through the line-up rule with SFRmaker's lines (`line_id`, NHD flowlines) as
+   SWAT+'s channels, and they line up: 2 lines in the inset, 48 in the parent with 21 connections cut at channel
+   boundaries, and no channel problems. So SWAT+ built on the same flowlines would route every channel (A), which
+   supports building SWAT+ on a model's own stream network. It lists the parent's 10 confluences. And the mover can
+   be cut at run time: its factor (`MVR/VALUE`) set to 0 through the API sends the inset's outlet water out of SFR
+   (1,167 and 2,493 m3 d-1 on the first day) instead of into the parent, as a cut upstream fraction does.
+
+   What it needs before a coupled run, in order:
+   1. Daily steps (the time discretization rewritten, the next build step), keeping its steady first day or starting
+      from its heads.
+   2. The mover allowed where it only joins coupled reaches, cut each day like the line-up rule's connections.
+   3. Several groundwater models in one simulation: each with its own maps, recharge and exchange, and the
+      GWF-GWF exchange's flow inside the ledger's groundwater, not a boundary.
+   4. The lake coupled: LAK's rain, evaporation and runoff from SWAT+ each day (point 1), and the lake's water owned
+      by LAK or by a SWAT+ reservoir, the same choice as a stream's.
+   5. The parent's irrigation wells: the model's own, unless SWAT+ irrigates the same fields from its aquifer, which
+      would pump the water twice; the start-up check can't see that, so the study says which.
 
 **Built (Nov 14, 2026): the start-up check and maps on the model's own grid.**
 

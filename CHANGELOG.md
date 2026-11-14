@@ -30,6 +30,11 @@ MODFLOW 6 model").
   applied per channel. A channel at a fixed stage takes status simple, its stage its streambed top plus SWAT+'s
   depth (`exchange:<channel>:sfr_depth_m`), and its water in at its entries by reach length. The start-up check
   lists which channels run as A and which as B, and why.
+- The first published test model: Pleasant Lake, Wisconsin Central Sands (USGS, doi:10.5066/P9BVFSGJ;
+  `examples/central-sands/fetch.py`, 16 MB, into the cache). Read as given, its packages listed
+  (`existing.inventory`), its SFR networks lined up with SFRmaker's own lines as SWAT+'s channels (they line up;
+  `gridmaps.sfr_aux`), its confluences listed and its mover cut at run time; what stops a coupled run is refused by
+  name. Its tests skip until it is fetched.
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS

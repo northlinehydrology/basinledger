@@ -61,6 +61,28 @@ class PackageRole:
                 f"{self.entries - self.taken} the model's, {left}")
 
 
+def flow_packages(mf6, model: str | None = None) -> list[str]:
+    """A groundwater model's packages with flows (SIMVALS), upper case, sorted: ``model``, or the one Basin Ledger
+    couples."""
+    prefix = (model or mf6.model).upper() + "/"
+    names = set(mf6.api.get_input_var_names()) | set(mf6.api.get_output_var_names())
+    return sorted({n.split("/")[1] for n in names if n.startswith(prefix) and n.endswith("/SIMVALS")})
+
+
+def inventory(mf6, model: str | None = None) -> list[PackageRole]:
+    """Each package with flows in a model as given, before anything is coupled: what a first look at someone's model
+    lists (call after ``prepare_day``, when the packages have their entries). ``model``: any groundwater model of the
+    simulation, the one ``mf6`` couples if not given."""
+    from .exchange import package_type
+    m = (model or mf6.model).upper()
+    out = []
+    for p in flow_packages(mf6, m):
+        n = int(mf6.get("NBOUND", m, p)[0])
+        t = str(mf6.get("PACKAGE_TYPE", m, p)[0]).strip().lower()
+        out.append(PackageRole(p.lower(), t, n, 0, ""))
+    return out
+
+
 def roles(mf6, coupled: dict[str, tuple[np.ndarray, list[str]]]) -> list[PackageRole]:
     """Each package with flows (SIMVALS), in the model's order of names: ``coupled`` maps a package's upper-case name to
     (a mask of its entries Basin Ledger sets, the links that set them)."""
