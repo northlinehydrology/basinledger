@@ -12,6 +12,12 @@ Day d, in order:
    river exchange are read back.
 6. **The ledger** enters both sides of every transfer and checks them. The day's flows and heads go to the outputs.
 
+**What Basin Ledger takes over in MODFLOW 6** (coupling/existing.py): on the first day, once the packages have their
+entries, each package with flows is listed with the entries a link sets (recharge, the exchange, the soil link,
+users' wells) and the rest, the model's, booked as water from or to outside the coupled models
+(``Basin.takeover``). A model's own package that would count water twice (a second recharge package, UZF, EVT with
+groundwater up into the soil) stops the start-up.
+
 **Transport** (``[transport.<species>]``, coupling/transport.py): after MODFLOW 6 prepares the day, the recharge's and
 the coupled rivers' losses' concentrations are set [A]; after the solve, each species' mass is booked (kg) and the
 concentration at every configured well becomes the intake concentration
@@ -41,6 +47,7 @@ from swatplus_bmi.exchange import ExchangeError
 from . import config as C
 from . import rules as R
 from .chain import UtilityChain
+from .coupling import existing as EX
 from .coupling import swatplus as S
 from .coupling.exchange import ChannelMap, StreamExchange, package_type, requests as exchange_requests
 from .coupling.gwsoil import GroundwaterToSoil
@@ -659,6 +666,8 @@ class Basin:
         self.mf6.prepare_day()
         if self.cfg.exchange and self.exchange is None:
             self._build_exchange()
+        if not hasattr(self, "_gw_packages"):
+            self._start_takeover()
         if self.transport:
             self._transport_day()
         sent = self.recharge.transfer()
@@ -732,34 +741,72 @@ class Basin:
             raise ValueError("[exchange] limit = false: SFR limits a reach's loss to what it carries itself; the "
                              "limit is for a river (RIV) package")
 
+    def _coupled_entries(self) -> dict[str, tuple[np.ndarray, list[str]]]:
+        """Each MODFLOW 6 package with flows (SIMVALS), by upper-case name, with a mask of the entries a link sets and
+        the links that set them. Entries no link sets are the model's (coupling/existing.py)."""
+        mf = self.mf6
+        prefix = mf.model.upper() + "/"
+        names = set(mf.api.get_input_var_names()) | set(mf.api.get_output_var_names())
+        pkgs = sorted({n.split("/")[1] for n in names if n.startswith(prefix) and n.endswith("/SIMVALS")})
+        ex = self.exchange
+        out = {}
+        for p in pkgs:
+            n = mf.nbound(p)
+            m = np.zeros(n, bool)
+            links: list[str] = []
+
+            def take(sel, what):
+                sel = np.asarray(sel, bool)
+                if sel.any():
+                    m[sel] = True
+                    links.append(what)
+
+            if p == self.cfg.recharge_package.upper() and self.recharge is not None:
+                take(np.ones(n, bool), "recharge from SWAT+")
+            if ex is not None and p == ex.package.upper():
+                take(ex.map.entry_channel[:n] >= 0, "stream exchange with SWAT+'s channels")
+            if ex is not None and ex.drains and p == ex.drains[0].upper():
+                take(ex.drains[1].entry_channel[:n] >= 0, "seepage to SWAT+'s channels")
+            if self.gw_soil is not None and p == self.gw_soil.package.upper():
+                take(np.ones(n, bool), "groundwater up into SWAT+'s soil")
+            wells = np.zeros(n, bool)
+            named = []
+            for name, (pkg, node) in self.router.wells.items():
+                if pkg.upper() == p:
+                    try:
+                        wells[mf.entry(p, node)] = True
+                    except ValueError:  # listed under the well by the start-up; refused by the router in a run
+                        continue
+                    named.append(name)
+            take(wells, "users' wells: " + ", ".join(named))
+            out[p] = (m, links)
+        return out
+
+    def _start_takeover(self):
+        """What Basin Ledger takes over in MODFLOW 6 and what it leaves as the model's (coupling/existing.py), once the
+        packages have their entries: ``self.takeover``, one row per package. What would count water twice stops the
+        start-up; what a reviewer should know is a warning (a check's notes)."""
+        coupled = self._coupled_entries()
+        self._gw_packages = {p: m for p, (m, _) in coupled.items()}
+        self.takeover = EX.roles(self.mf6, coupled)
+        bad, notes = EX.problems(self.takeover, self.gw_soil is not None)
+        if self.cfg.rivers:
+            notes.append(f"{self.cfg.rivers.get('package', 'riv')}: [rivers] sets its stage from the surface model's "
+                         "depth; its flow stays the model's")
+        for n in notes:
+            warnings.warn(n, EX.TakeoverNote, stacklevel=2)
+        if bad:
+            raise ValueError("MODFLOW 6's own packages would count water twice:\n- " + "\n- ".join(bad))
+
     def _groundwater_accounts(self, L):
         """Every flow in or out of the groundwater model that no link carries, by package (water from or to outside
         the coupled models: fixed or general heads, drains and rivers not coupled, recharge packages Basin Ledger
         doesn't set), the release from storage, and the model's closure, all in m3 for the day. Positive is into
         the aquifer. The closure is checked every day, against the day's gross flow."""
         mf = self.mf6
-        if not hasattr(self, "_gw_packages"):
-            prefix = mf.model.upper() + "/"
-            names = set(mf.api.get_input_var_names()) | set(mf.api.get_output_var_names())
-            pkgs = sorted({n.split("/")[1] for n in names if n.startswith(prefix) and n.endswith("/SIMVALS")})
-            coupled = {}
-            for p in pkgs:
-                n = mf.nbound(p)
-                m = np.zeros(n, bool)
-                if p == self.cfg.recharge_package.upper():
-                    m[:] = True
-                if self.exchange is not None and p == self.exchange.package.upper():
-                    m |= self.exchange.map.entry_channel[:n] >= 0
-                if self.exchange is not None and self.exchange.drains and p == self.exchange.drains[0].upper():
-                    m |= self.exchange.drains[1].entry_channel[:n] >= 0
-                if self.gw_soil is not None and p == self.gw_soil.package.upper():
-                    m[:] = True
-                for w in self.cfg.wells:
-                    if w.package.upper() == p:
-                        m[mf.entry(p, mf.node(*w.cell))] = True
-                coupled[p] = m
-            self._gw_packages = coupled
+        if not getattr(self, "_closure_declared", False):
             L.zero("groundwater:closure_share", atol=1e-6)
+            self._closure_declared = True
         net = gross = 0.0
         for p, m in self._gw_packages.items():
             q = mf.simvals(p)
@@ -872,13 +919,16 @@ class Basin:
         self.swat.finalize()
 
     @classmethod
-    def check(cls, cfg: C.ExampleConfig, users: bool = True, run: str = "check") -> tuple[list[str], list[str]]:
+    def check(cls, cfg: C.ExampleConfig, users: bool = True, run: str = "check",
+              takeover: list | None = None) -> tuple[list[str], list[str]]:
         """Every problem the example's start-up can find, without running a day: (problems, notes). The models start
         as for a run, MODFLOW 6 reads its first day (the packages have their entries then) and the links are built:
         the SWAT+ settings, the parameters, the recharge map and its areas, the wells', head outputs' and rules'
         cells, the routes, users and rules, the exchange and its maps (SFR's checks included), the rivers,
         groundwater into the soil and transport. A part with a problem is listed and left out, and the rest go on;
-        a problem that leaves a model unable to start ends the check there. Notes are the start-up's warnings."""
+        a problem that leaves a model unable to start ends the check there. Notes are the start-up's warnings.
+        ``takeover``, if given, gets what Basin Ledger takes over in MODFLOW 6 and what it leaves, one
+        ``existing.PackageRole`` per package (coupling/existing.py)."""
         problems: list[str] = []
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -900,6 +950,9 @@ class Basin:
                             b._part("[groundwater_to_soil]", lambda: b.gw_soil.attach(b.mf6))
                         if b.transport:
                             b._part("[transport]", b._build_mass_links)
+                        b._part("[modflow6]", b._start_takeover)
+                        if takeover is not None:
+                            takeover.extend(getattr(b, "takeover", []))
                 finally:
                     b.finalize()
         return problems, list(dict.fromkeys(str(w.message) for w in caught))
