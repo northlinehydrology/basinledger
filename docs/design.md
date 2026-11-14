@@ -1022,6 +1022,60 @@ source). All of them start from one warm-up:
 Scenarios then run in parallel, each in its own process. `branch()` (fork) isn't used by the driver yet, because
 libmf6 lives in the driver's process. A branch would need MODFLOW 6 restarted from heads in the child process.
 
+## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; not built)
+
+**Decided (Andrew).** Basin Ledger gets a second way in: take a MODFLOW 6 model someone already has (a consultant's,
+a utility's, USGS's, EGLE's), leave it as it is, and couple SWAT+ to it. SWAT+ supplies the land surface (snow, plants,
+crops, soils, runoff, percolation, ET) and keeps the streams, where the in-stream questions are: phosphorus, nitrogen,
+sediment and water temperature, through SWAT+'s quality routines. The first way in, where a study builds both models
+(the Clam, Plaster Creek), stays and must keep working as well as it does.
+
+**Why.** Groundwater work outside academia is done in MODFLOW; consultants rarely use SWAT. A calibrated MODFLOW model
+usually already exists for any basin worth a large study, and a reviewer can open it. Extending that model answers
+land-use, climate, water-quality and new-user questions without a second groundwater model to defend, and the review
+question becomes what the coupling changed. Pitch: bring your MODFLOW 6 model; Basin Ledger adds SWAT+'s land surface
+and in-stream water quality, and a ledger that proves every handoff conserves water.
+
+**What exists.** `[modflow6] workspace` already copies an existing simulation into the run, and the driver couples
+whatever packages a config names. The maps, the exchange and the checks were built and tested on simulations the
+studies' own builders wrote (one daily stress period, our package names).
+
+**Decisions, with what each needs:**
+
+- **The model as given.** Its grid (DIS or DISV), packages, stress periods, K, storage and boundaries are left
+  untouched. Basin Ledger adds or replaces only what it couples: recharge (a recharge package it owns), the
+  stream and lake exchange on the model's own RIV, DRN or SFR entries, and users' wells. Anything else in the model
+  (its GHB, CHD, its wells, EVT) stays the model's, and the ledger books it as water from or to outside the coupled
+  models, as it does now. A start-up check lists what Basin Ledger took over and what it left.
+- **Maps on their grid.** HRUs to cells and SWAT+ channels to the model's stream entries, built from the model's grid
+  and its package cell lists, with the area and length checks the studies' maps have. Stream entries no SWAT+ channel
+  reaches are reported, not guessed.
+- **One owner per water body.** SWAT+ owns the stream water and its quality. The model's RIV or SFR becomes the
+  exchange face: its stage set each day from SWAT+'s channel, its flux returned to that channel. An SFR package that
+  routes flow has its routing driven or switched off, so a river is never carried twice. Lakes follow the same rule.
+- **Stress periods.** Consultant models often have monthly, seasonal or steady periods. Two modes, chosen per study:
+  rewrite the model's time discretization to daily steps (the coupling as built), or keep its periods and pass SWAT+'s
+  fluxes summed over each period. The ledger checks either. Restarts across several stress periods (What's next, 4)
+  become required.
+- **MODFLOW 6 only.** Models in MODFLOW-2005 or NWT come in through USGS's converter (mf5to6) first; Basin Ledger
+  doesn't read them.
+- **Their calibration stands.** Groundwater parameters stay fixed by default; calibration covers SWAT+ and the coupling
+  terms (streambed and lakebed conductance, the soil link). A study may free groundwater parameters, and says so.
+- **Solutes across the link.** Nitrate and chloride in the aquifer through the model's GWT (or one Basin Ledger adds),
+  passed as loads into SWAT+'s channels with the water (Water quality across links).
+- **Confidentiality.** A client's model runs locally; nothing from it goes into public outputs or Water Ledger.
+
+**Open questions.**
+
+- Whether MODFLOW 6's API lets a coupler set, each step, the inputs of LAK (rain, evaporation, runoff, inflow), MAW
+  and SFR's inflows: that decides whether lakes and multi-aquifer wells can be coupled as their own packages.
+- How SFR's flow is computed each step and whether it stores water in a reach; what "driving" an SFR's routing means.
+- What a test model looks like: a USGS-published MODFLOW 6 model of a Michigan basin with a SWAT+ project built over
+  it, so the second way in is tested on a model Basin Ledger didn't write.
+
+**Plan.** A design pass on the open questions; then the start-up check and maps on a foreign grid, tested on a
+published model; then stress periods and restarts; then solutes. Each a minor release with tests.
+
 ## Examples and private studies
 
 - **Synthetic** (`examples/synthetic`, built): SWAT+'s bundled Osu_1hru project (10 ha, 2010–2023), with three
@@ -1115,7 +1169,9 @@ Next:
 4. Restarts for MODFLOW 6 models with several stress periods.
 5. MODFLOW 6 parameters by pilot point (pyEMU); USGS groundwater levels as observations.
 6. AORC forcing for SWAT+ and the users; the SWAT+ project builder on the hydrofabric, with outputs at every nexus.
-7. Plaster Creek, in the calibration order above:
+7. Extending an existing MODFLOW 6 model (decided Nov 14, 2026; the section above): the start-up check and maps on a
+   model Basin Ledger didn't write, then stress periods and restarts, then solutes.
+8. Plaster Creek, in the calibration order above:
    - the SWAT+ project on the hydrofabric, which blocks stage 1;
    - stage 2 prepared on NextGen's recharge as an interim forcing;
    - extend NextGen's forcing to include the 2012 drought;
