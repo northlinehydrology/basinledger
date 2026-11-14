@@ -64,6 +64,7 @@ not the basin.
 | `basinledger check` | yes (several problems listed, knock-ons not) | | | | yes (exit codes) | |
 | two-way exchange through SFR | yes (inflow at the top reach, refusals, map rows by reach) | yes | yes (Osu_1hru, three years; restarts) | MODFLOW 6 budget | no reach loses more than it carries | |
 | vertex grids (DISV) | yes (cells to nodes, forms refused, map rows) | yes | yes (refined two-way with a rule and transport; uniform DISV = DIS) | MODFLOW 6 budget | | |
+| an existing MODFLOW 6 model: what is taken over, maps on its grid | yes (roles, refusals; HRU and channel maps on a rotated DIS and DISV grid with inactive cells, unreached entries, length checks, SFR reaches; LAK, MAW and SFR inputs set through the API) | yes (the model's boundaries booked from or to outside) | yes (Osu_1hru on a foreign model across monthly stress periods; DISV = DIS) | MODFLOW 6 budget | yes (a second recharge package refused; the check's list) | |
 | boundary flows, storage, closure | | yes | yes | | | study |
 | wells and capture of pumping | | yes | yes (G1, two-way and one-way) | Glover and Balmer (G2) | | study |
 | water users (CoolingWaterBmi) on SWAT+'s weather | yes | yes | yes (G7) | user balance | | study |

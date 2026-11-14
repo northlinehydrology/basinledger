@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+The second way in begins: an existing MODFLOW 6 model, taken as given (docs/design.md, "Extending an existing
+MODFLOW 6 model").
+
+- The design pass on its open questions: LAK's rain, evaporation, runoff, inflow and withdrawal, MAW's rate and SFR's
+  inflows, status, stage and upstream fractions can all be set each step through libmf6 (kept as tests,
+  `tests/test_existing_api.py`); how SFR routes and what driving it means; three options for who owns the water of a
+  model whose SFR was calibrated as the river (not decided); candidate published models for the test.
+- What Basin Ledger takes over in MODFLOW 6 (`coupling/existing.py`): at start-up each package with flows is listed
+  with the entries a link sets and the rest, the model's, booked as water from or to outside the coupled models.
+  `basinledger check` prints the list, and `Basin.check(..., takeover=[])` returns it. A second recharge package
+  left as the model's, a UZF package, and an EVT package with groundwater up into the soil are refused: each would
+  count water twice. An EVT, SFR or LAK package left as the model's is noted.
+- Maps on a grid Basin Ledger didn't write (`gridmaps.py`, the `gis` extra): HRUs or aquifers to cells by area on
+  each column's top active layer, with ground outside the grid, over inactive columns or in slivers reported; SWAT+
+  channels to a RIV, DRN or SFR package's entries by length, with entries no channel reaches reported (or reached
+  within a distance the study sets), shared cells reported, and each channel's length checked. DIS and DISV grids,
+  rotated and georeferenced.
+- A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
+  grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
+  boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS
+  and DISV alike.
+
 ## 0.7.0 (2026-11-11)
 
 SFR's reaches built from SWAT+'s channel lines, and `basinledger check`. Needs swatplus-bmi 0.9.0, as 0.6.0

@@ -42,6 +42,14 @@ Two more configs use the same SWAT+ project:
     it to both small cells.
   - The maps (`maps/disv_recharge.csv`, `maps/disv_river.csv`, written by `write_small_disv_maps`), the well, the head
     output and the rule name cells as layer, icell2d.
+- **`existing.toml`:** the second way in: Osu_1hru coupled both ways to a MODFLOW 6 model written in someone
+  else's style (`existing.py`), taken as given.
+  - A 12 × 12 two-layer grid rotated 15° at UTM-like coordinates, the top layer's outer ring inactive, monthly stress
+    periods, and its own recharge, creek (with a tributary no channel reaches), tile drains, regional boundaries,
+    city wells and riparian ET.
+  - Basin Ledger takes over the recharge (`rch_swb`), the creek's entries cha01 reaches and one city well; the rest
+    stays the model's (`basinledger check` lists it). Its maps (`maps/existing_*.csv`) are written by `gridmaps.py`
+    from an aquifer polygon and the creek's line (`existing.write_maps`).
 
 Run it:
 

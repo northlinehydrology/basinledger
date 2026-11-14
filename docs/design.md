@@ -83,12 +83,14 @@ src/basinledger/
   ledger.py            daily accounts, paired as sent and received, checked every day
   users.py             the water-user interface: roles, units, hourly-to-daily integration, the user's balance
   mapping.py           area maps between SWAT+ objects (catchments, aquifers, HRUs) and MODFLOW 6 cells
+  gridmaps.py          maps on a MODFLOW 6 grid Basin Ledger didn't write, from geometry (HRUs, channel lines)
   units.py             unit factors to the ledger's SI units
   coupling/
     modflow6.py        MODFLOW 6 through libmf6 (modflowapi): prepare, set, solve, read, restart
     swatplus.py        SWAT+ project edits (places of use, point sources, pass-through aquifers), reads and sets
     recharge.py        SWAT+ aquifer recharge -> MODFLOW 6 recharge
     exchange.py        MODFLOW 6 river exchange <-> SWAT+ channels (two-way)
+    existing.py        what Basin Ledger takes over in a MODFLOW 6 model, and what it leaves as the model's
     nextgen.py         a finished NextGen (NGIAB) run as the surface model, replayed day by day
   forcing.py           hourly weather for users from the surface model's forcing
   routes.py            where a day's water goes: wells, SWAT+ places of use and point sources, outfalls
@@ -1022,7 +1024,7 @@ source). All of them start from one warm-up:
 Scenarios then run in parallel, each in its own process. `branch()` (fork) isn't used by the driver yet, because
 libmf6 lives in the driver's process. A branch would need MODFLOW 6 restarted from heads in the child process.
 
-## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; not built)
+## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
 **Decided (Andrew).** Basin Ledger gets a second way in: take a MODFLOW 6 model someone already has (a consultant's,
 a utility's, USGS's, EGLE's), leave it as it is, and couple SWAT+ to it. SWAT+ supplies the land surface (snow, plants,
@@ -1169,6 +1171,38 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
    Suggested order: the Central Sands inset for SFR and LAK in a native MODFLOW 6 model, then the Kalamazoo model
    through mf5to6 as the Michigan example. Sizes aren't confirmed; Andrew decides before anything is downloaded.
    Until then, the synthetic foreign model (below) stands in.
+
+**Built (Nov 14, 2026): the start-up check and maps on the model's own grid.**
+
+- **What is taken over** (`coupling/existing.py`; `Basin.takeover`, `basinledger check`). On the first day, once
+  MODFLOW 6's packages have their entries, each package with flows is listed with how many of its entries a link
+  sets, and which link: recharge from SWAT+ (every entry of `[recharge] package`), the stream exchange (the entries
+  of `[exchange] package` the map gives a channel), seepage (its drains), groundwater up into the soil, and users'
+  wells. The rest of each package is the model's, booked each day as `groundwater:boundary:<package>`, as before.
+  The recharge Basin Ledger sets goes into the model's own recharge package, named in the config, so its calibrated
+  recharge is replaced rather than added to; adding a package of Basin Ledger's own, for a model without one, isn't
+  built. A user's well must be an entry the model has (a city well already in it); adding wells isn't built either.
+- **What would count water twice is refused:** another recharge package left as the model's, a UZF package (its own
+  infiltration), and EVT with groundwater up into the soil. Noted, not refused: EVT otherwise (groundwater ET stays
+  the model's), and SFR or LAK left as the model's while SWAT+'s channels are coupled (the same river carried by
+  both models, if they stand for the same streams).
+- **Maps on the model's grid** (`gridmaps.py`). `hru_map` places each HRU or aquifer polygon on the grid's columns by
+  area, on each column's top active layer (inactive cells are common in such models), and reports ground outside the
+  grid, over columns with no active cell, and slivers under 0.001 m2 (rounding along cell edges on a rotated grid).
+  `stream_entries` reads a package's entries: an SFR package's reaches, or the distinct cells of a RIV or DRN
+  package over all its stress periods. `channel_map` gives each entry to the channel whose line runs furthest
+  through its cell. An entry no line crosses is reported and left as the model's; a study may set `reach_m`, a
+  distance within which a line reaches an entry, and those are reported apart. A cell two channels cross goes to the
+  longer and is reported. The length check compares each channel's line inside the model's active area with its
+  length through the cells it was given, and, for SFR, with its reaches' own lengths. Both write the CSVs the coupling
+  reads, in the grid's own cell form.
+- **Tested on a synthetic model in someone else's style** (`examples/synthetic/existing.py`, `existing.toml`): a
+  12 × 12 two-layer grid, rotated 15° at UTM-like coordinates, the top layer's outer ring inactive (10 ha active,
+  Osu_1hru's aquifer), monthly stress periods of daily steps, its own recharge, a creek with a tributary no channel
+  reaches, tile drains, a general-head and a fixed-head boundary, two city wells and riparian ET. Basin Ledger takes
+  over the recharge, 10 of the creek's 12 entries and one city well. Coupled both ways for 75 days, the ledger closes
+  every day across three stress periods, and DISV gives DIS's heads to 1e-6 m. A month of one step is refused, as
+  before, until the time discretization is rewritten (the next step).
 
 **Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
 on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a
