@@ -1040,30 +1040,39 @@ and in-stream water quality, and a ledger that proves every handoff conserves wa
 whatever packages a config names. The maps, the exchange and the checks were built and tested on simulations the
 studies' own builders wrote (one daily stress period, our package names).
 
-**Decisions, with what each needs:**
+**Decisions, with what each needs.** Andrew's answers (Nov 14, 2026) are in italics after each.
 
 - **The model as given.** Its grid (DIS or DISV), packages, stress periods, K, storage and boundaries are left
   untouched. Basin Ledger adds or replaces only what it couples: recharge (a recharge package it owns), the
   stream and lake exchange on the model's own RIV, DRN or SFR entries, and users' wells. Anything else in the model
   (its GHB, CHD, its wells, EVT) stays the model's, and the ledger books it as water from or to outside the coupled
-  models, as it does now. A start-up check lists what Basin Ledger took over and what it left.
+  models, as it does now. A start-up check lists what Basin Ledger took over and what it left. *Yes.*
 - **Maps on their grid.** HRUs to cells and SWAT+ channels to the model's stream entries, built from the model's grid
   and its package cell lists, with the area and length checks the studies' maps have. Stream entries no SWAT+ channel
-  reaches are reported, not guessed.
+  reaches are reported, not guessed. *Yes.*
 - **One owner per water body.** SWAT+ owns the stream water and its quality. The model's RIV or SFR becomes the
   exchange face: its stage set each day from SWAT+'s channel, its flux returned to that channel. An SFR package that
   routes flow has its routing driven or switched off, so a river is never carried twice. Lakes follow the same rule.
+  *Probably; Andrew wants to understand it better first.* To work through before building: what SWAT+ owning the
+  stream means for a model whose SFR was calibrated as the river (its streambed conductance, its routed flows at
+  gages), what "driven" routing looks like in MODFLOW 6's SFR, and a worked example on a published model.
 - **Stress periods.** Consultant models often have monthly, seasonal or steady periods. Two modes, chosen per study:
   rewrite the model's time discretization to daily steps (the coupling as built), or keep its periods and pass SWAT+'s
   fluxes summed over each period. The ledger checks either. Restarts across several stress periods (What's next, 4)
-  become required.
+  become required. *Daily: Basin Ledger rewrites the model's time discretization to daily steps. Keeping the model's
+  own periods stays an idea to think about, not built.*
 - **MODFLOW 6 only.** Models in MODFLOW-2005 or NWT come in through USGS's converter (mf5to6) first; Basin Ledger
-  doesn't read them.
+  doesn't read them. *MODFLOW 6 only, for now.*
 - **Their calibration stands.** Groundwater parameters stay fixed by default; calibration covers SWAT+ and the coupling
   terms (streambed and lakebed conductance, the soil link). A study may free groundwater parameters, and says so.
+  *Yes, but recalibrating the groundwater model may be needed once SWAT+ supplies its recharge: a setting in the
+  config (groundwater parameters fixed, or free with their priors), not a code path.*
 - **Solutes across the link.** Nitrate and chloride in the aquifer through the model's GWT (or one Basin Ledger adds),
-  passed as loads into SWAT+'s channels with the water (Water quality across links).
+  passed as loads into SWAT+'s channels with the water (Water quality across links). *Yes: groundwater carries
+  nitrate and chloride to streams, and the in-stream questions need those loads.*
 - **Confidentiality.** A client's model runs locally; nothing from it goes into public outputs or Water Ledger.
+  *Yes.* Outputs, maps and ledgers from a client's model stay in the study's private folder; examples and tests use
+  only published models.
 
 **Open questions.**
 
