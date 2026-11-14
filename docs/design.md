@@ -1074,16 +1074,105 @@ studies' own builders wrote (one daily stress period, our package names).
   *Yes.* Outputs, maps and ledgers from a client's model stay in the study's private folder; examples and tests use
   only published models.
 
-**Open questions.**
+**Open questions, answered (design pass, Nov 14, 2026).** Checked on MODFLOW 6.8.2 through modflowapi 1.0.1, on a
+two-layer test model with a lake, a multi-aquifer well and three SFR reaches; `tests/test_existing_api.py` keeps
+each answer as a test, so a new MODFLOW 6 that changes one fails there first.
 
-- Whether MODFLOW 6's API lets a coupler set, each step, the inputs of LAK (rain, evaporation, runoff, inflow), MAW
-  and SFR's inflows: that decides whether lakes and multi-aquifer wells can be coupled as their own packages.
-- How SFR's flow is computed each step and whether it stores water in a reach; what "driving" an SFR's routing means.
-- What a test model looks like: a USGS-published MODFLOW 6 model of a Michigan basin with a SWAT+ project built over
-  it, so the second way in is tested on a model Basin Ledger didn't write.
+1. **Can a coupler set LAK, MAW and SFR inputs each step?** Yes, all of them, between `prepare_time_step` and the
+   solve, the same way the driver sets RCH and WEL now.
+   - LAK: `RAINFALL` and `EVAPORATION` (m d-1 over the lake's surface), `RUNOFF`, `INFLOW` and `WITHDRAWAL` (m3 d-1),
+     per lake. Each reaches the lake's budget that day (rainfall 0.01 m d-1 on a 4 ha lake books 400 m3 d-1) and
+     the stage (`XNEWPAK`; `STAGE` is the input stage of a constant-stage lake) responds. So a lake can be coupled as
+     its own package: SWAT+'s rain, evaporation and runoff in, the lake's stage and outflow from MODFLOW 6.
+   - MAW: `RATE` per well. MODFLOW 6 splits it among the well's connections by their heads (`SIMVALS`, per
+     connection) and reports what it pumped (`RATESIM`; less than `RATE` if a shut-off or reduction length is set).
+     The connections add to the rate less the change in water held in the wellbore (0.02 of 200 m3 on the test day),
+     so the ledger's pair for a MAW well is rate = connections + wellbore storage, read from MODFLOW 6. A utility
+     well screened across layers can be a MAW well.
+   - SFR: `INFLOW`, `RUNOFF`, `RAIN` and `EVAP` per reach (`INFLOW` is what the SFR exchange sets now), and also the
+     reach's status (`IBOUNDPAK`: 1 active, 0 inactive, −1 simple), its specified stage (`SSTAGE`) and each reach's
+     upstream fraction (`USTRF`).
+   - What the API doesn't allow: adding or removing entries, or changing which reaches connect (`IA`, `JA`). A
+     package's size and topology are fixed when it is read.
+   - One caution: MODFLOW 6 reads a package's period block at the start of a stress period. A value set from Python
+     lasts until the next block the model has for that package, so the coupler sets its values every day, after
+     `prepare_time_step`, as it does now.
+2. **How SFR computes flow, and whether a reach stores water.**
+   - Without the `STORAGE` option (MODFLOW 6's default, and what most published models use), a reach holds no water
+     from one step to the next. Within each outer iteration SFR goes downstream reach by reach: a reach's inflow
+     (its upstream reaches' outflow times its upstream fraction, plus `INFLOW`, `RUNOFF` and `RAIN`), less `EVAP` and
+     its leakage to the aquifer (or plus its gain), is its outflow. Its depth comes from that flow by Manning's
+     equation, and its leakage from that depth and the cell's head. A reach can't lose more than reaches it. Each
+     step is a steady routing of that step's water.
+   - With `STORAGE` (kinematic-wave routing, MODFLOW 6.5 and later), reaches hold water between steps, and a
+     restart would need it saved. The exchange refuses it now and still would.
+   - **Driving the routing** means three things MODFLOW 6 supports, each tried on the test model:
+     - *inflows set*: each SWAT+ channel's water goes in as its top reach's `INFLOW` (what the exchange does now);
+     - *connections cut at run time*: a reach's `USTRF` set to 0 takes nothing from its upstream reaches, and their
+       outflow is booked as SFR's external outflow. SFR's budget still closes (0.00% on the test), and the model's
+       files are untouched. The cut is per reach, though, not per connection: at a confluence where a reach takes
+       water from two channels, both are cut;
+     - *simple status*: a reach with status simple takes its stage as given (`SSTAGE`, set each day) and no longer
+       computes it from flow. It still routes the water it has, and its leakage is held to its inflow (stage 18 m
+       over a 15 m head with 100 m3 d-1 in: it lost 100 m3 d-1 and its stage dropped to the streambed top). That is
+       RIV with the supply limit built in.
+   - **Switching the routing off** means the water SFR routes isn't counted anywhere outside SFR: what leaves a
+     channel's last reach goes to SFR's external outflow, and SWAT+ is the model that carries the river on. The
+     exchange (each reach's leakage or gain) is what crosses to SWAT+.
+3. **One owner per water body, for a model whose SFR was calibrated as the river.** Not decided; Andrew wants to
+   understand it first. In the model as calibrated, SFR is the river: its reaches carry the flow the modeler set at
+   the network's upstream ends (and runoff, often from a soil-water-balance model), each reach's stage comes from that
+   flow and the reach's width, slope and roughness, and its streambed conductance was calibrated so heads and the
+   routed flows at gages (often low flows, or base flow separated from them) match. Coupling SWAT+ takes over the
+   flow at the top of each channel and the recharge. What stays the model's is the streambed: its conductance,
+   elevation and geometry. The options:
+   - **A. SWAT+ owns the water; SFR active within each channel** (the exchange as built, extended to a foreign
+     SFR). Each channel's water goes in at its top reach, SFR routes it down that channel's reaches with its own
+     Manning's equation and bed, and connections between channels are cut at run time (`USTRF` = 0), so SWAT+ alone
+     carries water from one channel to the next. Keeps the calibrated bed and the model's own stage-flow relation.
+     Gage flows come from SWAT+, which must be calibrated to them; SFR's routed flows aren't a result any more.
+     Costs: a confluence cut by `USTRF` also cuts the reach's own channel where the two networks disagree; such
+     reaches are reported; rewriting those connections in the run's copy of the package (the model's own files
+     untouched) is the way around it, not built. Inflows the modeler set at upstream ends, and SFR's own runoff, are replaced
+     by SWAT+'s and listed by the start-up check.
+   - **B. SWAT+ owns the water; SFR as a fixed-stage face** (status simple). Each reach's stage is set each day from
+     SWAT+'s channel depth (its own rating curve) over the reach's streambed top, and its channel's water goes in at
+     the top reach so the leakage stays within the flow. No cuts needed beyond those of A, and the stage follows the
+     model that carries the water. Gives up SFR's calibrated width, slope and roughness (the stage-flow relation);
+     the streambed conductance stays. Closest to how RIV is coupled now.
+   - **C. MODFLOW 6 owns the water; SWAT+ supplies it.** SWAT+'s runoff and lateral flow go into SFR's reaches as
+     `RUNOFF`, the upstream inflows as `INFLOW`, and SFR routes the river as calibrated. Keeps the model's routed
+     flows at gages. But SWAT+'s channels no longer carry the water, so its in-stream phosphorus, nitrogen, sediment
+     and temperature routines have nothing to work on, which was the reason for the second way in. Listed so the
+     trade is plain, not as a candidate.
+   - What A and B share, and what a reviewer should be told: the model's bed stays calibrated; the recharge and the
+     water in the streams change, because SWAT+ supplies them now; the groundwater calibration may need revisiting
+     (the setting for groundwater parameters fixed or free, above). A RIV or DRN model has no routing to give up, so
+     A and B only matter for SFR. Lakes follow the same choice: LAK active with SWAT+'s rain, evaporation and runoff
+     set each day (point 1), or the lake as SWAT+'s reservoir with LAK's stage set and its routing (outlets) off.
+4. **The test model.** No USGS-published MODFLOW 6 model of a Michigan basin turned up (searches of USGS data
+   releases and ScienceBase, Nov 14, 2026). Candidates, none downloaded:
+   - **Kalamazoo River basin (HUC8), Michigan**: the steady MODFLOW-NWT inset model cut from USGS's Lake Michigan
+     Basin regional model (Feinstein and others, SIR 2018–5038, doi:10.3133/sir20185038; files doi:10.5066/F76D5R5V,
+     edited versions doi:10.5066/P9HS83JL, which also has Boardman-Charlevoix). A Michigan glacial basin of the right
+     kind, but it would come in through mf5to6, and being steady it has no storage properties: daily steps need
+     specific yield and storage added, which is the study's choice, not Basin Ledger's.
+   - **Wisconsin Central Sands**: MODFLOW 6 inset models around lakes on glacial outwash, transient 2012–2018
+     (Fienen, Haserodt and Leaf, doi:10.5066/P9BVFSGJ; report SIR 2022–5046). Native MODFLOW 6, transient, with lakes
+     and streams, built by another hand (modflow-setup); the closest to what a consultant would bring. Whether its
+     inset models use SFR and LAK is still to check in its files.
+   - **CONUS surficial models** (Zell and Sanford, doi:10.5066/P91LFFN1): 75 steady, one-layer MODFLOW 6 models, one
+     covering the Lower Peninsula; streams as drains. A real foreign MODFLOW 6 grid over Michigan for the maps, too
+     simple for the exchange.
+   - **Michigan Hydrologic Framework** (EGLE, MSU and USGS): a platform hosting Michigan groundwater models and
+     inset extraction. If Andrew has access, it may hold the Michigan MODFLOW 6 model the search didn't find.
+   Suggested order: the Central Sands inset for SFR and LAK in a native MODFLOW 6 model, then the Kalamazoo model
+   through mf5to6 as the Michigan example. Sizes aren't confirmed; Andrew decides before anything is downloaded.
+   Until then, the synthetic foreign model (below) stands in.
 
-**Plan.** A design pass on the open questions; then the start-up check and maps on a foreign grid, tested on a
-published model; then stress periods and restarts; then solutes. Each a minor release with tests.
+**Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
+on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a
+minor release with tests.
 
 ## Examples and private studies
 
