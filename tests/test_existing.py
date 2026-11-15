@@ -19,6 +19,7 @@ import datetime as dt
 import importlib.util
 import io
 import shutil
+import warnings
 from contextlib import redirect_stdout
 
 import numpy as np
@@ -331,6 +332,26 @@ def test_a_restart_across_stress_periods_continues_the_unbroken_run(swatplus):
     assert set(ta) == set(tb)
     for key in ta:
         assert np.array_equal(ta[key], tb[key], equal_nan=True), key
+
+
+def test_another_groundwater_model_in_the_simulation_is_outside(swatplus):
+    """A second groundwater model joined by a GWF-GWF exchange (``neighbor=True``), not coupled: what crosses to it is
+    booked as water from or to outside, so the coupled model's ledger closes every day, and the check says so."""
+    from basinledger.driver import Basin
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        b = Basin(config(neighbor=True), run="existing-run-neighbor", days=75)
+        try:
+            b.run()  # the takeover's notes come with the first day, once the packages have their entries
+            t = b.ledger.totals()
+        finally:
+            b.finalize()
+    notes = [str(w.message) for w in caught]
+    assert ("gwf-gwf_1: groundwater to and from kzoo_east, another model of the simulation that Basin Ledger doesn't "
+            "couple, booked as from or to outside") in notes
+    assert t["groundwater:boundary:gwf-gwf_1"] > 0.0  # the regional head to the east feeds the aquifer
+    assert abs(t["groundwater:closure_share"]) < 1e-6 * 75
+    assert t["recharge:received"] == pytest.approx(t["recharge:made"], rel=1e-9)
 
 
 def test_the_models_own_boundaries_are_booked_as_from_or_to_outside(runs):

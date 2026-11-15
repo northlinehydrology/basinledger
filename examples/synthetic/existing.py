@@ -20,6 +20,11 @@ What makes it foreign, against the models ``model.py`` writes for the studies' o
 
 ``grid="disv"`` writes the same cells as a vertex grid (icell2d = row x 12 + col).
 
+``neighbor=True`` (DIS only) puts a second groundwater model in the simulation, ``kzoo_east``: 12 x 4 cells of the
+same aquifer east of the grid, held at the regional head on its far side, joined to ``kzoo``'s east column of the
+bottom layer by a GWF-GWF exchange and solved with it, as an inset or a neighbor in someone's simulation would be.
+Basin Ledger couples ``kzoo`` and books what crosses to ``kzoo_east`` as water from or to outside.
+
 ``length_units`` and ``time_units`` write the same model in other units (feet, centimeters; seconds, minutes,
 hours): every length, area, rate, conductance and solver tolerance converted, so it is the meters-and-days model's
 twin and a coupled run of it gives the same ledger (Basin Ledger converts at each link). ``state_units=False`` leaves
@@ -78,9 +83,12 @@ def cellid(cell, grid: str):
 
 def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", daily: bool = True,
           steps: int = 1, tsmult: float = 1.0, septic: bool = False, length_units: str = "meters",
-          time_units: str = "days", state_units: bool = True, complexity: str = "moderate") -> Path:
+          time_units: str = "days", state_units: bool = True, complexity: str = "moderate",
+          neighbor: bool = False) -> Path:
     if grid not in ("dis", "disv"):
         raise ValueError("grid is dis or disv")
+    if neighbor and grid != "dis":
+        raise ValueError("neighbor=True is built on DIS")
     u = units(length_units, time_units)
     Q, LT, COND = (3, -1), (1, -1), (2, -1)  # (length, time) exponents; lengths are u's default
     ws = Path(workspace)
@@ -91,7 +99,7 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
     flopy.mf6.ModflowTdis(sim, time_units=time_units if state_units else None, start_date_time=start.isoformat(),
                           nper=nper, perioddata=periods)
     rclose = 1e-8 if time_units == "days" else 1e-7  # m3 d-1: in seconds, 1e-8 is 4e-12 ft3 s-1, past the solver
-    flopy.mf6.ModflowIms(sim, complexity=complexity, outer_dvclose=u(1e-8), inner_dvclose=u(1e-10),
+    ims = flopy.mf6.ModflowIms(sim, complexity=complexity, outer_dvclose=u(1e-8), inner_dvclose=u(1e-10),
                          rcloserecord=[u(rclose, *Q), "strict"], pname="solver")
     gwf = flopy.mf6.ModflowGwf(sim, modelname="kzoo", save_flows=True)
     idomain = np.ones((2, N, N), int)
@@ -143,8 +151,33 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
                             pname="evt_riparian", filename="kzoo.evt_riparian.evt")
     flopy.mf6.ModflowGwfoc(gwf, budget_filerecord="kzoo.cbc", head_filerecord="kzoo.hds",
                            saverecord=[("HEAD", "LAST"), ("BUDGET", "LAST")], printrecord=[("BUDGET", "LAST")])
+    if neighbor:
+        _neighbor(sim, ims, u, lu)
     sim.write_simulation(silent=True)
     return ws
+
+
+EAST_COLS = 4
+
+
+def _neighbor(sim, ims, u, lu):
+    """``kzoo_east``: the aquifer east of the grid, its far column at the regional head, joined to kzoo's east
+    column (bottom layer, where kzoo's top layer is inactive) by a GWF-GWF exchange."""
+    LT = (1, -1)
+    east = flopy.mf6.ModflowGwf(sim, modelname="kzoo_east", save_flows=True)
+    cell = u(CELL)
+    flopy.mf6.ModflowGwfdis(east, length_units=lu, nlay=2, nrow=N, ncol=EAST_COLS, delr=cell, delc=cell, top=u(TOP),
+                            botm=[u(MIDDLE), u(BOTTOM)], pname="dis_east")
+    flopy.mf6.ModflowGwfnpf(east, icelltype=[1, 0], k=[u(8.0, *LT), u(2.0, *LT)], k33=[u(0.8, *LT), u(0.2, *LT)])
+    flopy.mf6.ModflowGwfsto(east, iconvert=[1, 0], sy=0.2, ss=[u(1e-5, -1), u(5e-6, -1)], transient={0: True})
+    flopy.mf6.ModflowGwfic(east, strt=u(STAGE + 0.5))
+    flopy.mf6.ModflowGwfchd(east, stress_period_data={0: [((k, r, EAST_COLS - 1), u(STAGE + 1.0)) for k in range(2)
+                                                          for r in range(N)]}, pname="chd_regional")
+    flopy.mf6.ModflowGwfoc(east, budget_filerecord="kzoo_east.cbc", saverecord=[("BUDGET", "LAST")])
+    flopy.mf6.ModflowGwfgwf(sim, exgtype="GWF6-GWF6", exgmnamea="kzoo", exgmnameb="kzoo_east", nexg=N,
+                            exchangedata=[((1, r, N - 1), (1, r, 0), 1, cell / 2, cell / 2, cell * u(MIDDLE - BOTTOM))
+                                          for r in range(N)], filename="kzoo_kzoo_east.gwfgwf")
+    sim.register_solution_package(ims, ["kzoo", "kzoo_east"])
 
 
 def world(row: float, col: float, length_units: str = "meters") -> tuple[float, float]:
