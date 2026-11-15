@@ -303,6 +303,36 @@ def test_a_models_own_folder_with_its_own_start_date(swatplus):
     assert "Basin Ledger" not in (ws / "kzoo_regional.tdis").read_text()  # the model handed over is as it was
 
 
+def test_a_restart_across_stress_periods_continues_the_unbroken_run(swatplus):
+    """A model handed over as a folder, five growing steps a month: saved on February 10th and carried on in a new
+    simulation of the days left (its January left out, February shortened, every package's periods renumbered), the
+    run is the unbroken run's, to the last digit."""
+    from basinledger.driver import Basin
+    ws = RUNS / "existing-restart-model"
+    if ws.exists():
+        shutil.rmtree(ws)
+    E.build(ws, 75, START, daily=False, steps=5, tsmult=1.2)
+    cfg = config()
+    cfg.mf6_builder, cfg.mf6_workspace = None, ws
+    a = Basin(cfg, run="existing-restart-unbroken", days=75)
+    a.run()
+    ta, ha = a.ledger.table(), a.mf6.head()
+    a.finalize()
+    w = Basin(cfg, run="existing-restart-warm", days=75)
+    w.run(40)
+    w.save(RUNS / "existing-restart-state")
+    w.finalize()
+    b = Basin(cfg, run="existing-restart-restarted", days=75, restart=RUNS / "existing-restart-state")
+    assert b.day == 40 and b.mf6.end == 35.0
+    b.run()
+    tb, hb = b.ledger.table(), b.mf6.head()
+    b.finalize()
+    assert np.array_equal(ha, hb)
+    assert set(ta) == set(tb)
+    for key in ta:
+        assert np.array_equal(ta[key], tb[key], equal_nan=True), key
+
+
 def test_the_models_own_boundaries_are_booked_as_from_or_to_outside(runs):
     t, _, _ = runs["dis"]
     assert t["groundwater:boundary:wel_city"] == pytest.approx(-25.0 * 75)  # the other city well, the model's rate

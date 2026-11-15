@@ -6,8 +6,11 @@
   aren't whole days end on the nearest day, measured from the start, so nothing builds up; a model in hours;
   a period too short for a day of its own refused; units undefined, stated or in years; adaptive time stepping left
   out; the start date read; a one-period model cut for a restart once rewritten; Pleasant Lake's 85 periods;
+- restarts across stress periods (``remaining_days``): period blocks renumbered, the one in effect carried as period
+  1; time series and time-array series moved back; the synthetic foreign model cut at a day in its second month;
 - tier 1 with libmf6: the synthetic foreign model with monthly growing steps, rewritten, runs the same days as its
-  daily twin, to the last digit.
+  daily twin, to the last digit; and restarted in its second month, with a time series on a well, it continues the
+  unbroken run to the last digit.
 """
 
 from __future__ import annotations
@@ -20,7 +23,14 @@ import numpy as np
 import pytest
 from conftest import ROOT, RUNS
 
-from basinledger.coupling.timesteps import daily_steps, start_date, tdis_file
+from basinledger.coupling.timesteps import (
+    _rekey,
+    _shift_times,
+    daily_steps,
+    remaining_days,
+    start_date,
+    tdis_file,
+)
 
 flopy = pytest.importorskip("flopy")
 spec = importlib.util.spec_from_file_location("existing", ROOT / "examples" / "synthetic" / "existing.py")
@@ -147,7 +157,7 @@ def test_a_one_period_model_restarts_once_rewritten():
     if ws.exists():
         shutil.rmtree(ws)
     E.build(ws, 31, START, daily=False)  # January in one step
-    with pytest.raises(ValueError, match="needs one period of daily steps"):
+    with pytest.raises(ValueError, match="steps aren't one day each; a run rewrites them first"):
         remaining_simulation(ws, RUNS / "timesteps-one-period-restart", 10)
     daily_steps(ws)
     remaining_simulation(ws, ws, 10)  # in place, in a run's copy
@@ -213,3 +223,118 @@ def test_growing_monthly_steps_rewritten_run_as_the_daily_twin(libmf6):
     assert daily_steps(monthly)
     a, b = run_alone(daily, 59), run_alone(monthly, 59)
     assert np.array_equal(a, b)  # the same simulation: January and February, day by day
+
+
+# ---------- restarts across stress periods ----------
+
+PACKAGE = """BEGIN options
+END options
+
+BEGIN period  1
+  a
+END period  1
+
+BEGIN PERIOD 3
+  c
+END PERIOD 3
+
+begin period 5  # five
+  e
+end period
+"""
+
+
+@pytest.mark.parametrize("first, kept", [
+    (1, None),
+    (2, ["BEGIN period  1", "  a", "END period  1", "BEGIN PERIOD 2", "END PERIOD 2", "begin period 4  # five"]),
+    (3, ["BEGIN PERIOD 1", "  c", "END PERIOD 1", "begin period 3  # five"]),
+    (4, ["BEGIN PERIOD 1", "  c", "END PERIOD 1", "begin period 2  # five"]),
+    (6, ["begin period 1  # five"]),  # the last block, in effect from period 5 on
+])
+def test_period_blocks_renumbered(tmp_path, first, kept):
+    f = tmp_path / "x.wel"
+    f.write_text(PACKAGE)
+    assert _rekey(f, first) == (kept is not None)
+    text = f.read_text()
+    if kept is None:
+        assert text == PACKAGE
+        return
+    for line in kept:
+        assert line in text.splitlines()
+    if first >= 3:
+        assert "  a" not in text  # left out: it was over before the restart
+    if first == 6:
+        assert "  e" in text and "  c" not in text and text.count("BEGIN") + text.count("begin") == 2
+
+
+def test_time_series_moved_back(tmp_path):
+    ts = tmp_path / "q.ts"
+    ts.write_text("BEGIN attributes\n  NAMES q\n  METHODS linear\nEND attributes\n\nBEGIN timeseries\n"
+                  "  0.0 -25.0\n  40.5  -60.0\n  7.5d1 -10.0\nEND timeseries\n")
+    assert _shift_times(ts, 40.0)
+    rows = [line.split() for line in ts.read_text().splitlines() if line.startswith("  ") and "NAMES" not in line
+            and "METHODS" not in line]
+    assert rows == [["-40.0", "-25.0"], ["0.5", "-60.0"], ["35.0", "-10.0"]]
+    tas = tmp_path / "r.tas"
+    tas.write_text("BEGIN attributes\n  NAME r\n  METHOD linear\nEND attributes\n\nBEGIN TIME 0.0\n  CONSTANT 1.0\n"
+                   "END TIME\n\nBEGIN TIME 60.0\n  CONSTANT 2.0\nEND TIME\n")
+    _shift_times(tas, 40.0)
+    assert "BEGIN TIME -40.0" in tas.read_text() and "BEGIN TIME 20.0" in tas.read_text()
+
+
+def with_a_time_series(ws):
+    """The synthetic foreign model's second city well at a rate from a time series rather than its own -25."""
+    wel = ws / "kzoo.wel_city.wel"
+    text = wel.read_text().replace("BEGIN options\n", "BEGIN options\n  TS6  FILEIN  kzoo.wel.ts\n")
+    wel.write_text(text.replace("-2.50000000E+01", "qcity"))
+    (ws / "kzoo.wel.ts").write_text("BEGIN attributes\n  NAMES qcity\n  METHODS linear\nEND attributes\n\n"
+                                    "BEGIN timeseries\n  0.0 -25.0\n  40.5 -60.0\n  75.0 -10.0\nEND timeseries\n")
+    return ws
+
+
+def test_the_days_left_from_a_day_in_the_second_month():
+    ws = RUNS / "timesteps-remaining"
+    if ws.exists():
+        shutil.rmtree(ws)
+    with_a_time_series(E.build(ws, 75, START))  # January, February and half of March, daily
+    changed = remaining_days(ws, 40)  # February 10th
+    assert periods(ws) == [(19.0, 19, 1.0), (16.0, 16, 1.0)]
+    assert "NPER  2" in (ws / "kzoo_regional.tdis").read_text()
+    assert {"kzoo_regional.tdis", "kzoo.wel_city.wel", "kzoo.rch_swb.rcha", "kzoo.wel.ts"} <= set(changed)
+    wel = (ws / "kzoo.wel_city.wel").read_text()
+    assert "BEGIN period  1" in wel and "BEGIN period  2" in wel and "period  3" not in wel
+    sim = flopy.mf6.MFSimulation.load(sim_ws=str(ws), verbosity_level=0)
+    assert sim.get_model("kzoo").rch_swb.recharge.get_data(0) is not None
+
+
+def test_a_restart_in_the_second_month_continues_the_unbroken_run(libmf6):
+    from basinledger.coupling.modflow6 import Modflow6, remaining_simulation
+    src = RUNS / "timesteps-restart-src"
+    if src.exists():
+        shutil.rmtree(src)
+    with_a_time_series(E.build(src, 75, START, daily=False, steps=5, tsmult=1.2))
+    daily_steps(src)
+    mf = Modflow6(src, "kzoo")
+    try:
+        unbroken = []
+        for _ in range(75):
+            mf.prepare_day()
+            mf.solve_day()
+            unbroken.append((mf.head().copy(), mf.simvals("wel_city")[1]))
+    finally:
+        mf.finalize()
+    dst = remaining_simulation(src, RUNS / "timesteps-restart-dst", 40)
+    mf = Modflow6(dst, "kzoo")
+    try:
+        mf.set_heads(unbroken[39][0])
+        assert mf.end == 35.0
+        for d in range(40, 75):
+            mf.prepare_day()
+            mf.solve_day()
+            assert np.array_equal(mf.head(), unbroken[d][0]), d
+            assert mf.simvals("wel_city")[1] == unbroken[d][1], d
+    finally:
+        mf.finalize()
+    # day 41 (days 40 to 41): the series averaged over the step, through its point at 40.5
+    a, b = -25.0 - 35.0 * 40.0 / 40.5, -60.0 + 50.0 * 0.5 / 34.5
+    assert unbroken[40][1] == pytest.approx(0.25 * (a - 60.0) + 0.25 * (b - 60.0), rel=1e-9)
