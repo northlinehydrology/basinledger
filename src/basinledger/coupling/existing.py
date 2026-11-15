@@ -102,12 +102,13 @@ def recharge_cover(share: np.ndarray, nodes: np.ndarray, mult: np.ndarray,
     """Where a recharge package left as the model's lies against SWAT+'s recharge. ``share``: each cell's (by node)
     share SWAT+'s recharge map covers; ``nodes`` and ``mult``: the package's entries' nodes and multipliers (its
     auxiliary multiplier, the share of the cell it stands for, or 1). On a cell where the two add up to more than the
-    whole cell (by more than ``OVER_CELL``) the rest is recharged twice. Returns (entries, cells over, cells shared
+    whole cell (by more than ``OVER_CELL``) the package's part beyond the cell, no more than its own share, is
+    recharged twice. Returns (entries, cells over, cells shared
     within the cell, the area recharged twice in m2)."""
     ok = nodes >= 0
     n, m = nodes[ok], np.asarray(mult, float)[ok]
     c = share[n]
-    over = c + m - 1.0
+    over = np.minimum(m, c + m - 1.0)  # what the package itself puts beyond the cell (SWAT+'s map alone may fill it)
     twice = float(np.sum(np.clip(over, 0.0, None) * cell_area[n]))
     return len(nodes), int((over > OVER_CELL).sum()), int(((c > 0) & (over <= OVER_CELL)).sum()), twice
 

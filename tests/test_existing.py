@@ -262,6 +262,8 @@ def test_where_a_recharge_package_lies_against_swats():
     # node 0 wholly SWAT+'s; 1 with the rest (0.4) its own; 2 over by 0.1; 3 off SWAT+'s; 4 within the tolerance
     cover = EX.recharge_cover(share, np.array([0, 1, 2, 3, 4, -1]), np.array([1.0, 0.4, 0.5, 1.0, 0.001, 1.0]), area)
     assert cover[:3] == (6, 2, 2) and cover[3] == pytest.approx(100.0 + 10.0 + 0.05)
+    # SWAT+'s map alone over a cell (its areas scaled to SWAT+'s): a package entry of no share there adds nothing
+    assert EX.recharge_cover(np.array([1.013]), np.array([0]), np.array([0.0]), np.array([100.0])) == (1, 0, 1, 0.0)
     rows = [EX.PackageRole("rch_x", "rch", 3, 0, "")]
     bad, notes = EX.problems(rows, False, {"rch_x": (3, 0, 2, 0.0)})
     assert bad == [] and "2 of them shared with SWAT+'s recharge" in notes[0]
