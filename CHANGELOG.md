@@ -78,6 +78,8 @@ MODFLOW 6 model").
 - Wells the model doesn't have: `[[wells]] add = true` puts a user's well in a WEL package Basin Ledger adds to the
   run's copy (`existing.add_wells`), its rate set every day; a package name the model has, a cell in the wrong form
   and two added wells at one cell are refused.
+- A recharge package for a model without one: `[recharge] add = true` adds an RCH package of Basin Ledger's own on
+  the recharge map's cells to the run's copy (`existing.add_recharge`).
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS

@@ -1326,8 +1326,8 @@ aquifer.
   of `[exchange] package` the map gives a channel), seepage (its drains), groundwater up into the soil, and users'
   wells. The rest of each package is the model's, booked each day as `groundwater:boundary:<package>`, as before.
   The recharge Basin Ledger sets goes into the model's own recharge package, named in the config, so its calibrated
-  recharge is replaced rather than added to; adding a recharge package of Basin Ledger's own, for a model without
-  one, isn't built. A user's well is an entry the model has (a city well already in it), or, with `add = true`, a
+  recharge is replaced rather than added to; a model without one gets a recharge package of Basin Ledger's own on
+  the map's cells with `[recharge] add = true` (built Nov 14, 2026). A user's well is an entry the model has (a city well already in it), or, with `add = true`, a
   well Basin Ledger adds in a WEL package of its own (built Nov 14, 2026; below, "wells the model doesn't have").
 - **What would count water twice is refused:** another recharge package left as the model's, a UZF package (its own
   infiltration), and EVT with groundwater up into the soil. Noted, not refused: EVT otherwise (groundwater ET stays
@@ -1530,8 +1530,15 @@ added. Refused: a package name the model already has (a well added never mixes w
 in the wrong form for the grid, and two added wells at one cell of a package. The folder handed over is untouched; a
 restart re-keys the added package with the rest. Tested on the synthetic foreign model (`tests/test_existing.py`): a
 second plant drawing from a well added in the bottom layer, coupled 75 days, gets what it asked for every day and the
-ledger closes; the refusals. Not built: a recharge package added to a model without one, and MAW wells as users'
-wells (Kalamazoo's point 4).
+ledger closes; the refusals. Not built: MAW wells as users' wells (Kalamazoo's point 4).
+
+The same for recharge: `[recharge] add = true` gives a model without a recharge package one of Basin Ledger's own
+(`existing.add_recharge`), an RCH list package named by `[recharge] package` with one entry per cell of the recharge
+map (a CSV of cells), its rates set every day from SWAT+. A model that has a recharge package of its own is refused
+at the takeover, as before (recharge would be counted twice); a map given as `all:` or by nodes is refused (it names
+no cells to put the package on). Tested on the synthetic foreign model with its recharge taken out of its name file:
+the check lists the package as Basin Ledger's, and coupled 75 days the recharge received is the recharge made and
+the ledger closes.
 
 **Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
 on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a
