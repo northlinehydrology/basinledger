@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 15, 2026, release 0.8.0). Built and tested on synthetic examples:
+Status (Nov 15, 2026, release 0.8.1). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -1423,7 +1423,8 @@ aquifer.
   recharge is replaced rather than added to; a model without one gets a recharge package of Basin Ledger's own on
   the map's cells with `[recharge] add = true` (built Nov 14, 2026). A user's well is an entry the model has (a city well already in it), or, with `add = true`, a
   well Basin Ledger adds in a WEL package of its own (built Nov 14, 2026; below, "wells the model doesn't have").
-- **What would count water twice is refused:** another recharge package left as the model's, a UZF package (its own
+- **What would count water twice is refused:** another recharge package left as the model's where it recharges ground
+  SWAT+'s recharge covers (on each cell, its own share beyond what SWAT+'s map leaves; 0.8.1), a UZF package (its own
   infiltration), and EVT with groundwater up into the soil. Noted, not refused: EVT otherwise (groundwater ET stays
   the model's), and SFR or LAK left as the model's while SWAT+'s channels are coupled (the same river carried by
   both models, if they stand for the same streams).

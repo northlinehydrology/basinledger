@@ -1120,7 +1120,20 @@ class Basin:
                 for r in rows:
                     r.package = f"{v.model.lower()}/{r.package}"
             self.takeover += rows
-        bad, notes = EX.problems(self.takeover, self.gw_soil is not None)
+        cover = {}  # each recharge package left as the model's, against SWAT+'s recharge map (cells covered)
+        if self.recharge is not None:
+            m = self.recharge.map
+            share = np.bincount(m.node, weights=m.area, minlength=len(self.mf6.cell_area)) / self.mf6.cell_area
+            for i, v in enumerate(views):
+                off = int(self.mf6.offset[i]) if several else 0
+                for r in self.takeover:
+                    name = r.package.split("/")[-1]
+                    mine = r.package.startswith(f"{v.model.lower()}/") if several else True
+                    if mine and r.type == "rch" and not r.taken:
+                        n = v.package_nodes(name)
+                        cover[r.package] = EX.recharge_cover(share, np.where(n >= 0, n + off, n),
+                                                             v.entry_multipliers(name), self.mf6.cell_area)
+        bad, notes = EX.problems(self.takeover, self.gw_soil is not None, cover)
         # other groundwater models of the simulation: what crosses to one not coupled is water from or to outside;
         # between coupled models it stays inside the groundwater
         for v in views:

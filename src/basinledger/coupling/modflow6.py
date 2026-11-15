@@ -312,6 +312,15 @@ class Modflow6:
         """Whether a boundary package multiplies its values by an auxiliary variable."""
         return int(self.get("IAUXMULTCOL", self.model, package.upper())[0]) > 0
 
+    def entry_multipliers(self, package: str) -> np.ndarray:
+        """Each entry's multiplier: its auxiliary multiplier column (AUXMULTNAME), or 1 where the package has none."""
+        n = self.nbound(package)
+        col = int(self.get("IAUXMULTCOL", self.model, package.upper())[0])
+        if col <= 0:
+            return np.ones(n)
+        aux = np.asarray(self.get_model_units("AUXVAR", self.model, package.upper()), float)
+        return aux.reshape(-1, aux.shape[-1])[:n, col - 1]
+
     def entry(self, package: str, node: int) -> int:
         idx = np.flatnonzero(self.package_nodes(package) == node)
         if len(idx) != 1:

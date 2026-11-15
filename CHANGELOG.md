@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1 (2026-11-15)
+
+- A recharge package left as the model's is refused only where it recharges ground SWAT+'s recharge also covers: on
+  each cell, the package's own share (its auxiliary multiplier, or 1) beyond what SWAT+'s recharge map leaves of the
+  cell, by more than 0.1% of the cell, is recharged twice (`existing.recharge_cover`). Off SWAT+'s recharge, or
+  standing for the rest of a cell SWAT+ covers in part, it is the model's, booked as water from outside, and noted.
+  0.8.0 refused any such package, which stopped the Clam study's recharge below its gage.
+
 ## 0.8.0 (2026-11-15)
 
 Needs swatplus-bmi 0.11.0 (reservoirs and HRU irrigation).

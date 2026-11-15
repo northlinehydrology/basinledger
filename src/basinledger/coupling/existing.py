@@ -94,13 +94,52 @@ def roles(mf6, coupled: dict[str, tuple[np.ndarray, list[str]]]) -> list[Package
     return out
 
 
-def problems(rows: list[PackageRole], groundwater_to_soil: bool) -> tuple[list[str], list[str]]:
-    """What the model's own packages would count twice (problems), and what a reviewer should know (notes)."""
+OVER_CELL = 1e-3  # SWAT+'s share of a cell plus a package's own, beyond the whole cell, that is counted twice
+
+
+def recharge_cover(share: np.ndarray, nodes: np.ndarray, mult: np.ndarray,
+                   cell_area: np.ndarray) -> tuple[int, int, int, float]:
+    """Where a recharge package left as the model's lies against SWAT+'s recharge. ``share``: each cell's (by node)
+    share SWAT+'s recharge map covers; ``nodes`` and ``mult``: the package's entries' nodes and multipliers (its
+    auxiliary multiplier, the share of the cell it stands for, or 1). On a cell where the two add up to more than the
+    whole cell (by more than ``OVER_CELL``) the package's part beyond the cell, no more than its own share, is
+    recharged twice. Returns (entries, cells over, cells shared
+    within the cell, the area recharged twice in m2)."""
+    ok = nodes >= 0
+    n, m = nodes[ok], np.asarray(mult, float)[ok]
+    c = share[n]
+    over = np.minimum(m, c + m - 1.0)  # what the package itself puts beyond the cell (SWAT+'s map alone may fill it)
+    twice = float(np.sum(np.clip(over, 0.0, None) * cell_area[n]))
+    return len(nodes), int((over > OVER_CELL).sum()), int(((c > 0) & (over <= OVER_CELL)).sum()), twice
+
+
+def problems(rows: list[PackageRole], groundwater_to_soil: bool,
+             cover: dict[str, tuple[int, int, int]] | None = None) -> tuple[list[str], list[str]]:
+    """What the model's own packages would count twice (problems), and what a reviewer should know (notes).
+    ``cover``: for each recharge package left as the model's, ``recharge_cover``'s (entries, cells over, cells
+    shared, area recharged twice). On ground SWAT+'s recharge doesn't cover (a catchment outside SWAT+'s project) the
+    package's recharge is the model's, booked as water from outside, and on a cell SWAT+ covers in part it may stand
+    for the rest (its auxiliary multiplier the rest's share); where SWAT+'s share and its own add up to more than the
+    cell, that ground is recharged twice, which is refused. Without ``cover`` (no recharge link) a recharge package
+    left as the model's is refused, as SWAT+'s recharge can't be told apart."""
     bad, notes = [], []
+    cover = cover or {}
     for r in rows:
         if r.taken:
             continue
-        if r.type == "rch":
+        if r.type == "rch" and r.package in cover and cover[r.package][1] == 0:
+            n, _, shared, _ = cover[r.package]
+            part = (f"; {shared} of them shared with SWAT+'s recharge, the package standing for the rest of the "
+                    "cell") if shared else ""
+            notes.append(f"{r.package}: recharge left as the model's on {n} cells off SWAT+'s recharge, booked as "
+                         f"water from outside{part}")
+        elif r.type == "rch" and r.package in cover:
+            _, over, _, twice = cover[r.package]
+            bad.append(f"{r.package}: a recharge package left as the model's recharges {over} cells SWAT+'s recharge "
+                       f"also covers, beyond the whole cell ({twice:.0f} m2 recharged twice). Its multiplier "
+                       "(AUXMULTNAME) on a cell SWAT+ covers in part is the share of the cell left to it; name it in "
+                       "[recharge] package if it is the one SWAT+'s recharge replaces")
+        elif r.type == "rch":
             bad.append(f"{r.package}: a recharge package left as the model's; its recharge would be added to SWAT+'s. "
                        "Name it in [recharge] package if it is the one SWAT+'s recharge replaces, or leave it out of "
                        "the run's copy of the model")

@@ -230,7 +230,47 @@ def test_the_start_up_check_lists_what_basin_ledger_takes_over(swatplus, grid):
 def test_a_second_recharge_package_stops_the_start_up(swatplus):
     from basinledger.driver import Basin
     found, _ = Basin.check(config(septic=True), run="existing-check-septic")
-    assert len(found) == 1 and "rch_septic: a recharge package left as the model's" in found[0]
+    assert len(found) == 1 and "rch_septic: a recharge package left as the model's recharges 1 cells" in found[0]
+
+
+def test_a_second_recharge_package_off_swats_ground_is_the_models(swatplus):
+    """A recharge package on ground SWAT+'s recharge doesn't cover (a cell of the bottom layer under the top's
+    inactive ring, as a catchment outside SWAT+'s project) is the model's, booked as water from outside."""
+    from basinledger.driver import Basin
+    cfg = config(septic=(1, 0, 3))
+    found, notes = Basin.check(cfg, run="existing-check-septic-outside")
+    assert found == []
+    assert "rch_septic: recharge left as the model's on 1 cells off SWAT+'s recharge, booked as water from outside" \
+        in notes
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        b = Basin(cfg, run="existing-run-septic-outside", days=40)
+        try:
+            b.run()
+            t = b.ledger.totals()
+        finally:
+            b.finalize()
+    assert t["groundwater:boundary:rch_septic"] == pytest.approx(0.002 * 1000.0 * 40, rel=1e-9)
+    assert t["recharge:received"] == pytest.approx(t["recharge:made"], rel=1e-9)
+    assert abs(t["groundwater:closure_share"]) < 1e-6 * 40
+
+
+def test_where_a_recharge_package_lies_against_swats():
+    from basinledger.coupling import existing as EX
+    share = np.array([1.0, 0.6, 0.6, 0.0, 0.9995])
+    area = np.full(5, 100.0)
+    # node 0 wholly SWAT+'s; 1 with the rest (0.4) its own; 2 over by 0.1; 3 off SWAT+'s; 4 within the tolerance
+    cover = EX.recharge_cover(share, np.array([0, 1, 2, 3, 4, -1]), np.array([1.0, 0.4, 0.5, 1.0, 0.001, 1.0]), area)
+    assert cover[:3] == (6, 2, 2) and cover[3] == pytest.approx(100.0 + 10.0 + 0.05)
+    # SWAT+'s map alone over a cell (its areas scaled to SWAT+'s): a package entry of no share there adds nothing
+    assert EX.recharge_cover(np.array([1.013]), np.array([0]), np.array([0.0]), np.array([100.0])) == (1, 0, 1, 0.0)
+    rows = [EX.PackageRole("rch_x", "rch", 3, 0, "")]
+    bad, notes = EX.problems(rows, False, {"rch_x": (3, 0, 2, 0.0)})
+    assert bad == [] and "2 of them shared with SWAT+'s recharge" in notes[0]
+    bad, _ = EX.problems(rows, False, {"rch_x": (3, 2, 0, 110.0)})
+    assert "rch_x: a recharge package left as the model's recharges 2 cells" in bad[0] and "(110 m2 recharged" in bad[0]
+    bad, _ = EX.problems(rows, False)
+    assert "rch_x: a recharge package left as the model's;" in bad[0]
 
 
 def test_the_command_line_check_prints_the_packages(swatplus):
@@ -438,7 +478,7 @@ def test_a_recharge_package_for_a_model_without_one(swatplus):
     cfg = config()  # the model with its own recharge: adding one would count it twice
     cfg.recharge_package, cfg.recharge_add = "rch_swat", True
     found, _ = Basin.check(cfg, run="existing-check-no-recharge-bad")
-    assert len(found) == 1 and "rch_swb: a recharge package left as the model's" in found[0]
+    assert len(found) == 1 and "rch_swb: a recharge package left as the model's recharges 100 cells" in found[0]
 
 
 def test_the_models_own_boundaries_are_booked_as_from_or_to_outside(runs):
