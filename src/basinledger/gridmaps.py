@@ -20,8 +20,11 @@ doesn't fit rather than fixing it:
   places. Building SWAT+ on a model's SFR network with an outlet at each puts every confluence on a channel boundary,
   as the exchange's line-up rule asks.
 
-Channel lines are drawn downstream and polygons are given in the grid's world coordinates. Needs shapely (``pip
-install basinledger[gis]``). DISU grids aren't supported.
+Channel lines are drawn downstream and polygons are given in the grid's world coordinates, which are in the model's
+length units (a grid in feet takes polygons and lines projected to a CRS in feet). Areas and lengths come out in
+square meters and meters, converted by the grid's LENGTH_UNITS, or by ``length_units`` where the model leaves them
+undefined, as ``[modflow6] length_units`` does for the run. Needs shapely (``pip install basinledger[gis]``). DISU
+grids aren't supported.
 
     sim, gwf = load(workspace)
     hm = hru_map(gwf.modelgrid, hrus)                     # hrus: name -> shapely polygon
@@ -50,6 +53,22 @@ def load(workspace: str | Path, model: str | None = None):
     if gwf.modelgrid.grid_type not in ("structured", "vertex"):
         raise ValueError(f"{workspace}: a {gwf.modelgrid.grid_type} grid; maps are for DIS and DISV grids")
     return sim, gwf
+
+
+def meters_per_unit(grid, length_units: str | None = None) -> float:
+    """Meters per unit of the grid's coordinates: its LENGTH_UNITS, or ``length_units`` where it has none. A unit
+    stated that differs from the grid's own is refused."""
+    from .coupling.modflow6 import METERS
+    own = getattr(grid, "units", None)
+    own = own if own in METERS else None
+    if length_units is not None and length_units not in METERS:
+        raise ValueError(f"length_units {length_units!r}: one of {', '.join(METERS)}")
+    if own is None and length_units is None:
+        raise ValueError("the grid's length units are undefined: give length_units (the model's, as [modflow6] "
+                         "length_units states it)")
+    if own is not None and length_units is not None and own != length_units:
+        raise ValueError(f"length_units {length_units!r}, but the grid is in {own}")
+    return METERS[own or length_units]
 
 
 def _ncpl(grid) -> int:
@@ -142,26 +161,28 @@ class HruMap:
                 w.writerow([o, lay, *cell, f"{a:.6f}"])
 
 
-def hru_map(grid, polygons: dict, sliver_m2: float = 1e-3) -> HruMap:
-    """Each polygon's ground in each column of the grid, on the column's top active layer (see the module). Pieces
-    smaller than ``sliver_m2`` are left out and reported (``HruMap.slivers``): where a polygon's edge runs along cell
-    edges, as on a rotated grid, rounding leaves pieces of a millionth of a square meter in the next cells."""
+def hru_map(grid, polygons: dict, sliver_m2: float = 1e-3, length_units: str | None = None) -> HruMap:
+    """Each polygon's ground in each column of the grid, on the column's top active layer (see the module), in m2.
+    Pieces smaller than ``sliver_m2`` are left out and reported (``HruMap.slivers``): where a polygon's edge runs
+    along cell edges, as on a rotated grid, rounding leaves pieces of a millionth of a square meter in the next cells.
+    ``length_units``: the grid's, where its model leaves them undefined."""
     import shapely
     from flopy.utils.gridintersect import GridIntersect
 
+    m2 = meters_per_unit(grid, length_units) ** 2
     gi = GridIntersect(grid)
     top = top_active(grid)
     footprint = shapely.union_all([_polygon(grid, c) for c in range(_ncpl(grid))])
     rows, area, outside, inactive, slivers = [], {}, {}, {}, {}
     for o, poly in polygons.items():
-        area[o] = float(poly.area)
-        outside[o] = float(poly.difference(footprint).area)
+        area[o] = float(poly.area) * m2
+        outside[o] = float(poly.difference(footprint).area) * m2
         inactive[o] = slivers[o] = 0.0
         r = gi.intersect(poly, geo_dataframe=False)
         per: dict[int, float] = {}
         for cellid, a in zip(r["cellids"], r["areas"]):
             c = _column(grid, cellid)
-            per[c] = per.get(c, 0.0) + float(a)
+            per[c] = per.get(c, 0.0) + float(a) * m2
         for c, a in sorted(per.items()):
             if a < sliver_m2:
                 slivers[o] += a
@@ -182,21 +203,23 @@ class Entry:
     length: float | None = None  # SFR's reach length, m
 
 
-def stream_entries(gwf, package: str) -> list[Entry]:
-    """A package's stream entries: an SFR package's reaches in order (cell, reach number, length), or the distinct
-    cells of a RIV, DRN or GHB package over all its stress periods."""
+def stream_entries(gwf, package: str, length_units: str | None = None) -> list[Entry]:
+    """A package's stream entries: an SFR package's reaches in order (cell, reach number, length in m), or the
+    distinct cells of a RIV, DRN or GHB package over all its stress periods. ``length_units``: the model's, where it
+    leaves them undefined (needed for SFR's lengths only)."""
     pkg = gwf.get_package(package)
     if pkg is None:
         raise KeyError(f"no package {package!r} in {gwf.name}")
     ptype = pkg.package_type.lower()
     if ptype == "sfr":
+        m = meters_per_unit(gwf.modelgrid, length_units)
         pd = pkg.packagedata.get_data()
         number = "ifno" if "ifno" in pd.dtype.names else "rno"
         out = []
         for r in sorted(pd, key=lambda x: int(x[number])):
             if not isinstance(r["cellid"], tuple) or any(c is None for c in r["cellid"]):
                 continue  # a reach not connected to the aquifer (NONE) exchanges nothing
-            out.append(Entry(tuple(int(c) for c in r["cellid"]), int(r[number]), float(r["rlen"])))
+            out.append(Entry(tuple(int(c) for c in r["cellid"]), int(r[number]), float(r["rlen"]) * m))
         return out
     spd = pkg.stress_period_data.get_data()
     cells = []
@@ -269,12 +292,15 @@ class StreamMap:
                 w.writerow([ch, *([e.reach] if self.sfr else list(e.cell)), f"{L:.6f}"])
 
 
-def channel_map(grid, entries: list[Entry], lines: dict, reach_m: float = 0.0) -> StreamMap:
+def channel_map(grid, entries: list[Entry], lines: dict, reach_m: float = 0.0,
+                length_units: str | None = None) -> StreamMap:
     """Each entry to the channel whose line runs furthest through its cell (see the module). ``lines``: SWAT+ channel
-    -> shapely LineString in the grid's world coordinates. ``reach_m`` [A]: a channel within this distance of an
-    entry's cell reaches it, when none crosses it; 0 (the default) guesses nothing."""
+    -> shapely LineString in the grid's world coordinates. ``reach_m`` [A]: a channel within this distance (m) of an
+    entry's cell reaches it, when none crosses it; 0 (the default) guesses nothing. Lengths in m. ``length_units``:
+    the grid's, where its model leaves them undefined."""
+    m = meters_per_unit(grid, length_units)
     domain = active_area(grid)
-    in_grid = {ch: float(line.intersection(domain).length) for ch, line in lines.items()}
+    in_grid = {ch: float(line.intersection(domain).length) * m for ch, line in lines.items()}
     on = dict.fromkeys(lines, 0.0)
     rl = dict.fromkeys(lines, 0.0)
     rows, unreached, by_distance, shared = [], [], [], []
@@ -282,7 +308,7 @@ def channel_map(grid, entries: list[Entry], lines: dict, reach_m: float = 0.0) -
     for e in entries:
         col = _column(grid, e.cell[1:])
         poly = _polygon(grid, col)
-        lengths = {ch: float(line.intersection(poly).length) for ch, line in lines.items()}
+        lengths = {ch: float(line.intersection(poly).length) * m for ch, line in lines.items()}
         lengths = {ch: v for ch, v in lengths.items() if v > 0}
         if lengths:
             ch = max(lengths, key=lengths.get)
@@ -290,7 +316,7 @@ def channel_map(grid, entries: list[Entry], lines: dict, reach_m: float = 0.0) -
                 shared.append((e, dict(sorted(lengths.items(), key=lambda kv: -kv[1]))))
             L = lengths[ch]
         else:
-            near = {c: float(line.distance(poly)) for c, line in lines.items()}
+            near = {c: float(line.distance(poly)) * m for c, line in lines.items()}
             ch = min(near, key=near.get) if near else None
             if ch is None or reach_m <= 0 or near[ch] > reach_m:
                 unreached.append(e)
@@ -313,7 +339,7 @@ class Confluence:
     reach: int                    # the reach below the confluence, 0-based
     upstream: list[int]           # the reaches flowing into it, 0-based
     cell: tuple[int, ...] | None  # its cell, (layer, row, col) or (layer, icell2d); None for a reach off the grid
-    xy: tuple[float, float] | None  # its cell's center, in the grid's world coordinates
+    xy: tuple[float, float] | None  # its cell's center, in the grid's world coordinates (its length units)
 
 
 def sfr_links(gwf, package: str) -> list[tuple[int, int]]:
