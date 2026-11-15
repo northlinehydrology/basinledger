@@ -8,7 +8,7 @@ Built:
 - the forward model: run an example and write simulated values at every observation, for PEST++ to read;
 - applying a parameter set to a run's copy of the models' files before they start (``apply_parameters``): SWAT+
   through its own ``calibration.cal`` (swatplus-bmi 0.9.0, which refuses changes SWAT+ 62.0.1 wouldn't make as
-  asked), MODFLOW 6 as multipliers on package values, everywhere, by layer or by zone (flopy);
+  asked), MODFLOW 6 as multipliers on package values, everywhere, by layer, by zone or by pilot point (flopy);
 - the example's own parameter set, applied on every run (``[calibration] parameters``), with the forward model's
   values in place of any it names;
 - PEST++ IES files (``write_pest_files``): the control file, a template for the parameter table and an instruction
@@ -16,7 +16,6 @@ Built:
 
 Not built yet (docs/design.md, Calibration):
 - water users' parameters (set from the applicant's data in each user's config, not calibrated);
-- MODFLOW 6 values by pilot point (pyEMU);
 - fetching USGS groundwater levels, matched to MODFLOW 6 cells.
 
 Tables:
@@ -30,6 +29,12 @@ Tables:
                         a griddata array (npf.k, npf.k22, npf.k33, sto.sy, sto.ss) or a column of a list package (riv.cond,
                         drn.cond, ghb.cond, sfr.rhk, sfr.man); where all | layer=<n> (0-based) | zone=<id>
                         (``[calibration] zones``: a CSV of cells, layer, row, col or layer, icell2d, and zone)
+                        | pp=<set>: a griddata array by pilot point, the parameter one point of the set
+    pilot_points.csv  name, set, layer, x, y (``[calibration] pilot_points``): each pilot point parameter's
+                      location (the grid's world coordinates, its length units). A set's points' values are
+                      interpolated over each layer they're on by ordinary kriging (an exponential variogram of
+                      ``range``, with ``nugget``), in log10 where the set's parameters are log-transformed, and
+                      multiply the array there; a layer without points of the set is unchanged.
     observations.csv  name, kind, object, date, value, weight, source
                       kind: flow (m3 s-1, object = channel or hydrofabric id) | head (m, object = a named head
                       output); date ISO; source: e.g. "USGS 04119055 dv"
@@ -141,7 +146,7 @@ def merged(base: list[Parameter], over: list[Parameter]) -> list[Parameter]:
 
 
 def apply_parameters(model: str, folder: Path, params: list[Parameter], zones: Path | None = None,
-                     gwf: str = "gwf"):
+                     gwf: str = "gwf", pilot_points: dict | None = None):
     """Write a parameter set into a run's copy of one model's inputs, before it starts (the driver's ``prepare``
     hook): ``swatplus`` into the run's ``calibration.cal``, ``modflow6`` into the packages of model ``gwf``.
     Water users' parameters aren't built."""
@@ -152,7 +157,7 @@ def apply_parameters(model: str, folder: Path, params: list[Parameter], zones: P
         from swatplus_bmi.calibration import write_changes
         write_changes(folder, [swatplus_change(p) for p in mine])
     elif model == "modflow6":
-        apply_modflow6(Path(folder), mine, zones, gwf)
+        apply_modflow6(Path(folder), mine, zones, gwf, pilot_points)
     else:
         raise NotImplementedError(f"{model} parameters: set them in the user's config (from the applicant's data); "
                                   "calibrating them isn't built")
@@ -196,9 +201,83 @@ def read_zones(path: Path, shape: tuple[int, ...]) -> np.ndarray:
     return z
 
 
-def apply_modflow6(folder: Path, params: list[Parameter], zones: Path | None, gwf: str):
-    """Each parameter's value multiplies a package value (module docstring) where its target says. Only the
-    packages changed are written again, at full precision."""
+def read_pilot_points(path: Path) -> dict[str, tuple[str, int, float, float]]:
+    """Each pilot point: name -> (set, layer, x, y)."""
+    with open(path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    out = {}
+    for r in rows:
+        if r["name"] in out:
+            raise ValueError(f"{path}: pilot point {r['name']!r} is given twice")
+        out[r["name"]] = (r["set"], int(r["layer"]), float(r["x"]), float(r["y"]))
+    return out
+
+
+def kriging_weights(px: np.ndarray, py: np.ndarray, x: np.ndarray, y: np.ndarray, range_: float,
+                    nugget: float = 0.0) -> np.ndarray:
+    """Ordinary kriging weights (len(x), n points) with an exponential covariance, sill 1: C(h) = (1 - nugget)
+    exp(-3h / range_), plus the nugget at h = 0. Each row adds to 1; at a point the weights pick it."""
+    if range_ <= 0 or not 0 <= nugget < 1:
+        raise ValueError("pilot points: range must be above 0 and nugget in [0, 1)")
+    n = len(px)
+    d = np.hypot(px[:, None] - px[None, :], py[:, None] - py[None, :])
+    k = (1.0 - nugget) * np.exp(-3.0 * d / range_) + nugget * np.eye(n)
+    a = np.ones((n + 1, n + 1))
+    a[:n, :n], a[n, n] = k, 0.0
+    h = np.hypot(x[:, None] - px[None, :], y[:, None] - py[None, :])
+    b = np.ones((len(x), n + 1))
+    b[:, :n] = (1.0 - nugget) * np.exp(-3.0 * h / range_) + nugget * (h == 0.0)
+    return np.linalg.solve(a, b.T).T[:, :n]
+
+
+def _pilot_point_fields(params: list[Parameter], pilot_points: dict | None, shape: tuple[int, ...], grid):
+    """Each array the pilot point parameters change (``<package>.<value>``, by set): its multiplier field."""
+    pp = [p for p in params if p.target.partition(":")[2].startswith("pp=")]
+    if not pp:
+        return {}
+    if not pilot_points or not pilot_points.get("file"):
+        raise ValueError(f"parameter {pp[0].name}: pp=<set> needs [calibration] pilot_points")
+    points = read_pilot_points(Path(pilot_points["file"]))
+    range_, nugget = float(pilot_points["range"]), float(pilot_points.get("nugget", 0.0))
+    groups: dict[tuple[str, str], list[Parameter]] = {}
+    for p in pp:
+        what, _, where = p.target.partition(":")
+        sset = where[3:]
+        if p.name not in points:
+            raise ValueError(f"parameter {p.name}: not a pilot point in {pilot_points['file']}")
+        if points[p.name][0] != sset:
+            raise ValueError(f"parameter {p.name}: its target names set {sset!r}, the pilot points {points[p.name][0]!r}")
+        groups.setdefault((what, sset), []).append(p)
+    xc = np.asarray(grid.xcellcenters, float).reshape(-1)
+    yc = np.asarray(grid.ycellcenters, float).reshape(-1)
+    fields = {}
+    for (what, sset), ps in groups.items():
+        logs = {p.transform == "log" for p in ps}
+        if len(logs) != 1:
+            raise ValueError(f"pilot point set {sset!r}: its parameters are all log-transformed or none")
+        log = logs.pop()
+        field = np.ones(shape)
+        for layer in sorted({points[p.name][1] for p in ps}):
+            if not 0 <= layer < shape[0]:
+                raise ValueError(f"pilot point set {sset!r}: layer {layer} isn't in the grid's {shape[0]} (from 0)")
+            on = [p for p in ps if points[p.name][1] == layer]
+            px = np.array([points[p.name][2] for p in on])
+            py = np.array([points[p.name][3] for p in on])
+            v = np.array([p.value for p in on])
+            if log and (v <= 0).any():
+                raise ValueError(f"pilot point set {sset!r}: a log-transformed value must be above 0")
+            w = kriging_weights(px, py, xc, yc, range_, nugget)
+            f = 10.0 ** (w @ np.log10(v)) if log else w @ v
+            field[layer] = f.reshape(shape[1:])
+        fields.setdefault(what, []).append(field)
+    return {what: np.prod(fs, axis=0) for what, fs in fields.items()}
+
+
+def apply_modflow6(folder: Path, params: list[Parameter], zones: Path | None, gwf: str,
+                   pilot_points: dict | None = None):
+    """Each parameter's value multiplies a package value (module docstring) where its target says; pilot point
+    parameters multiply an array by their kriged field. Only the packages changed are written again, at full
+    precision."""
     import flopy
 
     sim = flopy.mf6.MFSimulation.load(sim_ws=str(folder), verbosity_level=0)
@@ -207,7 +286,20 @@ def apply_modflow6(folder: Path, params: list[Parameter], zones: Path | None, gw
     shape = tuple(int(n) for n in m.modelgrid.shape)
     zone = read_zones(zones, shape) if zones else None
     changed = {}
+    for what, field in _pilot_point_fields(params, pilot_points, shape, m.modelgrid).items():
+        pkg_name, _, value = what.partition(".")
+        pkg = m.get_package(pkg_name)
+        if pkg is None:
+            raise ValueError(f"pilot points on {what}: model {gwf} has no package {pkg_name!r}")
+        if value not in MF6_ARRAYS.get(pkg.package_type, ()):
+            raise ValueError(f"pilot points on {what}: pilot points multiply a griddata array "
+                             f"({', '.join(f'{t}.{v}' for t, vs in MF6_ARRAYS.items() for v in vs)})")
+        data = np.array(getattr(pkg, value).array, dtype=float).reshape(shape)
+        setattr(pkg, value, data * field)
+        changed[pkg_name] = pkg
     for p in params:
+        if p.target.partition(":")[2].startswith("pp="):
+            continue
         what, _, where = p.target.partition(":")
         pkg_name, _, value = what.partition(".")
         pkg = m.get_package(pkg_name)

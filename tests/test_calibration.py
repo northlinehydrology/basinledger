@@ -325,3 +325,73 @@ def test_a_restart_with_parameters_matches_the_unbroken_run(swatplus):
     b.finalize()
     for k in ta:
         assert np.array_equal(ta[k], tb[k], equal_nan=True), k
+
+
+def test_kriging_weights():
+    """Ordinary kriging, exponential covariance: the weights add to 1 everywhere and pick a point at the point; a
+    nugget spreads them between points."""
+    px, py = np.array([0.0, 100.0, 0.0]), np.array([0.0, 0.0, 100.0])
+    x, y = np.array([0.0, 100.0, 50.0, 1e5]), np.array([0.0, 0.0, 50.0, 1e5])
+    w = K.kriging_weights(px, py, x, y, range_=300.0)
+    np.testing.assert_allclose(w.sum(axis=1), 1.0, atol=1e-12)
+    np.testing.assert_allclose(w[0], [1.0, 0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(w[1], [0.0, 1.0, 0.0], atol=1e-12)
+    # far from all, the points' declustered mean: K^-1 1 normalized (the corner, near both others, weighs least)
+    d = np.hypot(px[:, None] - px[None, :], py[:, None] - py[None, :])
+    g = np.linalg.solve(np.exp(-3.0 * d / 300.0), np.ones(3))
+    np.testing.assert_allclose(w[3], g / g.sum(), atol=1e-9)
+    assert w[3][0] < w[3][1] == pytest.approx(w[3][2])
+    near = K.kriging_weights(px, py, np.array([10.0]), np.array([0.0]), range_=300.0)[0]
+    spread = K.kriging_weights(px, py, np.array([10.0]), np.array([0.0]), range_=300.0, nugget=0.5)[0]
+    assert spread[0] < near[0]  # a nugget spreads the weights off the nearest point (it still honours it at it)
+    with pytest.raises(ValueError, match="range must be above 0"):
+        K.kriging_weights(px, py, x, y, range_=0.0)
+
+
+def test_modflow6_by_pilot_point(tmp_path):
+    """Three log-transformed points on the small model's layer: K multiplied by their kriged field, in log10, each
+    point's own value at its cell; a set's points on a layer, an array changed once by each set."""
+    import flopy
+    ws = mf6_model(tmp_path, "pp")
+    grid = load(ws).modelgrid
+    xc, yc = np.asarray(grid.xcellcenters), np.asarray(grid.ycellcenters)
+    cells = [(0, 0), (5, 2), (9, 4)]
+    with open(tmp_path / "pp.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["name", "set", "layer", "x", "y"])
+        for i, (r, c) in enumerate(cells):
+            w.writerow([f"k{i}", "kpp", 0, xc[r, c], yc[r, c]])
+    values = [2.0, 0.5, 4.0]
+    params = [K.Parameter(f"k{i}", "modflow6", "npf.k:pp=kpp", v, 0.1, 10.0, "log") for i, v in enumerate(values)]
+    k0 = load(ws).npf.k.array.copy()
+    pp = {"file": tmp_path / "pp.csv", "range": 200.0, "nugget": 0.0}
+    K.apply_parameters("modflow6", ws, params, pilot_points=pp)
+    k = flopy.mf6.MFSimulation.load(sim_ws=str(ws), verbosity_level=0).get_model("gwf").npf.k.array
+    mult = (k / k0)[0]
+    for (r, c), v in zip(cells, values):
+        assert mult[r, c] == pytest.approx(v, rel=1e-12)
+    wts = K.kriging_weights(np.array([xc[r, c] for r, c in cells]), np.array([yc[r, c] for r, c in cells]),
+                            xc.ravel(), yc.ravel(), 200.0)
+    np.testing.assert_allclose(mult.ravel(), 10.0 ** (wts @ np.log10(values)), rtol=1e-12)
+    with pytest.raises(ValueError, match="pp=<set> needs \\[calibration\\] pilot_points"):
+        K.apply_parameters("modflow6", ws, params)
+    with pytest.raises(ValueError, match="parameter kx: not a pilot point"):
+        K.apply_parameters("modflow6", ws, [K.Parameter("kx", "modflow6", "npf.k:pp=kpp", 1.0, 0.1, 10.0, "log")],
+                           pilot_points=pp)
+    with pytest.raises(ValueError, match="all log-transformed or none"):
+        K.apply_parameters("modflow6", ws, [params[0], K.Parameter("k1", "modflow6", "npf.k:pp=kpp", 1.0, 0.1,
+                                                                   10.0)], pilot_points=pp)
+    with pytest.raises(ValueError, match="pilot points multiply a griddata array"):
+        K.apply_parameters("modflow6", ws, [K.Parameter("k0", "modflow6", "riv.cond:pp=kpp", 1.0, 0.1, 10.0, "log")],
+                           pilot_points=pp)
+
+
+def test_pilot_points_settings_read(tmp_path):
+    from basinledger import config as C
+    base = (ROOT / "examples" / "synthetic" / "two_way.toml").read_text().replace('"maps/', f'"{ROOT}/examples/synthetic/maps/')
+    (tmp_path / "x.toml").write_text(base + '\n[calibration]\npilot_points = {file = "pp.csv", range = 500.0}\n')
+    cfg = C.load(tmp_path / "x.toml")
+    assert cfg.calibration_pilot_points == {"file": tmp_path / "pp.csv", "range": 500.0, "nugget": 0.0}
+    (tmp_path / "y.toml").write_text(base + '\n[calibration]\npilot_points = "pp.csv"\n')
+    with pytest.raises(ValueError, match="pilot_points is \\{file, range, nugget\\}"):
+        C.load(tmp_path / "y.toml")

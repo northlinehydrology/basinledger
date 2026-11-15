@@ -131,7 +131,8 @@ class Basin:
         user_prepare = prepare
 
         def prepare(model, folder):
-            apply_parameters(model, folder, self.parameters, cfg.calibration_zones, cfg.mf6_model)
+            apply_parameters(model, folder, self.parameters, cfg.calibration_zones, cfg.mf6_model,
+                             cfg.calibration_pilot_points)
             if user_prepare:
                 user_prepare(model, folder)
 

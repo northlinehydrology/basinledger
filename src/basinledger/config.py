@@ -123,6 +123,7 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     record = "calibration/record.toml"  # without one, the example is a screening run
     parameters = "calibration/parameters.csv"  # optional: applied on every run (calibration.py's table)
     zones = "calibration/zones.csv"     # optional: MODFLOW 6 cells' zones for parameters by zone
+    pilot_points = {file = "calibration/pilot_points.csv", range = 2000.0, nugget = 0.0}  # optional: pp=<set>
 
     [[users]]
     name = "plant"
@@ -197,6 +198,16 @@ def _flag(path: Path, where: str, v) -> bool:
     return v
 
 
+def _pilot_points(path, base, pp) -> dict | None:
+    """``[calibration] pilot_points``: {file, range, nugget}, the file resolved."""
+    if pp is None:
+        return None
+    if not isinstance(pp, dict) or "file" not in pp or "range" not in pp or set(pp) - {"file", "range", "nugget"}:
+        raise ValueError(f"{path}: [calibration] pilot_points is {{file, range, nugget}} (an exponential variogram's "
+                         "range in the grid's length units; nugget optional, 0 to 1)")
+    return {"file": _path(base, pp["file"]), "range": float(pp["range"]), "nugget": float(pp.get("nugget", 0.0))}
+
+
 def _well(path: Path, w: dict) -> WellConfig:
     """A [[wells]] entry: a cell for a WEL package, or ``well``, a multi-aquifer well's number in a MAW package."""
     where = f"well {w.get('name')!r}"
@@ -239,6 +250,7 @@ class ExampleConfig:
     calibration_record: Path | None = None
     calibration_parameters: Path | None = None
     calibration_zones: Path | None = None
+    calibration_pilot_points: dict | None = None  # {file, range, nugget}: MODFLOW 6 parameters by pilot point
     places_of_use: list[tuple[str, str]] = field(default_factory=list)
     point_sources: list[tuple[str, str]] = field(default_factory=list)
     exchange: dict | None = None
@@ -426,6 +438,7 @@ def load(path: str | Path) -> ExampleConfig:
         calibration_parameters=(_path(base, c["calibration"]["parameters"])
                                 if c.get("calibration", {}).get("parameters") else None),
         calibration_zones=_path(base, c["calibration"]["zones"]) if c.get("calibration", {}).get("zones") else None,
+        calibration_pilot_points=_pilot_points(path, base, c.get("calibration", {}).get("pilot_points")),
         places_of_use=[(x["name"], x["channel"]) for x in sw.get("places_of_use", [])],
         point_sources=[(x["name"], x["channel"]) for x in sw.get("point_sources", [])],
         exchange=c.get("exchange"),
