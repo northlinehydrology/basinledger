@@ -1296,7 +1296,8 @@ chosen per study and applied per lake:
   from the lake's table if it has one, else from its connections as MODFLOW 6 computes a lake's volume
   (`lak_calculate_vol` in 6.8.2: each connection's surface area, smoothed at its top, times the depth over its
   bottom, from `TELEV`, `BELEV` and `SAREA` in memory), inverted by bisection. Over a day the change in that volume
-  is MODFLOW 6's own lake storage (`QSTO`) to 1e-9. Each day: yesterday's leakage is set on the reservoir before
+  is MODFLOW 6's own lake storage (`QSTO`) to 1e-9, on the test model and on Pleasant Lake's 1,382 connections
+  (`tests/test_central_sands_lake.py`). Each day: yesterday's leakage is set on the reservoir before
   SWAT+'s day; after it, the reservoir's day is read (volume, inflow, outflow, precipitation, evaporation, its own
   seepage, and the exchange as SWAT+ took it); the lake's own rainfall, evaporation, runoff, inflow and withdrawal
   are set to 0, then A sets it active from the stage of the day's starting volume with the day's inflow and
