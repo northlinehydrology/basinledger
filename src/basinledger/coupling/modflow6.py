@@ -29,7 +29,8 @@ refined around a site) by ``(layer, icell2d)``, all 0-based as flopy numbers the
 reduced node, and a cell in the other grid's form is refused. An unstructured grid (DISU) has no layers in its cell
 numbers, so maps on it give reduced nodes (the ``node`` column) and its wells and heads aren't supported yet.
 
-Time steps must be one day long. libmf6 holds one model per process; runs can follow one
+Time steps must be one day long: the driver rewrites a model's time discretization to one-day steps in the run's
+copy first (``timesteps.daily_steps``), each stress period kept. libmf6 holds one model per process; runs can follow one
 another in a process (finalize, then a new Modflow6), but not overlap.
 
 **Restarts.** MODFLOW 6's state, for the packages used so far, is its heads. A scenario restarts from a saved day with
@@ -259,7 +260,8 @@ class Modflow6:
         self.api.prepare_time_step(1.0)
         dt = self.api.get_time_step() * self.days
         if abs(dt - 1.0) > 1e-12:
-            raise ValueError(f"MODFLOW 6 time step is {dt} days; Basin Ledger steps one day at a time")
+            raise ValueError(f"MODFLOW 6 time step is {dt} days; Basin Ledger steps one day at a time (a run "
+                             f"rewrites the model's time discretization to daily steps: timesteps.daily_steps)")
 
     def set_recharge(self, package: str, rate_per_node: np.ndarray):
         """Recharge as a depth rate per node (m d-1); entries of the package take their node's rate."""
@@ -347,16 +349,19 @@ class Modflow6:
 
 
 def remaining_simulation(src: Path, dst: Path, day: int, time_units: str | None = None):
-    """A copy of a MODFLOW 6 simulation covering only the days from ``day`` on, for a restart. Supports one stress
-    period of daily steps (what the driver's builders write); models with several stress periods need their period
-    data re-keyed, which isn't built yet. ``time_units``: the model's, where its TDIS leaves them undefined."""
+    """A copy of a MODFLOW 6 simulation covering only the days from ``day`` on, for a restart (``src`` and ``dst``
+    the same folder: changed in place). Supports one stress period of daily steps (what the driver's builders write,
+    or any one-period model once ``timesteps.daily_steps`` has rewritten it); models with several stress periods
+    need their period data re-keyed, which isn't built yet. ``time_units``: the model's, where its TDIS leaves them
+    undefined."""
     import shutil
 
     import flopy
 
-    if dst.exists():
-        shutil.rmtree(dst)
-    shutil.copytree(src, dst)
+    if Path(src).resolve() != Path(dst).resolve():  # or in place, in a run's copy
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
     sim = flopy.mf6.MFSimulation.load(sim_ws=str(dst), verbosity_level=0)
     pd = sim.tdis.perioddata.get_data()
     if len(pd) != 1:

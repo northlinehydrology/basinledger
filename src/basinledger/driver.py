@@ -54,6 +54,7 @@ from .coupling.gwsoil import GroundwaterToSoil
 from .coupling.modflow6 import Modflow6, remaining_simulation
 from .coupling import recharge as RC
 from .coupling.recharge import RechargeLink
+from .coupling.timesteps import daily_steps, start_date
 from .ledger import FLOAT32, Ledger
 from .mapping import AreaMap
 from .routes import Router, kind
@@ -186,10 +187,21 @@ class Basin:
                 _example_function(cfg, cfg.mf6_builder, "build")(ws, self.days - self.day,
                                                                  self.start + dt.timedelta(days=self.day),
                                                                  **cfg.mf6_builder_args)
-            elif saved:
-                remaining_simulation(cfg.mf6_workspace, ws, self.day, cfg.mf6_time_units)
             else:
                 shutil.copytree(cfg.mf6_workspace, ws)
+            # every step one day, each stress period kept (coupling/timesteps.py), then a restart's days cut off
+            for note in daily_steps(ws, cfg.mf6_time_units):
+                warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            if saved and not cfg.mf6_builder:
+                remaining_simulation(ws, ws, self.day, cfg.mf6_time_units)
+            elif not saved:
+                first = start_date(ws)
+                if first is not None and first != self.start:
+                    warnings.warn(f"MODFLOW 6's time starts on {first} (TDIS START_DATE_TIME) and the run on "
+                                  f"{self.start}: the model's first day is taken as the run's, so its stress "
+                                  f"periods fall {abs((first - self.start).days):,} days "
+                                  f"{'earlier' if first > self.start else 'later'} than its dates",
+                                  EX.TakeoverNote, stacklevel=2)
             prepare("modflow6", ws)
             self.mf6 = Modflow6(ws, cfg.mf6_model, length_units=cfg.mf6_length_units,
                                 time_units=cfg.mf6_time_units)
