@@ -1011,11 +1011,14 @@ source). All of them start from one warm-up:
 - **MODFLOW 6:** its state is its heads, plus the storages of advanced packages (MAW, UZF; SFR with its storage
   option, which the exchange refuses) if used. SFR without storage holds no water from day to day.
   At the end of the warm-up the driver saves heads (`X`). Each scenario starts a new MODFLOW 6 simulation covering
-  only the days left: the example's builder is called for them, or a copied model's single stress period is
-  shortened. The saved heads are then put straight into memory after initialize, not into the IC file, which would
-  round them. Restarted runs match the unbroken run bit for bit (built and tested). A copied model of one stress
-  period restarts once its steps are rewritten to days (`timesteps.daily_steps`); models with several stress periods
-  need their period data re-keyed, which isn't built yet. Advanced packages will need their own state saved.
+  only the days left: the example's builder is called for them, or a copied model is cut to them
+  (`remaining_simulation`, `timesteps.remaining_days`, built Nov 14, 2026): its steps rewritten to days first, the
+  periods already over left out, the one the restart falls in shortened, every input file's period blocks renumbered
+  (the block in effect that day becoming period 1), and its time series and time-array series moved back by the
+  days run. The files are changed as text, so nothing else in them is rewritten or rounded. The saved heads are then
+  put straight into memory after initialize, not into the IC file, which would round them. Restarted runs match the
+  unbroken run bit for bit (built and tested, a copied model of monthly periods included). Advanced packages (MAW,
+  UZF, LAK, SFR with storage) will need their own state saved.
 - **Water users:** a component's state, if any, is saved through `get_state`/`set_state` where the component offers
   them (CSDMS bmi PR #112). `CoolingWaterBmi` keeps no state between hours.
 - **Weather:** SWAT+'s gage records are part of its state, so a case keeps the warm-up's weather up to its restart
@@ -1063,8 +1066,8 @@ studies' own builders wrote (one daily stress period, our package names).
   gages), what "driven" routing looks like in MODFLOW 6's SFR, and a worked example on a published model.
 - **Stress periods.** Consultant models often have monthly, seasonal or steady periods. Two modes, chosen per study:
   rewrite the model's time discretization to daily steps (the coupling as built), or keep its periods and pass SWAT+'s
-  fluxes summed over each period. The ledger checks either. Restarts across several stress periods (What's next, 4)
-  become required. *Daily: Basin Ledger rewrites the model's time discretization to daily steps (built Nov 14,
+  fluxes summed over each period. The ledger checks either. Restarts across several stress periods (built Nov 14,
+  2026, under Restarts) became required. *Daily: Basin Ledger rewrites the model's time discretization to daily steps (built Nov 14,
   2026, below). Keeping the model's own periods stays an idea to think about, not built.*
 - **MODFLOW 6 only.** Models in MODFLOW-2005 or NWT come in through USGS's converter (mf5to6) first; Basin Ledger
   doesn't read them. *MODFLOW 6 only, for now.*
@@ -1422,8 +1425,9 @@ aquifer.
 - **The calendar.** MODFLOW 6's first day is the run's first day. Where TDIS has a `START_DATE_TIME` that differs
   from SWAT+'s start, the start-up says so and by how many days, since monthly periods carry their dates' inputs.
 - **The start-up reports it.** `basinledger check`, and a run's first warnings, say what was rewritten: the periods,
-  the days, the steps they had and whether they grew. Restarts of a one-period model work once it is rewritten;
-  several periods still wait (What's next, 4).
+  the days, the steps they had and whether they grew.
+- **Restarts across stress periods** (`timesteps.remaining_days`, under Restarts above): a copied model's days left
+  from any day, its periods renumbered and its time series moved back.
 - **Tested** (`tests/test_timesteps.py`, `tests/test_existing.py`): on TDIS files alone, monthly periods of one
   step and of five growing by 1.2, daily steps left untouched, 365.25-day years in equal months, a model in hours,
   undefined, stated and years' units, ATS, the start date, a one-period restart, and Pleasant Lake's 85 periods (its
@@ -1459,6 +1463,24 @@ aquifer.
   and keeps its inflow; each of the four types is cut each day across period blocks; a move into the middle of a
   channel is refused for A and runs as B; and the refusals and the drain's move into the model's own reaches. On
   Pleasant Lake, the mover read from the exchange's file and cut through it.
+
+**Built (Nov 14, 2026): restarts across stress periods** (What's next, 4).
+
+- **The days left, as text** (`timesteps.remaining_days`, called by `remaining_simulation` on the run's copy after
+  its steps are rewritten to days). TDIS keeps the periods not yet over, the one the restart day falls in shortened
+  to its days left. Every input file the simulation reads (each model's packages, each exchange, and the movers,
+  observations, time series and time-array series their options read) has its PERIOD blocks renumbered: blocks from
+  that period on move down, the last block before it becomes period 1 where that period has none of its own (its
+  data are in effect that day), and earlier blocks are left out. Time series and time-array series move back by the
+  days run, so each value falls on the same day. Nothing else in the files changes.
+- **Tested:** renumbering for each place a restart can fall (`tests/test_timesteps.py`), time series and
+  time-array series moved, and the synthetic foreign model cut at February 10th (19 and 16 days left, its packages
+  renumbered, flopy reading the result). MODFLOW 6 alone, the model in five growing steps a month with a city
+  well on a time series, restarted at day 40 from the unbroken run's heads, gives the unbroken run's heads and well
+  rate every day to the last digit. Coupled to Osu_1hru, handed over as a folder and saved on February 10th, the
+  restarted run's ledger and heads are the unbroken run's to the last digit (`tests/test_existing.py`).
+- **Still to save:** the state of packages that hold water from day to day (MAW, UZF, LAK, SFR with storage); a
+  model with them restarts with their files' starting state, and the restart says so for each such package.
 
 **Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
 on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a
@@ -1554,7 +1576,8 @@ Next:
 2. Point source loads (asked of swatplus-bmi).
 3. Two-way refinements: leaks and infiltration in the chain exchanged with MODFLOW 6; SFT for transport with an SFR
    exchange.
-4. Restarts for MODFLOW 6 models with several stress periods.
+4. Restarts for MODFLOW 6 models with several stress periods (built Nov 14, 2026; advanced packages' own state,
+   such as MAW's, UZF's and LAK's, still to save).
 5. MODFLOW 6 parameters by pilot point (pyEMU); USGS groundwater levels as observations.
 6. AORC forcing for SWAT+ and the users; the SWAT+ project builder on the hydrofabric, with outputs at every nexus.
 7. Extending an existing MODFLOW 6 model (decided Nov 14, 2026; the section above): the start-up check and maps on a

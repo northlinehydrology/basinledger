@@ -68,6 +68,9 @@ MODFLOW 6 model").
   move nothing, for each type). A move within a channel, out of a coupled channel to anything but another channel's
   top reach, or into a channel from a drain, lake or well is refused by name; moves among the model's own entries
   stay the model's. Pleasant Lake's exchange mover lines up on the parent's side.
+- Restarts of a copied MODFLOW 6 model with several stress periods (`timesteps.remaining_days`): the periods over
+  left out, the current one shortened, every input file's period blocks renumbered and its time series moved back,
+  all as text. Restarted runs of the synthetic foreign model, alone and coupled, match the unbroken run bit for bit.
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS
