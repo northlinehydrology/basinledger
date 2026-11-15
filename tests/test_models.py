@@ -197,3 +197,51 @@ def test_streams_in_both_models(libmf6):
         assert np.isfinite(free[1]["cha01"])
     finally:
         m.finalize()
+
+
+def test_drains_and_lakes_in_both_models(libmf6, tmp_path):
+    """Each model's drains and lakes at a fixed stage, onto that model's own channels (``exchange.part_map``,
+    ``lake_map`` with ``first_model``), one exchange through both (``StreamExchanges``), MODFLOW 6 alone: kzoo's tile
+    drains seep to its creek's channel, the neighbor's drains (named as kzoo's) and its lake to its river's, and the
+    day's seepage and lake flow come back by channel, each its own model's."""
+    from basinledger.coupling import exchange as X
+    ws = RUNS / "models-drains-lakes"
+    if ws.exists():
+        shutil.rmtree(ws)
+    E.build(ws, 31, START, neighbor=True, neighbor_river=True, neighbor_drains=True, neighbor_lake=True)
+    m = Models(Modflow6(ws, "kzoo"), MODELS)
+    try:
+        kz, ea = m.views
+        m.prepare_day()
+        swat = ["cha01", "cha02"]
+        creek = X.ChannelMap.from_spec("maps/existing_river.csv", SYNTHETIC, kz, "riv_creek", swat, channels=swat,
+                                       first_model="KZOO")
+        river = X.ChannelMap(["cha02"], np.zeros(ea.nbound("riv_east"), int))
+        (tmp_path / "drains.csv").write_text(
+            "object,model,layer,row,col\n" + "".join(f"cha01,kzoo,{k},{r},{c}\n" for k, r, c in E.TILES)
+            + "".join(f"cha02,kzoo_east,0,{r},2\n" for r in range(2, 10)))
+        (tmp_path / "lakes.csv").write_text("object,model,layer,row,col\ncha02,kzoo_east,0,10,1\ncha02,kzoo_east,0,10,2\n")
+        dk, extra_k = X.part_map("drains.csv", tmp_path, kz, "drn_tile", swat, creek.channels, "KZOO")
+        de, extra_e = X.part_map("drains.csv", tmp_path, ea, "drn_tile", swat, river.channels, "KZOO")
+        assert extra_k == extra_e == [] and (dk.entry_channel == 0).all() and (de.entry_channel == 0).all()
+        X.check_lake_package(ea, "lakes_east", "riv_east", "drn_tile")
+        lm = X.lake_map("lakes.csv", tmp_path, ea, "lakes_east", swat, river.channels, first_model="KZOO")
+        ex = X.StreamExchanges([X.StreamExchange(kz, "riv_creek", creek, ("drn_tile", dk)),
+                                X.StreamExchange(ea, "riv_east", river, ("drn_tile", de), lakes=("lakes_east", lm))])
+        assert ex.drains is not None and ex.lakes is not None
+        m.solve_day(ex.limit({"cha01": 1e6, "cha02": 1e6}))
+        due = ex.after_solve()
+        assert ex.lake_lowered == {"cha01": 0.0, "cha02": 0.0}
+        ex.end_day()
+        assert ex.seepage["cha01"] == pytest.approx(-float(kz.simvals("drn_tile").sum()), rel=1e-12)
+        assert ex.seepage["cha02"] == pytest.approx(-float(ea.simvals("drn_tile").sum()), rel=1e-12)
+        assert ex.seepage["cha02"] > 0.0                                   # the neighbor's drains run
+        assert ex.lake_flow["cha02"] == pytest.approx(-float(ea.simvals("lakes_east").sum()), rel=1e-12)
+        assert ex.lake_flow["cha02"] < 0.0 and ex.lake_flow["cha01"] == 0.0  # the lake loses to the aquifer
+        river_flow = -float(ea.simvals("riv_east").sum())
+        assert due["cha02"] == pytest.approx(river_flow + ex.seepage["cha02"] + ex.lake_flow["cha02"], rel=1e-12)
+        # a drain in the neighbor seeping to the creek, whose reaches are kzoo's: named, for the start-up to refuse
+        (tmp_path / "bad.csv").write_text("object,model,layer,row,col\ncha01,kzoo_east,0,2,2\n")
+        assert X.part_map("bad.csv", tmp_path, ea, "drn_tile", swat, river.channels, "KZOO")[1] == ["cha01"]
+    finally:
+        m.finalize()

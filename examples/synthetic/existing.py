@@ -86,7 +86,8 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
           steps: int = 1, tsmult: float = 1.0, septic: bool | tuple = False, length_units: str = "meters",
           time_units: str = "days", state_units: bool = True, complexity: str = "moderate",
           neighbor: bool = False, lake: bool = False, neighbor_recharge: bool = False,
-          neighbor_river: bool = False, maw: bool = False, steady: str | None = None) -> Path:
+          neighbor_river: bool = False, maw: bool = False, steady: str | None = None,
+          neighbor_drains: bool = False, neighbor_lake: bool = False) -> Path:
     if grid not in ("dis", "disv"):
         raise ValueError("grid is dis or disv")
     if neighbor and grid != "dis":
@@ -174,7 +175,7 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
                                 perioddata={0: [(0, "rainfall", u(0.002, *LT)), (0, "evaporation", u(0.003, *LT))]},
                                 filename="kzoo.lak_pond.lak")
     if neighbor:
-        _neighbor(sim, ims, u, lu, neighbor_recharge, neighbor_river)
+        _neighbor(sim, ims, u, lu, neighbor_recharge, neighbor_river, neighbor_drains, neighbor_lake)
     sim.write_simulation(silent=True)
     return ws
 
@@ -224,11 +225,13 @@ def reservoir_project(dest: str | Path, refdata: str | Path) -> Path:
 EAST_COLS = 4
 
 
-def _neighbor(sim, ims, u, lu, recharge=False, river=False):
+def _neighbor(sim, ims, u, lu, recharge=False, river=False, drains=False, lake=False):
     """``kzoo_east``: the aquifer east of the grid, its far column at the regional head, joined to kzoo's east
     column (bottom layer, where kzoo's top layer is inactive) by a GWF-GWF exchange. With ``recharge``, its own
     recharge package, ``rch_swb`` as kzoo's, for coupling both models together; with ``river``, a river above the
-    regional head down its second column, ``riv_east``, losing to the aquifer."""
+    regional head down its second column, ``riv_east``, losing to the aquifer; with ``drains``, tile drains of its
+    own named as kzoo's (``drn_tile``) down its third column; with ``lake``, a lake at a fixed stage above the head
+    at the river's foot (``lakes_east``, a RIV package of its own), gaining the aquifer."""
     LT = (1, -1)
     east = flopy.mf6.ModflowGwf(sim, modelname="kzoo_east", save_flows=True)
     cell = u(CELL)
@@ -245,6 +248,14 @@ def _neighbor(sim, ims, u, lu, recharge=False, river=False):
         flopy.mf6.ModflowGwfriv(east, stress_period_data={0: [((0, r, 1), u(STAGE + 2.0), u(10.0, 2, -1),
                                                                 u(STAGE - 1.0)) for r in range(2, 10)]},
                                 pname="riv_east", filename="kzoo_east.riv_east.riv")
+    if drains:
+        flopy.mf6.ModflowGwfdrn(east, stress_period_data={0: [((0, r, 2), u(STAGE + 0.3), u(4.0, 2, -1))
+                                                                for r in range(2, 10)]},
+                                pname="drn_tile", filename="kzoo_east.drn_tile.drn")
+    if lake:
+        flopy.mf6.ModflowGwfriv(east, stress_period_data={0: [((0, 10, c), u(STAGE + 1.5), u(10.0, 2, -1),
+                                                                u(STAGE - 1.0)) for c in (1, 2)]},
+                                pname="lakes_east", filename="kzoo_east.lakes_east.riv")
     flopy.mf6.ModflowGwfoc(east, budget_filerecord="kzoo_east.cbc", saverecord=[("BUDGET", "LAST")])
     flopy.mf6.ModflowGwfgwf(sim, exgtype="GWF6-GWF6", exgmnamea="kzoo", exgmnameb="kzoo_east", nexg=N,
                             exchangedata=[((1, r, N - 1), (1, r, 0), 1, cell / 2, cell / 2, cell * u(MIDDLE - BOTTOM))
