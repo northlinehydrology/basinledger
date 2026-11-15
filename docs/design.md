@@ -1237,10 +1237,50 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
    2. The mover allowed where it only joins coupled reaches, cut each day like the line-up rule's connections.
    3. Several groundwater models in one simulation: each with its own maps, recharge and exchange, and the
       GWF-GWF exchange's flow inside the ledger's groundwater, not a boundary.
-   4. The lake coupled: LAK's rain, evaporation and runoff from SWAT+ each day (point 1), and the lake's water owned
-      by LAK or by a SWAT+ reservoir, the same choice as a stream's.
-   5. The parent's irrigation wells: the model's own, unless SWAT+ irrigates the same fields from its aquifer, which
-      would pump the water twice; the start-up check can't see that, so the study says which.
+   4. The lake coupled, as streams are (below, "Lakes").
+   5. The parent's irrigation wells, MODFLOW first (below, "Large users and irrigation").
+
+**Lakes: the stream precedent (decided, Andrew, Nov 14, 2026).** SWAT+ owns a lake's water and quality, as a
+reservoir, and MODFLOW 6's LAK is the face it exchanges through, as SFR is for a stream. Two forms, as for channels,
+chosen per study and applied per lake:
+
+- **A, LAK active within the day.** Each day the lake starts from SWAT+'s stage (`XOLDPAK`, set after
+  `prepare_time_step`), takes SWAT+'s inflow, rain and evaporation for the day, and MODFLOW 6 solves its stage and
+  leakage within the day on the lake's own bathymetry and lakebed leakance, as the model's builder calibrated them.
+  Its outlets are cut (an outlet into SFR is a connection between water bodies, which SWAT+ routes), and its net
+  exchange goes to SWAT+'s reservoir the next day. What LAK's stage did within the day isn't kept: tomorrow starts
+  from SWAT+'s stage again, so the lake's water is held once, in SWAT+.
+- **B, LAK at a fixed stage.** Status constant, its stage SWAT+'s each day. LAK computes the leakage at that stage,
+  and the loss is limited to what the reservoir holds, as RIV's is.
+- **Checked through the API** (MODFLOW 6.8.2, `tests/test_existing_api.py`): both work. A lake at constant status
+  takes the stage given and leaks at it, and an active lake restarted from a given stage each day takes its
+  inflows and leaks within the day from there.
+- **Not built.** It needs swatplus-bmi to expose a reservoir's stage and volume and to take its groundwater exchange
+  (docs/requests.md, request 6). Pleasant Lake, a seepage lake with no outlets, is the first test. Because SWAT+
+  represents such a lake as a reservoir or a wetland, the study's SWAT+ build decides which object it is.
+
+**Large users and irrigation, MODFLOW first (Andrew, Nov 14, 2026).** Basin Ledger exists to answer what a large
+water user does to a basin. On the second way in, groundwater is the model's, so pumping is too: every groundwater
+withdrawal, a data center's, a city's or a farm's, comes out of MODFLOW 6's wells, and SWAT+ never pumps its own
+aquifer.
+
+- **Large users** already work this way: a user's withdrawal from a well is set on that well's entry in MODFLOW 6
+  (taken over by the start-up check), and its return goes where its route says. A new user's well is an entry the
+  model must have; adding wells to a model that lacks them is still to build.
+- **Irrigation.** SWAT+ decides when and how much a field is irrigated (its decision tables, from the weather and the
+  soil), and MODFLOW 6 pumps it. The irrigate action takes its water from an outside source in SWAT+, and Basin
+  Ledger pumps the same volume that day from the wells the study maps to that field's HRUs. So the demand responds
+  to climate and land-use scenarios, the water is pumped once, from the model that owns groundwater, and it lands on
+  SWAT+'s fields, where its return flow and its losses are SWAT+'s. This needs swatplus-bmi to report each HRU's
+  irrigation (docs/requests.md, request 7) and a map of wells to HRUs. Not built.
+- **Keeping a model's own pumping** (its calibrated irrigation rates, as Pleasant Lake's 244 wells have from SWB) is
+  the other way: the wells stay the model's, as the start-up check lists them, and SWAT+ doesn't irrigate those
+  fields. It reproduces the model as calibrated, but the water pumped never reaches SWAT+'s fields, and a scenario
+  can't change the demand. It suits a first run against the model's own calibration, not the large-user questions.
+- **Refused now** (built, `swatplus.aquifer_withdrawals`, in two-way mode): a decision table a schedule uses that
+  irrigates from SWAT+'s aquifer, and a water allocation point of diversion from an aquifer. In two-way mode
+  SWAT+'s aquifer only holds the recharge it passed to MODFLOW 6, so water drawn from it would be pumped twice.
+  Irrigation from a channel or a reservoir is surface water and stays SWAT+'s.
 
 **Built (Nov 14, 2026): the start-up check and maps on the model's own grid.**
 

@@ -35,6 +35,13 @@ MODFLOW 6 model").
   (`existing.inventory`), its SFR networks lined up with SFRmaker's own lines as SWAT+'s channels (they line up;
   `gridmaps.sfr_aux`), its confluences listed and its mover cut at run time; what stops a coupled run is refused by
   name. Its tests skip until it is fetched.
+- Lakes follow the stream precedent (Andrew): SWAT+'s reservoir owns the water, MODFLOW 6's LAK is the face, active
+  within the day from SWAT+'s stage (A) or at a fixed stage (B). Both checked through the API; not built until
+  swatplus-bmi exposes reservoirs (docs/requests.md, 6).
+- Large users and irrigation, MODFLOW first (Andrew): groundwater withdrawals come out of MODFLOW 6's wells. In
+  two-way mode a SWAT+ project that irrigates or allocates water from its own aquifer is refused
+  (`swatplus.aquifer_withdrawals`): that aquifer only holds what it passed to MODFLOW 6. Irrigation pumped from the
+  model's wells needs swatplus-bmi to report HRU irrigation (docs/requests.md, 7).
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS

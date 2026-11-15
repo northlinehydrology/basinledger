@@ -169,3 +169,31 @@ def test_sfr_simple_status_takes_the_stage_given_and_holds_its_loss_to_its_inflo
     assert out[("SIMVALS", "RIVER")][0] == pytest.approx(100.0)
     assert np.allclose(out[("SIMVALS", "RIVER")][1:], 0.0)
     assert out[("STAGE", "RIVER")][0] == pytest.approx(14.0)  # put back to the streambed's top
+
+
+def test_lake_at_a_constant_stage_set_each_day(model):
+    """The lake as a fixed-stage face (status constant, -1): its stage is the one set, and its leakage is computed
+    at that stage; the lake holds no water of its own from day to day."""
+    for stage in (15.5, 16.0):
+        def constant(m, stage=stage):
+            m.set("IBOUND", "LAKE", 0, -1)
+            m.set("STAGE", "LAKE", 0, stage)
+        out = model.day(constant)
+        assert out[("XNEWPAK", "LAKE")][0] == pytest.approx(stage)
+        assert out[("SIMVALS", "LAKE")].sum() > 0  # above the 15 m heads: it loses to the aquifer
+    higher = out[("SIMVALS", "LAKE")].sum()
+    out = model.day(lambda m: (m.set("IBOUND", "LAKE", 0, -1), m.set("STAGE", "LAKE", 0, 15.5)))
+    assert out[("SIMVALS", "LAKE")].sum() < higher
+
+
+def test_lake_started_each_day_from_a_stage_given(model):
+    """The lake active, its day started from a stage given (XOLDPAK, the stage at the step's start): it takes its
+    inflows and leaks within the day from there."""
+    for _ in range(2):
+        def start(m):
+            m.set("XOLDPAK", "LAKE", 0, 15.2)
+            m.set("XNEWPAK", "LAKE", 0, 15.2)
+            m.set("INFLOW", "LAKE", 0, 1000.)
+        out = model.day(start)
+        # 1,000 m3 into 4 ha of lake above the cells' top: about 2.5 cm, less what it leaks
+        assert 15.2 < out[("XNEWPAK", "LAKE")][0] < 15.2 + 1000. / 40000. + 1e-9
