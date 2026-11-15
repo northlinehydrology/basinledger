@@ -34,15 +34,32 @@ above) goes in as the inflow of the channel's first reach; the reaches below car
 the aquifer gives. The channel's net exchange goes to SWAT+ the next day, as with RIV; SFR's own outflow from the
 channel's last reach isn't entered anywhere, since SWAT+ routes the channel's water on. So SFR stands in for RIV's
 fixed stage and for the stage-lowering limit, and SWAT+ stays the only model routing water between channels. Refused
-at start-up (``sfr_problems``): a reach connected to a reach of another channel, or to one not coupled (SFR would
-route between channels too, counting their water twice); a channel whose reaches have more than one top reach;
-diversions, the mover and SFR's storage option (kinematic-wave routing: stored water a restart would need); and a
+at start-up (``sfr_problems``): a connection between channels anywhere but from one's last reach into another's
+top reach, and a coupled channel flowing into a reach not coupled (SFR would route between channels too, counting
+their water twice); a channel whose reaches aren't one chain from one top reach;
+diversions, the mover where it doesn't line up (below), and SFR's storage option (kinematic-wave routing: stored
+water a restart would need); and a
 Manning's constant for other units than meters and days (UNIT_CONVERSION 86400). MODFLOW 6's default, 1, is for
 meters and seconds, and makes a stream centimeters deep come out meters deep.
 
+**SFR networks Basin Ledger didn't build** (an existing model's, docs/design.md): connections between channels are
+allowed where they line up with SWAT+'s network, from one channel's last reach into another's top reach (or from the
+model's own reaches into a channel's top reach), and are cut each day by setting the top reach's upstream fraction to
+0. A confluence inside a channel is refused by name (``sfr_problems``); the study puts a SWAT+ outlet there
+(``gridmaps.sfr_confluences`` lists them). A package built from SWAT+'s channel lines has no such connections and runs
+as before.
+
+**The mover** (coupling/mover.py, read from its files): a move from one of the package's reaches to another is a
+connection to the rule, and so is a move into a channel's reach from another model's SFR or another SFR package (as
+the model's own reaches). Lined up, it is cut each day by its value (it moves nothing), and the water stays with the
+provider: down its own connections, or out of SFR as its external outflow. Refused by name: a move within a channel,
+from a coupled reach to a reach no channel has or to any other package or model, and into a channel from a package
+that isn't SFR (a drain's, a lake's, a well's: water SWAT+'s channel doesn't see). Moves among the model's own
+entries stay the model's.
+
 **Lakes at a fixed stage** (``[exchange] lakes``, a RIV package of their own): a lake's cells exchange with the aquifer
-at the lake's surface, set by the study in the package's input. swatplus-bmi has no reservoir exchange variable, so a
-lake couples through a channel, as the drains do: the study maps each lake's cells to the channel its reservoir
+at the lake's surface, set by the study in the package's input. A lake couples through a channel, as the drains do (built before
+swatplus-bmi 0.11.0 had a reservoir exchange; a LAK lake coupled to its reservoir is coupling/lakes.py): the study maps each lake's cells to the channel its reservoir
 flows into, one of the exchange's coupled channels, and the lakes' net exchange joins that channel's the next day.
 A lake can't take more than its channel has: with a RIV exchange the supply limit lowers a channel's river and lake
 stages by one depth together; with SFR the lakes have a limit of their own, which doesn't count SFR's reach losses
@@ -58,11 +75,13 @@ Other limits of this version:
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from ..mapping import cell_node
+from . import mover as MV
 from .modflow6 import Modflow6
 
 
@@ -76,9 +95,11 @@ class ChannelMap:
 
     @classmethod
     def from_spec(cls, spec: str, folder: Path, mf6: Modflow6, package: str, swat_channels: list[str],
-                  channels: list[str] | None = None):
+                  channels: list[str] | None = None, first_model: str | None = None):
         """``channels``, if given, fixes the channel order (and so the indices), as when rivers and drains share
-        one list of coupled channels."""
+        one list of coupled channels. ``first_model``: with several groundwater models coupled, the first's name;
+        then only the rows of ``mf6``'s model are read (a row without a ``model`` is the first's), and ``channels``
+        keeps only the channels those rows give."""
         nodes = mf6.package_nodes(package)
         if spec.startswith("all:"):
             ch = spec[4:]
@@ -91,6 +112,9 @@ class ChannelMap:
         sfr = package_type(mf6, package) == "sfr"
         with open(folder / spec, newline="") as f:
             for r in csv.DictReader(f):
+                if first_model is not None and \
+                        ((r.get("model") or "").strip() or first_model).upper() != mf6.model.upper():
+                    continue
                 ch = r["object"]
                 if ch not in swat_channels:
                     raise KeyError(f"{spec}: {ch!r} is not a SWAT+ channel")
@@ -109,6 +133,10 @@ class ChannelMap:
                     if len(hit) == 0:
                         raise ValueError(f"{spec}: cell {n} has no {package} entry")
                 entry[hit] = chans.index(ch)
+        if first_model is not None:  # this model's channels only, in the order given
+            used = [c for i, c in enumerate(chans) if (entry == i).any()]
+            entry = np.array([used.index(chans[i]) if i >= 0 else -1 for i in entry], dtype=int)
+            chans = used
         return cls(chans, entry)
 
 
@@ -129,39 +157,193 @@ def sfr_reach_links(mf6: Modflow6, package: str) -> list[tuple[int, int]]:
     return [(i, int(ja[k])) for i in range(len(ia) - 1) for k in range(ia[i], ia[i + 1]) if idir[k] == -1]
 
 
-def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> tuple[list[str], dict[str, int]]:
-    """What stops an SFR package from being coupled (see the module's docstring), and each channel's top reach."""
+SFR_MODES = ("route", "route_or_stage", "stage")  # [exchange] sfr: A everywhere, A where a channel lines up, B everywhere
+
+
+@dataclass
+class SfrLayout:
+    """How an SFR package lines up with SWAT+'s channels (``sfr_problems``)."""
+    problems: list[str]                    # refused whatever the mode
+    channel_problems: dict[str, list[str]]  # what keeps a channel from routing (A); it can run at a fixed stage (B)
+    top: dict[str, int]                    # each channel's top reach, where it lines up
+    last: dict[str, int]                   # each channel's last reach, where it lines up
+    cut: list[int]                         # reaches whose upstream fraction is set to 0 each day
+    moves_cut: list = field(default_factory=list)  # the mover's moves set to move nothing each day (coupling/mover.py)
+    movers: list = field(default_factory=list)     # the simulation's movers, read from their files
+
+
+def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap,
+                 others: dict[tuple[str, str], ChannelMap] | None = None) -> SfrLayout:
+    """How an SFR package lines up with SWAT+'s channels: what is refused, what keeps each channel from routing its
+    own water (A), each channel's top and last reach, and the reaches to cut from what flows into them at run time
+    (their upstream fraction set to 0).
+
+    The line-up rule, the same for a package Basin Ledger built from SWAT+'s channel lines and for one a study
+    brought (docs/design.md, "Extending an existing MODFLOW 6 model"): each reach maps to one channel, or none and
+    stays the model's; each channel's reaches form one connected path from one top reach; and every confluence falls
+    on a channel boundary: a connection into a coupled channel goes into its top reach, from another channel's last
+    reach or from a reach no channel has. Such a connection is cut each day, so SWAT+ alone carries water from one
+    channel to the next. A channel that breaks the rule can't route (A), but can run at a fixed stage (B,
+    ``[exchange] sfr``); its incoming connections are cut wherever they are. Refused whatever the mode: the package's
+    settings below, and a coupled channel flowing into a reach no channel has (SFR would carry SWAT+'s water on).
+
+    ``others``: with several groundwater models coupled, the other models' SFR maps, by (model, package), lower case.
+    A coupled reach giving water through the mover to another model's coupled reach is then lined up as a
+    connection between channels is (from its channel's last reach; the other side checks it reaches a top reach)
+    and cut; into the same channel there, it is a move within a channel, refused."""
     P = package.upper()
     g = lambda v: mf6.get(v, mf6.model, P)  # noqa: E731
     out = []
-    unitconv = float(g("UNITCONV")[0])
-    if abs(unitconv / DAY_S - 1.0) > 1e-9:
-        out.append(f"{package}: Manning's constant is {unitconv:g}, which isn't for meters and days; set "
-                   f"UNIT_CONVERSION {DAY_S:g} (or TIME_CONVERSION {DAY_S:g}) in its options")
+    # Manning's constant in the model's own units: 86400 for meters and days, 1.486 x 86400 for feet and days (the
+    # 1.486 written for feet is 1.4859 to five figures, so a thousandth is allowed)
+    unitconv = float(mf6.get_model_units("UNITCONV", mf6.model, P)[0])
+    want = DAY_S * mf6.days / mf6.meters ** (1.0 / 3.0)
+    if abs(unitconv / want - 1.0) > 1e-3:
+        out.append(f"{package}: Manning's constant is {unitconv:g}, which isn't for {mf6.length_units} and "
+                   f"{mf6.time_units}; set UNIT_CONVERSION {want:g} in its options")
     if int(g("ISTORAGE")[0]):
         out.append(f"{package}: STORAGE (kinematic-wave routing) keeps water in the reaches from day to day, which a "
                    "restart would need saved; not built")
     if int(g("IDIVERSIONS")[0]) or np.any(g("NDIV")):
         out.append(f"{package}: diversions take water out of a channel that SWAT+ doesn't see")
-    if int(g("IMOVER")[0]):
-        out.append(f"{package}: the mover moves water SWAT+ doesn't see")
     e = cmap.entry_channel
     name = lambda i: cmap.channels[e[i]] if e[i] >= 0 else "no channel"  # noqa: E731
     links = sfr_reach_links(mf6, package)
-    for up, down in links:
-        if e[up] != e[down]:
-            out.append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}); SWAT+ routes "
-                       "water between channels, so SFR's reaches connect only within a channel (cut that connection)")
-    fed = {down for _, down in links}
-    top = {}
+    movers, moved, moves_cut = [], [], []  # moved: (up, down, move) between this package's reaches, cut each day
+    leaving = []  # (up, move): from a coupled reach into another coupled model's channel
+    if int(g("IMOVER")[0]):
+        movers = MV.movers(mf6.ws)
+        me = (mf6.model.lower(), package.lower())
+        for m in sorted({m for mv in movers for m in mv.moves}, key=lambda m: (m.mover, m.period, m.index)):
+            p_mine = (m.provider.model, m.provider.package) == me
+            r_mine = (m.receiver.model, m.receiver.package) == me
+            u = m.provider.id if p_mine else None
+            d = m.receiver.id if r_mine else None
+            via = f"through the mover ({m.mover.split('/')[0]}, period {m.period}'s move {m.index + 1})"
+            if u is not None and d is not None:
+                if e[u] < 0 and e[d] < 0:
+                    continue  # the model's own reaches
+                if e[u] == e[d]:
+                    out.append(f"{package}: reach {u} gives water to reach {d} in channel {name(u)} {via}; a "
+                               "mover within a channel isn't built")
+                elif e[d] < 0:
+                    out.append(f"{package}: reach {u} ({name(u)}) gives water to reach {d} (no channel) {via}; SWAT+ "
+                               "routes water between channels, so SFR would carry the channel's water on")
+                else:
+                    moved.append((u, d, m))
+            elif u is not None and e[u] >= 0:
+                other = (others or {}).get((m.receiver.model, m.receiver.package))
+                there = other.entry_channel[m.receiver.id] if other is not None else -1
+                if there >= 0 and other.channels[there] == name(u):
+                    out.append(f"{package}: reach {u} gives water to {m.receiver} in channel {name(u)} {via}; a mover "
+                               "within a channel isn't built")
+                elif there >= 0:
+                    leaving.append((u, m))
+                elif other is not None:
+                    out.append(f"{package}: reach {u} ({name(u)}) gives water to {m.receiver} (no channel) {via}; "
+                               "SWAT+ routes water between channels, so SFR would carry the channel's water on")
+                else:
+                    out.append(f"{package}: reach {u} ({name(u)}) gives water to {m.receiver} {via}; SWAT+ routes the "
+                               "channel's water, so the mover can't take it elsewhere")
+            elif d is not None and e[d] >= 0:
+                kind = _type_of(mf6, m.provider)
+                if kind == "sfr":  # another model's reaches, or another SFR package's, as the model's own reaches
+                    moved.append((None, d, m))
+                else:
+                    out.append(f"{package}: {m.provider} ({kind.upper() or 'a package'}) gives water to reach {d} "
+                               f"({name(d)}) {via}: water SWAT+'s channel doesn't see; not built")
+    within = [(u, d) for u, d in links if e[u] == e[d] and e[u] >= 0]
+    fed = {d for _, d in within}
+    bad: dict[str, list[str]] = {ch: [] for ch in cmap.channels}
+    top, last = {}, {}
     for i, ch in enumerate(cmap.channels):
-        tops = [int(r) for r in np.flatnonzero(e == i) if r not in fed]
+        mine = [int(r) for r in np.flatnonzero(e == i)]
+        tops = [r for r in mine if r not in fed]
         if len(tops) != 1:
-            out.append(f"{package}: channel {ch} has {len(tops)} top reaches ({tops}); its reaches must be one chain "
-                       "from one top reach, where the channel's water goes in")
+            bad[ch].append(f"{package}: channel {ch} has {len(tops)} top reaches ({tops}); its reaches must be one "
+                           "chain from one top reach, where the channel's water goes in")
+            continue
+        down = {}
+        for u, d in within:
+            if e[u] == i:
+                down.setdefault(u, []).append(d)
+        split = [u for u, ds in down.items() if len(ds) > 1]
+        if split:
+            bad[ch].append(f"{package}: channel {ch} branches below reach {split[0]} (into {down[split[0]]}); its "
+                           "reaches must be one chain")
+            continue
+        top[ch] = tops[0]
+        last[ch] = [r for r in mine if r not in down][0]
+    cut = set()
+    joins = [(up, down, None) for up, down in links] + moved
+    for up, down, m in joins:
+        if m is None and e[up] == e[down]:
+            continue
+        if m is None and e[down] < 0:
+            out.append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}); SWAT+ routes "
+                       "water between channels, so SFR would carry the channel's water on (cut that connection, or "
+                       "give the reaches below a channel)")
+            continue
+        if m is None:
+            cut.add(int(down))
         else:
-            top[ch] = tops[0]
-    return out, top
+            moves_cut.append(m)
+        how = "flows into" if m is None else "gives water through the mover to"
+        src = f"reach {up} ({name(up)})" if up is not None else str(m.provider)
+        if top.get(name(down)) != down:
+            bad[name(down)].append(
+                f"{package}: {src} {how} reach {down} ({name(down)}), inside channel "
+                f"{name(down)}; every confluence must fall on a channel boundary (a SWAT+ outlet at reach {down}'s top)")
+        if up is not None and e[up] >= 0 and last.get(name(up)) != up:
+            bad[name(up)].append(f"{package}: {src} {how} reach {down} ({name(down)}) from "
+                                 f"inside channel {name(up)}; a channel leaves SFR only from its last reach")
+    for up, m in leaving:
+        moves_cut.append(m)
+        if last.get(name(up)) != up:
+            bad[name(up)].append(f"{package}: reach {up} ({name(up)}) gives water to {m.receiver} through the mover "
+                                 f"from inside channel {name(up)}; a channel leaves SFR only from its last reach")
+    bad = {ch: v for ch, v in bad.items() if v}
+    for ch in bad:
+        top.pop(ch, None)
+        last.pop(ch, None)
+    return SfrLayout(out, bad, top, last, sorted(cut), sorted(moves_cut, key=lambda m: (m.mover, m.period, m.index)),
+                     movers)
+
+
+def _type_of(mf6: Modflow6, entry) -> str:
+    """The type of a mover's provider or receiver package, from libmf6 ("" where it isn't found)."""
+    try:
+        return str(mf6.api.get_value(f"{entry.model.upper()}/{entry.package.upper()}/PACKAGE_TYPE")[0]).strip().lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def stage_entries(mf6: Modflow6, package: str, cmap: ChannelMap, channel: str, cut: list[int]) -> dict[int, float]:
+    """For a channel at a fixed stage (B): where its water goes in, and each place's share of it. The places are the
+    channel's reaches nothing in the channel flows into, and its reaches cut from water coming from outside it; each
+    takes the share of the channel's reach length from it down to the next such place (SFR's reach lengths)."""
+    i = cmap.channels.index(channel)
+    e = cmap.entry_channel
+    mine = [int(r) for r in np.flatnonzero(e == i)]
+    within = [(u, d) for u, d in sfr_reach_links(mf6, package) if e[u] == i and e[d] == i]
+    fed = {d for _, d in within}
+    entries = [r for r in mine if r not in fed or r in cut]
+    down: dict[int, list[int]] = {}
+    for u, d in within:
+        down.setdefault(u, []).append(d)
+    length = mf6.get("LENGTH", mf6.model, package.upper()).astype(float)
+    owner: dict[int, int] = {}
+    for r0 in entries:
+        stack = [r0]
+        while stack:
+            r = stack.pop()
+            if r in owner or (r != r0 and r in entries):
+                continue
+            owner[r] = r0
+            stack.extend(down.get(r, []))
+    total = sum(length[r] for r in owner)
+    share = {r0: sum(length[r] for r, o in owner.items() if o == r0) / total for r0 in entries}
+    return share
 
 
 STAGE_TOLERANCE_M = 1e-3  # the supply limit's stages agree with the heads when no stage moves more than this
@@ -247,6 +429,7 @@ class StreamExchange:
     gains do. Lakes gain or lose, and their net exchange joins their outlet channel's the next day."""
 
     def __init__(self, mf6: Modflow6, package: str, cmap: ChannelMap, drains: tuple[str, ChannelMap] | None = None,
+                 *, sfr: str = "route", others: dict[tuple[str, str], ChannelMap] | None = None,
                  lakes: tuple[str, ChannelMap] | None = None):
         self.mf6, self.package, self.map = mf6, package, cmap
         self.drains = drains
@@ -263,10 +446,30 @@ class StreamExchange:
             self._lake_rbot = mf6.get("RBOT", mf6.model, L).astype(float)
         P = package.upper()
         self.kind = package_type(mf6, package)
+        self.modes: dict[str, tuple[str, list[str]]] = {}  # SFR: channel -> ("route" or "stage", why)
         if self.kind == "sfr":
-            problems, self._top = sfr_problems(mf6, package, cmap)
+            if sfr not in SFR_MODES:
+                raise ValueError(f"[exchange] sfr = {sfr!r}: one of {SFR_MODES}")
+            lay = sfr_problems(mf6, package, cmap, others)
+            problems = list(lay.problems)
+            if sfr == "route":
+                problems += [m for ms in lay.channel_problems.values() for m in ms]
             if problems:
                 raise ValueError("the SFR package can't be coupled:\n- " + "\n- ".join(problems))
+            self._cut = lay.cut
+            self._movers, self._moves_cut = lay.movers, lay.moves_cut
+            for ch in cmap.channels:
+                if sfr == "stage" or ch in lay.channel_problems:
+                    why = lay.channel_problems.get(ch, ["[exchange] sfr = \"stage\""])
+                    self.modes[ch] = ("stage", why)
+                else:
+                    self.modes[ch] = ("route", [])
+            self._top = {ch: r for ch, r in lay.top.items() if self.modes[ch][0] == "route"}
+            self._stage = {ch: stage_entries(mf6, package, cmap, ch, lay.cut) for ch, (m, _) in self.modes.items()
+                           if m == "stage"}
+            e = cmap.entry_channel
+            self._stage_reaches = np.flatnonzero(np.isin(e, [cmap.channels.index(c) for c in self._stage]))
+            self._strtop = mf6.get("STRTOP", mf6.model, P).astype(float)
         elif self.kind == "riv":
             self._cond = mf6.get("COND", mf6.model, P).astype(float)
             self._rbot = mf6.get("RBOT", mf6.model, P).astype(float)
@@ -274,15 +477,42 @@ class StreamExchange:
             raise ValueError(f"[exchange] package {package!r} is {self.kind.upper()}; the exchange takes a river (RIV) "
                              "or a streamflow routing (SFR) package")
 
-    def set_inflow(self, available: dict[str, float]):
+    def set_inflow(self, available: dict[str, float], depth: dict[str, float] | None = None):
         """SFR: each channel's water for the day (m3) into its top reach, for today's solve; the channel's other
-        reaches get none from outside. Reaches not coupled keep their own inflow."""
+        reaches get none from outside. Reaches not coupled keep their own inflow. A reach fed by another channel's
+        last reach, or by the model's own reaches, has its upstream fraction set to 0: that water leaves SFR there
+        (booked as SFR's external outflow), and SWAT+ carries it on.
+
+        A channel at a fixed stage (B, ``modes``): its reaches take status simple, each one's stage its streambed top
+        plus SWAT+'s channel depth for the day (``depth``, m), and its water goes in at its entries
+        (``stage_entries``), each by its share. A reach at a fixed stage still routes what reaches it and loses no
+        more than that."""
         P = self.package.upper()
         inflow = self.mf6.get("INFLOW", self.mf6.model, P).astype(float)
         inflow[self.map.entry_channel[: len(inflow)] >= 0] = 0.0
         for ch, r in self._top.items():
             inflow[r] = max(float(available[ch]), 0.0)
+        for ch, shares in self._stage.items():
+            for r, f in shares.items():
+                inflow[r] = max(float(available[ch]), 0.0) * f
         self.mf6.set("INFLOW", P, inflow)
+        if self._cut:  # what flows into a channel from another, or from the model's own reaches, leaves SFR there
+            ustrf = self.mf6.get("USTRF", self.mf6.model, P).astype(float)
+            ustrf[self._cut] = 0.0
+            self.mf6.set("USTRF", P, ustrf)
+        if self._moves_cut:  # and what the mover would carry into a channel, or out of one into another
+            MV.cut(self.mf6, self._movers, self._moves_cut)
+        if self._stage:
+            if depth is None:
+                raise ValueError("SFR channels at a fixed stage need SWAT+'s channel depth for the day")
+            e = self.map.entry_channel
+            status = self.mf6.get("IBOUNDPAK", self.mf6.model, P)
+            stage = self.mf6.get("SSTAGE", self.mf6.model, P).astype(float)
+            r = self._stage_reaches
+            status[r] = -1
+            stage[r] = self._strtop[r] + np.array([max(float(depth[self.map.channels[e[k]]]), 0.0) for k in r])
+            self.mf6.set("IBOUNDPAK", P, status)
+            self.mf6.set("SSTAGE", P, stage)
 
     def limit(self, available: dict[str, float]):
         """The supply limit for today's solve, as a callback for ``Modflow6.solve_day``: after each converged outer
@@ -374,4 +604,50 @@ class StreamExchange:
             for i, ch in enumerate(lmap.channels):
                 self.lake_flow[ch] = -float(ql[el == i].sum())
                 out[ch] += self.lake_flow[ch]
+        return out
+
+
+class StreamExchanges:
+    """The stream exchange across several coupled groundwater models (``[exchange]`` with a map whose rows name
+    their model): one ``StreamExchange`` per model, each with its own channels; a channel's reaches are in one model.
+    What the driver asks of one exchange is asked of each, and the channels' results put together."""
+
+    def __init__(self, parts: list[StreamExchange]):
+        kinds = {p.kind for p in parts}
+        if len(kinds) != 1:
+            raise ValueError(f"[exchange]: the models' packages are {sorted(kinds)}; one kind, RIV or SFR, for all")
+        self.parts = parts
+        self.kind = parts[0].kind
+        self.package = parts[0].package
+        self.drains = None
+        self.modes = {c: m for p in parts for c, m in p.modes.items()}
+        self._stage = {c: x for p in parts for c, x in getattr(p, "_stage", {}).items()}
+        self.channels = [c for p in parts for c in p.map.channels]
+
+    def set_inflow(self, available: dict[str, float], depth: dict[str, float] | None = None):
+        for p in self.parts:
+            p.set_inflow(available, depth)
+
+    def limit(self, available: dict[str, float]):
+        callbacks = [p.limit(available) for p in self.parts]
+
+        def callback() -> bool:
+            changed = [cb() for cb in callbacks]  # every model's, not stopping at the first that changed
+            return any(changed)
+
+        return callback
+
+    @property
+    def lowered(self) -> dict[str, float]:
+        return {c: d for p in self.parts for c, d in p.lowered.items()}
+
+    def end_day(self):
+        for p in self.parts:
+            p.end_day()
+
+    def after_solve(self) -> dict[str, float]:
+        out = {}
+        for p in self.parts:
+            out.update(p.after_solve())
+        self.seepage = dict.fromkeys(out, 0.0)
         return out

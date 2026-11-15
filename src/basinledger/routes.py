@@ -97,20 +97,40 @@ class Router:
                     L.enter(f"route:{r}:requested", self.req.get(r, 0.0))
                     L.enter(f"route:{r}:delivered", got[i])
 
+    def _maw(self, node):
+        """A multi-aquifer well's (model view, 0-based number), or None for a WEL well's node."""
+        if isinstance(node, tuple) and node[0] == "maw":
+            view = self.mf6.view_of(node[2]) if hasattr(self.mf6, "view_of") else self.mf6
+            return view, node[1]
+        return None
+
     def apply_wells(self):
         if self.mf6 is None:
             self._entries = {}
             return
-        self._entries = {name: (pkg, self.mf6.entry(pkg, node)) for name, (pkg, node) in self.wells.items()}
+        self._entries = {name: (pkg, node if self._maw(node) else self.mf6.entry(pkg, node))
+                         for name, (pkg, node) in self.wells.items()}
         for name, (pkg, i) in self._entries.items():
-            self.mf6.set_well(pkg, i, -self.req.get(f"well:{name}", 0.0))
+            q = -self.req.get(f"well:{name}", 0.0)
+            maw = self._maw(i)
+            if maw:
+                maw[0].set_maw_rate(pkg, maw[1], q)
+            else:
+                self.mf6.set_well(pkg, i, q)
 
     def read_wells(self):
         for name, (pkg, i) in self._entries.items():
             r = f"well:{name}"
             if r in self.used:
                 self.ledger.enter(f"route:{r}:requested", self.req.get(r, 0.0))
-                self.ledger.enter(f"route:{r}:delivered", -self.mf6.simvals(pkg)[i])
+                maw = self._maw(i)
+                if maw:  # what it pumped, and where that came from: the aquifer by its connections, and its wellbore
+                    v, k = maw
+                    self.ledger.enter(f"route:{r}:delivered", -v.maw_pumped(pkg, k))
+                    self.ledger.enter(f"route:{r}:from_aquifer", -float(v.simvals(pkg)[v.maw_connections(pkg, k)].sum()))
+                    self.ledger.enter(f"route:{r}:from_wellbore", v.maw_wellbore(pkg, k))
+                else:
+                    self.ledger.enter(f"route:{r}:delivered", -self.mf6.simvals(pkg)[i])
 
     def close_day(self):
         for r in self.used:

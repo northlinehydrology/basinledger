@@ -9,11 +9,12 @@
 ``run`` steps the example's models through its period (or ``--days``), checking the ledger every day, and writes
 ledger.csv, series.csv and summary.json to the run's outputs folder. ``--baseline`` runs it without its water users.
 ``--save-at`` stops after that day and saves the state to ``--save``; ``--restart`` carries on from a saved state.
-``status`` prints whether the example is calibrated or a screening run. ``check`` starts the example's models
-without running a day and lists every problem its start-up finds (``Basin.check``); it exits with 1 if there are
-any. ``forward`` is the forward model PEST++ runs (calibration.py): the parameter set applied, the example run, and
-its value at each observation written; ``--run-folder`` puts the run's files there instead of the example's run
-folder.
+``status`` prints whether the example is calibrated or a screening run. ``check`` starts the example's models without
+running a day, prints MODFLOW 6's units and the factors that convert them at every link, lists MODFLOW 6's packages
+with what Basin Ledger takes over in each and what it leaves as the model's (coupling/existing.py), and lists every
+problem its start-up finds (``Basin.check``); it exits with 1 if there are any. ``forward`` is the forward model PEST++
+runs (calibration.py): the parameter set applied, the example run, and its value at each observation written;
+``--run-folder`` puts the run's files there instead of the example's run folder.
 """
 
 from __future__ import annotations
@@ -51,7 +52,15 @@ def main(argv=None) -> int:
 
     if a.cmd == "check":
         cfg = C.load(a.config)
-        problems, notes = Basin.check(cfg, users=not a.baseline)
+        takeover, units = [], []
+        problems, notes = Basin.check(cfg, users=not a.baseline, takeover=takeover, units=units)
+        for u in units:
+            print(f"MODFLOW 6's units: {u}")
+            notes = [n for n in notes if u not in n]
+        if takeover:
+            from .coupling.existing import table
+            print("MODFLOW 6's packages:")
+            print("  " + table(takeover).replace("\n", "\n  "))
         for n in notes:
             print(f"note: {n}")
         if problems:

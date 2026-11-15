@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-11-15)
+
+Needs swatplus-bmi 0.11.0 (reservoirs and HRU irrigation).
+
 
 - Groundwater up into the soil splits each day's water among HRUs and layers for all map rows at once (`gwsoil.to_layers`, vectorized; the row-by-row version stays as `to_layers_loop`, the reference it is tested against to 1e-12). On a study basin (2,371 HRUs, 11,400 rows) the loop was half of a coupled day; a year went from 103 s to 68 s with the same results.
 
@@ -17,6 +20,120 @@
   (`exchange:<channel>:lake_stage_lowered_m`). Refused at start-up: a package that isn't RIV, the exchange's or the
   drains' package, `[rivers]` on it, a channel the exchange doesn't couple, and transport with lakes. The synthetic
   examples `lakes.toml` and `lakes_sfr.toml`; restarts match the unbroken run bit for bit.
+
+The second way in begins: an existing MODFLOW 6 model, taken as given (docs/design.md, "Extending an existing
+MODFLOW 6 model").
+
+- The design pass on its open questions: LAK's rain, evaporation, runoff, inflow and withdrawal, MAW's rate and SFR's
+  inflows, status, stage and upstream fractions can all be set each step through libmf6 (kept as tests,
+  `tests/test_existing_api.py`); how SFR routes and what driving it means; three options for who owns the water of a
+  model whose SFR was calibrated as the river (not decided); candidate published models for the test.
+- What Basin Ledger takes over in MODFLOW 6 (`coupling/existing.py`): at start-up each package with flows is listed
+  with the entries a link sets and the rest, the model's, booked as water from or to outside the coupled models.
+  `basinledger check` prints the list, and `Basin.check(..., takeover=[])` returns it. A second recharge package
+  left as the model's, a UZF package, and an EVT package with groundwater up into the soil are refused: each would
+  count water twice. An EVT, SFR or LAK package left as the model's is noted.
+- Maps on a grid Basin Ledger didn't write (`gridmaps.py`, the `gis` extra): HRUs or aquifers to cells by area on
+  each column's top active layer, with ground outside the grid, over inactive columns or in slivers reported; SWAT+
+  channels to a RIV, DRN or SFR package's entries by length, with entries no channel reaches reported (or reached
+  within a distance the study sets), shared cells reported, and each channel's length checked. DIS and DISV grids,
+  rotated and georeferenced.
+- The SFR line-up rule, the same for a package Basin Ledger built and one a study brought: a connection between
+  channels is allowed from a channel's last reach into another's top reach (or from the model's own reaches into a
+  top reach) and is cut each day (the top reach's upstream fraction set to 0), so SWAT+ alone carries water between
+  channels. A confluence inside a channel is refused by name; `gridmaps.sfr_confluences` lists where SWAT+ needs an
+  outlet. Packages built from channel lines are unchanged.
+- Who owns a calibrated SFR's water (Andrew): A, SFR routing within each channel and SWAT+ between, in both paths;
+  and B, a fixed stage from SWAT+'s channel depth, for channels that can't be lined up. `[exchange] sfr = "route"`
+  (the default: a channel that doesn't line up is refused), `"route_or_stage"` or `"stage"`, chosen per study and
+  applied per channel. A channel at a fixed stage takes status simple, its stage its streambed top plus SWAT+'s
+  depth (`exchange:<channel>:sfr_depth_m`), and its water in at its entries by reach length. The start-up check
+  lists which channels run as A and which as B, and why.
+- The first published test model: Pleasant Lake, Wisconsin Central Sands (USGS, doi:10.5066/P9BVFSGJ;
+  `examples/central-sands/fetch.py`, 16 MB, into the cache). Read as given, its packages listed
+  (`existing.inventory`), its SFR networks lined up with SFRmaker's own lines as SWAT+'s channels (they line up;
+  `gridmaps.sfr_aux`), its confluences listed and its mover cut at run time; what stops a coupled run is refused by
+  name. Its tests skip until it is fetched.
+- The second published test model: the Kalamazoo River basin, Michigan (USGS, doi:10.5066/F76D5R5V), its MODFLOW-NWT
+  inset converted to MODFLOW 6 by mf5to6 (`examples/kalamazoo/fetch.py`, from a model.zip downloaded by hand). Feet
+  and days, steady with no storage, 7.2 million cells, SFR, RIV, DRN, GHB, IBOUND heads and MNW2 wells as MAW.
+  Its tests read the converted files and skip until it is fetched.
+- Lakes follow the stream precedent (Andrew): SWAT+'s reservoir owns the water, MODFLOW 6's LAK is the face, active
+  within the day from SWAT+'s stage (A) or at a fixed stage (B). Both checked through the API; not built until
+  swatplus-bmi exposes reservoirs (docs/requests.md, 6).
+- Large users and irrigation, MODFLOW first (Andrew): groundwater withdrawals come out of MODFLOW 6's wells. In
+  two-way mode a SWAT+ project that irrigates or allocates water from its own aquifer is refused
+  (`swatplus.aquifer_withdrawals`): that aquifer only holds what it passed to MODFLOW 6. Irrigation pumped from the
+  model's wells needs swatplus-bmi to report HRU irrigation (docs/requests.md, 7).
+- A MODFLOW 6 model in its own units, converted at each link (Andrew's choice over rescaling the model): feet,
+  meters or centimeters, and seconds, minutes, hours or days, from DIS and TDIS, or stated in `[modflow6]
+  length_units` and `time_units` where the model leaves them undefined (as mf5to6 does); a run that doesn't state
+  them, or states them otherwise than the model, is refused. `Modflow6.get` and `set` convert every value a link
+  reads or sets by its dimension (recharge, stream exchange stages, conductances and flows on RIV, DRN and SFR,
+  wells, the soil link, heads, every package's flow and storage, transport concentrations and mass), so the ledger
+  stays in cubic meters; a real value of unknown dimension is refused, and a model in meters and days converts
+  nothing. Maps on a grid in feet come out in square meters and meters. SFR's Manning's constant is checked for the
+  model's units. `basinledger check` prints the units and their factors (`Basin.check(..., units=[])`). Twins in
+  feet, seconds and centimeters give their meters twin's values and, coupled to SWAT+, its ledger.
+- A model's own stress periods in daily steps: a run rewrites the TDIS of its copy so every step is one day and
+  every period is kept (`coupling/timesteps.py`, `daily_steps`): monthly or seasonal periods of one step, or of
+  steps growing by a factor, run day by day with each period's input as given. Periods that aren't whole days end
+  on the nearest day (at most 12 hours off, reported); a period shorter than that is refused; adaptive time stepping
+  is left out. The start-up says what was rewritten, and notes a TDIS start date that isn't the run's. A one-period
+  model of longer steps now restarts. The synthetic foreign model in five growing steps a month gives its daily
+  twin's run.
+- The mover in the SFR line-up rule: movers read from their files (`coupling/mover.py`, a model's own or an
+  exchange's), each move between SFR reaches checked as a connection and, lined up, cut each day (its value set to
+  move nothing, for each type). A move within a channel, out of a coupled channel to anything but another channel's
+  top reach, or into a channel from a drain, lake or well is refused by name; moves among the model's own entries
+  stay the model's. Pleasant Lake's exchange mover lines up on the parent's side.
+- Restarts of a copied MODFLOW 6 model with several stress periods (`timesteps.remaining_days`): the periods over
+  left out, the current one shortened, every input file's period blocks renumbered and its time series moved back,
+  all as text. Restarted runs of the synthetic foreign model, alone and coupled, match the unbroken run bit for bit.
+- One groundwater model of a simulation with several coupled: what crosses its GWF-GWF exchanges to the others is
+  booked as water from or to outside (`groundwater:boundary:gwf-gwf_<n>`), so its daily closure holds, and the
+  start-up check notes each exchange. The synthetic foreign model takes a neighbor (`neighbor=True`). Coupling
+  several models together is proposed in the design, not built.
+- Wells the model doesn't have: `[[wells]] add = true` puts a user's well in a WEL package Basin Ledger adds to the
+  run's copy (`existing.add_wells`), its rate set every day; a package name the model has, a cell in the wrong form
+  and two added wells at one cell are refused.
+- A recharge package for a model without one: `[recharge] add = true` adds an RCH package of Basin Ledger's own on
+  the recharge map's cells to the run's copy (`existing.add_recharge`).
+- Storage for a model handed over steady (`[modflow6] storage`, `existing.add_storage`): a model with no storage
+  package gets one of Basin Ledger's own in the run's copy (SY, and SS per meter in the model's units), transient;
+  `storage = {}` makes a model's own steady periods transient. A steady model without it is noted.
+- Multi-aquifer wells as users' wells: `[[wells]] well = <n>` names a MAW well by its number in place of a cell;
+  its rate is set each day and what it pumped delivered, booked from the aquifer (its connections) and from the
+  wellbore (`QSTO`).
+- Several groundwater models coupled together (`[modflow6] models`, `modflow6.Models`; the config chosen by Andrew,
+  Nov 15): each model a view through the one libmf6, their cells in one sequence, so one recharge
+  map (with a `model` column) and the wells take cells of any; each model's accounts, storage and closure in the
+  ledger, and a GWF-GWF exchange between coupled models booked inside the groundwater. The stream exchange, a lake
+  and head outputs name their model; transport, rivers, the soil link and an added recharge package are refused
+  with several models.
+- Streams in several coupled models (`exchange.StreamExchanges`): an exchange map whose rows name more than one model
+  runs each model's channels through its own package, and the SFR line-up rule lines up the mover between models
+  (a coupled channel's last reach into another model's coupled top reach) and cuts it. Pleasant Lake's inset and
+  parent line up with an outlet at the inset's edge.
+- Lakes (`coupling/lakes.py`, `[[lakes]]`; needs swatplus-bmi 0.11.0): a SWAT+ reservoir holds a MODFLOW 6 lake's
+  water and LAK is its face to the aquifer, as SFR is a stream's. Each day the lake is set from the reservoir, A
+  active within the day from the reservoir's starting volume with its day's water in and out, or B at a fixed stage,
+  and its leakage is the reservoir's groundwater exchange the next day (`lake:<reservoir>:due`, `applied`,
+  `shortfall`, `to_aquifer`). The stage is LAK's own at SWAT+'s volume: its table, or its connections as MODFLOW 6
+  computes a lake's volume, inverted. A coupled lake's outlets are cut each day (SWAT+ routes its release) and
+  checked; an outlet from a lake not coupled into a coupled one, and a reservoir with its own seepage on, are
+  refused.
+- Irrigation pumped from MODFLOW 6's wells (`coupling/irrigation.py`, `[irrigation] wells`; needs swatplus-bmi
+  0.11.0, `land_irrigation_water__volume_flow_rate`): each day the water SWAT+'s irrigation put on each mapped HRU is
+  pumped that day from the `[[wells]]` the map names, in their shares (`irrigation:pumped`,
+  `irrigation:well:<name>`); irrigation on HRUs not mapped stays water from outside (`irrigation:from_outside`).
+  Each HRU's irrigation sources are read from its land use's schedule and decision tables, and a mapped HRU that
+  irrigates from a SWAT+ channel, reservoir or aquifer, or through water allocation, is refused.
+- A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
+  grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
+  boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS
+  and DISV alike. It can be written in other units (`length_units`, `time_units`, and `state_units=False`
+  to leave them undefined), as twins for the unit conversion.
 
 ## 0.7.0 (2026-11-11)
 

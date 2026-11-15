@@ -1,0 +1,37 @@
+name = "synthetic-existing"
+description = """Osu_1hru coupled both ways to a MODFLOW 6 model written in someone else's style (existing.py): a
+rotated two-layer grid with inactive cells, monthly stress periods, its own package names, and its own recharge,
+creek, tile drains, regional boundaries, city wells and riparian ET. Basin Ledger takes over the recharge, the
+creek's entries that SWAT+'s channel reaches and one city well; the rest stays the model's. For the engine's tests
+only: the second way in (docs/design.md, Extending an existing MODFLOW 6 model)."""
+
+[run]
+folder = "../../runs/synthetic-existing"
+
+[swatplus]
+project = "{swatplus_refdata}/Osu_1hru"
+
+[modflow6]
+builder = "existing:build"   # stands in for a model handed over; a study gives its folder as workspace
+model = "kzoo"
+
+[recharge]
+package = "rch_swb"          # the model's own recharge, replaced by SWAT+'s
+map = "maps/existing_recharge.csv"
+area_rtol = 1e-6
+
+[exchange]
+package = "riv_creek"
+map = "maps/existing_river.csv"   # the creek's entries; the tributary's are reached by no channel and stay the model's
+
+[[wells]]
+name = "city1"
+package = "wel_city"
+cell = [1, 5, 6]             # the model's own city well, now pumped by the user
+
+[[users]]
+name = "plant"
+component = "basinledger.testing:SyntheticUser"
+config = "small_user.toml"
+withdrawal = "well:city1"
+return = "outfall:offsite"

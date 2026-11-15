@@ -12,6 +12,12 @@ Day d, in order:
    river exchange are read back.
 6. **The ledger** enters both sides of every transfer and checks them. The day's flows and heads go to the outputs.
 
+**What Basin Ledger takes over in MODFLOW 6** (coupling/existing.py): on the first day, once the packages have their
+entries, each package with flows is listed with the entries a link sets (recharge, the exchange, the soil link,
+users' wells) and the rest, the model's, booked as water from or to outside the coupled models
+(``Basin.takeover``). A model's own package that would count water twice (a second recharge package, UZF, EVT with
+groundwater up into the soil) stops the start-up.
+
 **Transport** (``[transport.<species>]``, coupling/transport.py): after MODFLOW 6 prepares the day, the recharge's and
 the coupled rivers' losses' concentrations are set [A]; after the solve, each species' mass is booked (kg) and the
 concentration at every configured well becomes the intake concentration
@@ -26,6 +32,7 @@ MODFLOW 6 continue exactly, and the users are stepped forward to the restart day
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import importlib.util
 import json
@@ -41,13 +48,24 @@ from swatplus_bmi.exchange import ExchangeError
 from . import config as C
 from . import rules as R
 from .chain import UtilityChain
-from .coupling import swatplus as S
-from .coupling.exchange import (ChannelMap, StreamExchange, check_lake_package, lake_map, package_type,
-                                requests as exchange_requests)
-from .coupling.gwsoil import GroundwaterToSoil
-from .coupling.modflow6 import Modflow6, remaining_simulation
+from .coupling import existing as EX
+from .coupling import irrigation as IR
+from .coupling import lakes as LK
 from .coupling import recharge as RC
+from .coupling import swatplus as S
+from .coupling.exchange import (
+    ChannelMap,
+    StreamExchange,
+    StreamExchanges,
+    check_lake_package,
+    lake_map,
+    package_type,
+)
+from .coupling.exchange import requests as exchange_requests
+from .coupling.gwsoil import GroundwaterToSoil
+from .coupling.modflow6 import Models, Modflow6, remaining_simulation
 from .coupling.recharge import RechargeLink
+from .coupling.timesteps import daily_steps, start_date
 from .ledger import FLOAT32, Ledger
 from .mapping import AreaMap
 from .routes import Router, kind
@@ -68,6 +86,29 @@ class Basin:
     def __init__(self, cfg: C.ExampleConfig, run: str = "base", users: bool = True, days: int | None = None,
                  restart: str | Path | None = None, prepare=None, heads: np.ndarray | None = None,
                  wrap_surface=None, parameters: list | None = None, _problems: list | None = None):
+        """See ``_start``. A start-up that stops finalizes the models it started, so libmf6 and SWAT+ can be started
+        again in the same process (a second start of libmf6 over one left running ends the process)."""
+        try:
+            self._start(cfg, run=run, users=users, days=days, restart=restart, prepare=prepare, heads=heads,
+                        wrap_surface=wrap_surface, parameters=parameters, _problems=_problems)
+        except BaseException:
+            self._finalize_started()
+            raise
+
+    def _finalize_started(self):
+        """Finalize whatever models a start-up that stopped had started, each on its own."""
+        for _, wu in getattr(self, "users", None) or []:
+            with contextlib.suppress(Exception):
+                wu.finalize()
+        for name in ("mf6", "swat"):
+            model = getattr(self, name, None)
+            if model is not None:
+                with contextlib.suppress(Exception):
+                    model.finalize()
+
+    def _start(self, cfg: C.ExampleConfig, run: str = "base", users: bool = True, days: int | None = None,
+               restart: str | Path | None = None, prepare=None, heads: np.ndarray | None = None,
+               wrap_surface=None, parameters: list | None = None, _problems: list | None = None):
         """``prepare(model, folder)``, if given, is called on the run's copy of each model's files ("swatplus",
         "modflow6") before that model starts, after the parameter set is written into them: the example's own
         (``[calibration] parameters``) with ``parameters``' values in place of any it names (calibration.py's
@@ -180,14 +221,72 @@ class Basin:
                 _example_function(cfg, cfg.mf6_builder, "build")(ws, self.days - self.day,
                                                                  self.start + dt.timedelta(days=self.day),
                                                                  **cfg.mf6_builder_args)
-            elif saved:
-                remaining_simulation(cfg.mf6_workspace, ws, self.day)
             else:
                 shutil.copytree(cfg.mf6_workspace, ws)
+            # every step one day, each stress period kept (coupling/timesteps.py), then a restart's days cut off
+            for note in daily_steps(ws, cfg.mf6_time_units):
+                warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            several = len(cfg.mf6_models) > 1  # several groundwater models coupled together (modflow6.Models)
+            if several:
+                for what, on in (("transport", cfg.transport), ("[rivers]", cfg.rivers),
+                                 ("[groundwater_to_soil]", cfg.groundwater_to_soil), ("[recharge] add", cfg.recharge_add)):
+                    if on:
+                        raise ValueError(f"{what} with several groundwater models coupled isn't built")
+            by_model: dict[str, list] = {}  # new users' wells, a package of its own in each model that has them
+            for w in cfg.wells:
+                if w.add:
+                    by_model.setdefault((w.model or cfg.mf6_model).lower(), []).append((w.name, w.package, w.cell))
+            for model, added in by_model.items():
+                for note in EX.add_wells(ws, model, added):
+                    warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            for model in (cfg.mf6_models or [cfg.mf6_model]):  # storage, for a model handed over steady
+                if cfg.mf6_storage is not None:
+                    st = cfg.mf6_storage
+                    for note in EX.add_storage(ws, model, st.get("sy"), st.get("ss"), int(st.get("iconvert", 1)),
+                                               cfg.mf6_length_units):
+                        warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+                elif (how := EX.steady_periods(ws, model)) is not None:
+                    warnings.warn(f"{model}: {'no storage package' if how == 'no STO' else 'steady periods'}, so "
+                                  "MODFLOW 6 solves those days without storage, each day's heads the day's steady "
+                                  "state; [modflow6] storage gives it specific yield and storage",
+                                  EX.TakeoverNote, stacklevel=2)
+            if cfg.recharge_add:  # a model without recharge: a package of Basin Ledger's own on the map's cells
+                for note in EX.add_recharge(ws, cfg.mf6_model, cfg.recharge_package, self._map_cells(cfg)):
+                    warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            if saved and not cfg.mf6_builder:
+                remaining_simulation(ws, ws, self.day, cfg.mf6_time_units)
+            elif not saved:
+                first = start_date(ws)
+                if first is not None and first != self.start:
+                    warnings.warn(f"MODFLOW 6's time starts on {first} (TDIS START_DATE_TIME) and the run on "
+                                  f"{self.start}: the model's first day is taken as the run's, so its stress "
+                                  f"periods fall {abs((first - self.start).days):,} days "
+                                  f"{'earlier' if first > self.start else 'later'} than its dates",
+                                  EX.TakeoverNote, stacklevel=2)
             prepare("modflow6", ws)
-            self.mf6 = Modflow6(ws, cfg.mf6_model)
+            self.mf6 = Modflow6(ws, cfg.mf6_model, length_units=cfg.mf6_length_units,
+                                time_units=cfg.mf6_time_units)
+            if not self.mf6.si:
+                warnings.warn(f"MODFLOW 6 in {self.mf6.units_summary()}", EX.TakeoverNote, stacklevel=2)
+            if several:
+                try:
+                    self.mf6 = Models(self.mf6, cfg.mf6_models)
+                except ValueError:
+                    self.mf6.finalize()
+                    raise
             if saved:
                 self.mf6.set_heads(np.load(Path(restart) / "heads.npy"))
+                # what a restart doesn't carry: packages holding water from day to day start from their files
+                held = {"maw": "its wells' water", "uzf": "the unsaturated zone's water", "lak": "the lakes' stages",
+                        "csub": "compaction"}
+                coupled_lakes = {lk.package.upper() for lk in cfg.lakes}  # their stages come from SWAT+ each day
+                for v in self._views():
+                    for p in EX.flow_packages(v, v.model):
+                        t = str(v.get("PACKAGE_TYPE", v.model, p)[0]).strip().lower()
+                        if t in held and p.upper() not in coupled_lakes:
+                            warnings.warn(f"{p.lower()}: a restart carries MODFLOW 6's heads but not {held[t]} "
+                                          f"({t.upper()}), which start from the model's files", EX.TakeoverNote,
+                                          stacklevel=2)
             elif heads is not None:
                 self.mf6.set_heads(np.asarray(heads, float))
             if self.mf6.end < self.days - self.day - 1e-9:
@@ -219,10 +318,19 @@ class Basin:
         wells = {}
         self._wells_left_out = set()  # a check's wells with a problem: listed once, not again by the users on them
         for w in cfg.wells:
-            if self._part(f"well {w.name}", lambda w=w: wells.__setitem__(w.name, (w.package, self.mf6.node(*w.cell)))
+            if self._part(f"well {w.name}", lambda w=w: wells.__setitem__(w.name, (w.package, self._well_node(w)))
                           or True) is None:
                 self._wells_left_out.add(w.name)
         self.router = Router(self.sw, self.mf6, wells, L)
+
+        # irrigation pumped from MODFLOW 6's wells (coupling/irrigation.py): the HRUs mapped and their wells
+        self.irrigation = None
+        if cfg.irrigation:
+            self._part("[irrigation]", lambda: self._irrigation(cfg, swat_dir, wells))
+        # lakes: SWAT+'s reservoirs holding MODFLOW 6's lakes' water (coupling/lakes.py)
+        self.lakes = None
+        if cfg.lakes:
+            self._part("[[lakes]]", lambda: self._lakes(cfg, swat_dir, saved))
 
         # stream-aquifer exchange (built on the first day, once MODFLOW 6's river package has its entries)
         self.exchange = None
@@ -279,7 +387,7 @@ class Basin:
         self.out_heads = []
         for h in out.get("heads", []):
             self._part(f"head output {h['name']}",
-                       lambda h=h: self.out_heads.append((h["name"], self.mf6.node(*h["cell"]))))
+                       lambda h=h: self.out_heads.append((h["name"], self.mf6.node(*h["cell"], model=h.get("model")))))
         self.series: dict[str, list[float]] = {f"flow:{c}": [] for c in self.out_channels}
         # NextGen: flow at each nexus, from the flowpaths draining to it (the hydrofabric's topology)
         self._nexus: dict[str, list[int]] = {}
@@ -386,6 +494,71 @@ class Basin:
             self.mf6.node(*settings["cell"])  # the cell is checked now, not on the first day it's read
         self.rules.append(R.Rule(r.get("name", r["kind"]), fn, settings))
 
+    def _irrigation(self, cfg, swat_dir, wells):
+        if not self.sw.has(IR.IRRIGATION):
+            raise ValueError("[irrigation] reads each HRU's irrigation (land_irrigation_water__volume_flow_rate, "
+                             "swatplus-bmi 0.11.0)")
+        bad, notes = IR.problems(swat_dir, cfg.irrigation, set(wells))
+        if bad:
+            raise ValueError("\n- ".join(["irrigation can't be pumped as mapped:"] + bad))
+        for n in notes:
+            warnings.warn(n, EX.TakeoverNote, stacklevel=3)
+        for ws in cfg.irrigation.values():
+            for w, _ in ws:
+                self.router.check(f"well:{w}")
+        used = sorted({w for ws in cfg.irrigation.values() for w, _ in ws})
+        self.ledger.pair("irrigation:pumped", [f"irrigation:well:{w}" for w in used])
+        names = list(self.sw.names(IR.IRRIGATION))
+        self.irrigation = [(names.index(h), ws) for h, ws in cfg.irrigation.items()]
+        self._irrigation_rest = np.ones(len(names), bool)
+        for i, _ in self.irrigation:
+            self._irrigation_rest[i] = False
+
+    def _lakes(self, cfg, swat_dir, saved):
+        if not self.sw.has(LK.VOLUME) or not self.sw.has(LK.GW):
+            raise ValueError("[[lakes]] read and set SWAT+'s reservoirs (reservoir_water__volume and its groundwater "
+                             "exchange, swatplus-bmi 0.11.0)")
+        if self.mf6 is None:
+            raise ValueError("[[lakes]] need a [modflow6] model")
+        bad = LK.problems(self.mf6, cfg.lakes, list(self.sw.names(LK.VOLUME)), swat_dir)
+        if bad:
+            raise ValueError("\n- ".join(["the lakes can't be coupled as configured:"] + bad))
+        self.lakes = LK.LakeLink(self.mf6, self.sw, cfg.lakes)
+        if saved and saved.get("lakes_due"):
+            self.lakes.due = dict(saved["lakes_due"])
+        for lk in cfg.lakes:
+            k = f"lake:{lk.reservoir}:"
+            self.ledger.pair(k + "due", [k + "applied", k + "shortfall"], rtol=FLOAT32)
+            self.ledger.zero(k + "outlet_flow")  # cut: SWAT+ routes the reservoir's release
+
+    def _lakes_day(self, L):
+        """Each lake's day: yesterday's leakage as SWAT+'s reservoir took it, and today's leakage, due tomorrow."""
+        form = {lk.reservoir: lk.form for lk in self.cfg.lakes}
+        for res, d in self.lakes.after_solve().items():
+            k = f"lake:{res}:"
+            short = d["due"] - d["applied"] if d["due"] < 0 and d["applied"] > d["due"] else 0.0  # a loss it lacked
+            L.enter(k + "due", d["due"])
+            L.enter(k + "applied", d["applied"])
+            L.enter(k + "shortfall", short)
+            L.enter(k + "to_aquifer", d["to_aquifer"])       # today's, out of the lake into MODFLOW 6
+            L.enter(k + "outlet_flow", d["outlet_flow"])
+            L.enter(k + "stage_m", d["stage"])
+            L.enter(k + "volume", d["volume"])
+            if form[res] == "active":  # where LAK's stage ended the day; not kept, tomorrow starts from SWAT+'s
+                L.enter(k + "mf6_end_stage_m", d["mf6_end_stage"])
+
+    def _irrigate(self, L, rt):
+        """The day's irrigation on the mapped HRUs, requested from their wells; the rest stays water from outside."""
+        v = self.sw.get(IR.IRRIGATION) * DAY
+        pumped = 0.0
+        for i, ws in self.irrigation:
+            for w, share in ws:
+                rt.request(f"well:{w}", float(v[i]) * share)
+                L.enter(f"irrigation:well:{w}", float(v[i]) * share)
+            pumped += float(v[i])
+        L.enter("irrigation:pumped", pumped)
+        L.enter("irrigation:from_outside", float(v[self._irrigation_rest].sum()))
+
     def _exchange_channels(self, ex) -> list[str]:
         """The channels the exchange's rivers and drains couple, in order; needed before SWAT+ starts."""
         import csv
@@ -461,6 +634,23 @@ class Basin:
             out[k] = (lambda value: (lambda t: value))(float(v))
         return out
 
+    @staticmethod
+    def _map_cells(cfg: C.ExampleConfig) -> list[tuple[int, ...]]:
+        """The recharge map's cells, 0-based, in the grid's form, for a recharge package Basin Ledger adds."""
+        import csv
+        if cfg.recharge_map.startswith("all:") or not cfg.recharge_map:
+            raise ValueError("[recharge] add = true needs a map of cells (a CSV), not \"all:\"")
+        out = []
+        with open(cfg.folder / cfg.recharge_map, newline="") as f:
+            for r in csv.DictReader(f):
+                if (r.get("row") or "").strip():
+                    out.append((int(r["layer"]), int(r["row"]), int(r["col"])))
+                elif (r.get("icell2d") or "").strip():
+                    out.append((int(r["layer"]), int(r["icell2d"])))
+                else:
+                    raise ValueError(f"{cfg.recharge_map}: [recharge] add = true needs cells, not nodes")
+        return out
+
     def _area_map(self, spec: str, aquifers: list[str]) -> AreaMap:
         if spec.startswith("all:"):
             nodes = self.mf6.package_nodes(self.cfg.recharge_package)
@@ -491,7 +681,8 @@ class Basin:
     def _build_mass_links(self):
         """The transport's links, once MODFLOW 6 has read its first day: recharge, the wells and the streams."""
         rp = self.cfg.recharge_package
-        wells = {w.name: (w.package, self.mf6.entry(w.package, self.mf6.node(*w.cell))) for w in self.cfg.wells}
+        wells = {w.name: (w.package, self.mf6.entry(w.package, self.mf6.node(*w.cell, model=w.model)))
+                 for w in self.cfg.wells}
         streams = []
         if self.exchange is not None:
             streams.append((self.exchange.package, self.exchange.map.entry_channel, self.exchange.map.channels))
@@ -559,6 +750,31 @@ class Basin:
 
     def _well_cell(self, name: str):
         return next(w.cell for w in self.cfg.wells if w.name == name)
+
+    def _well_node(self, w: C.WellConfig):
+        """A well's node (a WEL well's cell), or ("maw", its 0-based number, its model) for a multi-aquifer well."""
+        if w.well is None:
+            return self.mf6.node(*w.cell, model=w.model)
+        v = self._view(w.model)
+        if not v.has_package(w.package):
+            raise ValueError(f"well {w.name}: the model has no package {w.package!r}")
+        t = package_type(v, w.package)
+        if t != "maw":
+            raise ValueError(f"well {w.name}: well = {w.well} names a multi-aquifer well, but {w.package} is a "
+                             f"{t.upper() or 'missing'} package")
+        if not 1 <= w.well <= v.maw_wells(w.package):
+            raise ValueError(f"well {w.name}: {w.package} has wells 1 to {v.maw_wells(w.package)}")
+        if self.cfg.transport:
+            raise ValueError(f"well {w.name}: transport with a multi-aquifer well isn't built")
+        return ("maw", w.well - 1, v.model)
+
+    def _views(self) -> list:
+        """Each coupled groundwater model's view: several (``[modflow6] models``), or the one."""
+        return self.mf6.views if isinstance(self.mf6, Models) else [self.mf6]
+
+    def _view(self, model: str | None):
+        """A link's model: the one named among several coupled, or the one."""
+        return self.mf6.view_of(model) if isinstance(self.mf6, Models) else self.mf6
 
     # ---------- one day ----------
     def _state(self) -> R.State:
@@ -636,8 +852,14 @@ class Basin:
         if self.direct_exchange:
             names = self.sw.names(S.GW_EXCHANGE)
             self.sw.set(S.GW_EXCHANGE, np.array([self.due.get(c, 0.0) / DAY for c in names]))
+        if self.lakes is not None:  # yesterday's lake leakage, on the reservoirs today
+            self.lakes.before_swat()
         self.swat.update()
         rt.read_swat()
+        if self.lakes is not None:
+            self.lakes.after_swat()
+        if self.irrigation is not None:  # the day's irrigation, pumped from MODFLOW 6's wells today
+            self._irrigate(L, rt)
         if gw_soil is not None:
             L.enter("gw_soil:received", gw_soil.received())
         if self.direct_exchange:
@@ -666,6 +888,8 @@ class Basin:
         self.mf6.prepare_day()
         if self.cfg.exchange and self.exchange is None:
             self._build_exchange()
+        if not hasattr(self, "_gw_packages"):
+            self._start_takeover()
         if self.transport:
             self._transport_day()
         sent = self.recharge.transfer()
@@ -676,6 +900,8 @@ class Basin:
             L.enter("recharge:swat_aquifers", float(np.sum(self.sw.get(RC.RECHARGE) * DAY * self.aquifer_check)))
             L.enter("recharge:precision", float(np.sum(np.abs(self.sw.get(RC.PERCOLATION)) * DAY * self.aquifer_bound)))
         rt.apply_wells()
+        if self.lakes is not None:
+            self.lakes.before_solve()
         if self.cfg.rivers:
             self._rivers_day()
         limit = None
@@ -691,7 +917,12 @@ class Basin:
                            - L.today(f"route:swat:place_of_use:seep_{c}:delivered") for c in self.due}
             available = {c: max(flow[c] - applied[c], 0.0) for c in self.due}
             if sfr:
-                self.exchange.set_inflow(available)
+                depth = None
+                if self.exchange._stage:  # B: the stage from SWAT+'s depth for the day just run
+                    depth = dict(zip(self.sw.names(S.DEPTH), self.sw.get(S.DEPTH)))
+                    for c in self.exchange._stage:
+                        L.enter(f"exchange:{c}:sfr_depth_m", float(depth[c]))
+                self.exchange.set_inflow(available, depth)
                 for c, v in available.items():
                     L.enter(f"exchange:{c}:sfr_inflow", v)
             if not sfr or self.exchange.lakes is not None:  # SFR's lakes have a limit of their own
@@ -710,6 +941,12 @@ class Basin:
                     L.enter(f"exchange:{c}:lake_stage_lowered_m", d)
             self.exchange.end_day()
         L.enter("recharge:received", self.recharge.received())
+        if isinstance(self.mf6, Models):  # each coupled model's share
+            for v in self.mf6.views:
+                if v.has_package(self.cfg.recharge_package):
+                    L.enter(f"recharge:received:{v.model.lower()}", float(v.simvals(self.cfg.recharge_package).sum()))
+        if self.lakes is not None:
+            self._lakes_day(L)
         if self.gw_soil is not None:
             sent, at_bottom = self.gw_soil.after_solve()
             L.enter("gw_soil:sent", sent)                  # out of MODFLOW 6 today, into SWAT+'s soil tomorrow
@@ -729,75 +966,234 @@ class Basin:
     def _build_exchange(self):
         """The stream-aquifer exchange, once MODFLOW 6 has read its first day (the packages have their entries)."""
         ex = self.cfg.exchange
+        if self._exchange_models():
+            return self._build_exchanges()
+        mf = self._view(ex.get("model"))  # the model whose package the channels exchange through
         names = self.sw.names(S.QOUT)
-        cmap = ChannelMap.from_spec(ex.get("map", ""), self.cfg.folder, self.mf6, ex.get("package", "riv"),
+        cmap = ChannelMap.from_spec(ex.get("map", ""), self.cfg.folder, mf, ex.get("package", "riv"),
                                     names, channels=list(self.due))
         if cmap.channels != list(self.due):
             raise ValueError(f"exchange map channels {cmap.channels} differ from {list(self.due)}")
         drains = None
         if ex.get("drains"):
             dp = ex["drains"].get("package", "drn")
-            drains = (dp, ChannelMap.from_spec(ex["drains"]["map"], self.cfg.folder, self.mf6, dp, names,
+            drains = (dp, ChannelMap.from_spec(ex["drains"]["map"], self.cfg.folder, mf, dp, names,
                                                channels=list(self.due)))
+        if "sfr" in ex and package_type(mf, ex.get("package", "riv")) != "sfr":
+            raise ValueError("[exchange] sfr chooses how an SFR package's channels run; this exchange is on a "
+                             f"{package_type(mf, ex.get('package', 'riv')).upper()} package")
         lakes = None
         if ex.get("lakes"):
             lp = ex["lakes"]["package"]
             if self.cfg.rivers and self.cfg.rivers.get("package", "riv").lower() == lp.lower():
                 raise ValueError(f"[exchange] lakes: [rivers] sets the stages of {lp!r}; a lake's stage is fixed in "
                                  "the package's input")
-            check_lake_package(self.mf6, lp, ex.get("package", "riv"), drains[0] if drains else None)
-            lakes = (lp, lake_map(ex["lakes"]["map"], self.cfg.folder, self.mf6, lp, names, list(self.due)))
-        self.exchange = StreamExchange(self.mf6, ex.get("package", "riv"), cmap, drains, lakes)
+            check_lake_package(mf, lp, ex.get("package", "riv"), drains[0] if drains else None)
+            lakes = (lp, lake_map(ex["lakes"]["map"], self.cfg.folder, mf, lp, names, list(self.due)))
+        self.exchange = StreamExchange(mf, ex.get("package", "riv"), cmap, drains, sfr=ex.get("sfr", "route"),
+                                       lakes=lakes)
+        if any(m == "stage" for m, _ in self.exchange.modes.values()) and not self.sw.has(S.DEPTH):
+            raise ValueError("SFR channels at a fixed stage take SWAT+'s channel depth (swatplus-bmi 0.2.0)")
         if self.exchange.kind == "sfr" and ex.get("limit") is False:
             raise ValueError("[exchange] limit = false: SFR limits a reach's loss to what it carries itself; the "
                              "limit is for a river (RIV) package")
 
+    def _exchange_models(self) -> list[str]:
+        """With several groundwater models coupled, the models the exchange map's rows name (a row without one is the
+        first model's), if more than one: the streams then run through each model's package (``StreamExchanges``)."""
+        import csv
+        ex = self.cfg.exchange
+        spec = ex.get("map", "")
+        if not isinstance(self.mf6, Models) or not spec or spec.startswith("all:"):
+            return []
+        with open(self.cfg.folder / spec, newline="") as f:
+            named = {((r.get("model") or "").strip() or self.mf6.model).upper() for r in csv.DictReader(f)}
+        models = [m for m in self.mf6.names if m in named]
+        if named - set(models):
+            raise ValueError(f"exchange map: models {sorted(m.lower() for m in named - set(models))} aren't coupled")
+        return models if len(models) > 1 else []
+
+    def _build_exchanges(self):
+        """The stream exchange through each coupled model's package, its channels mapped there; the mover between
+        the models lined up and cut as a connection between channels is (exchange.sfr_problems, ``others``)."""
+        ex = self.cfg.exchange
+        if ex.get("drains"):
+            raise ValueError("[exchange] drains with streams in several groundwater models isn't built")
+        if ex.get("lakes"):
+            raise ValueError("[exchange] lakes with streams in several groundwater models isn't built")
+        pkg, names = ex.get("package", "riv"), self.sw.names(S.QOUT)
+        views = [self.mf6.view_of(m) for m in self._exchange_models()]
+        maps = [ChannelMap.from_spec(ex["map"], self.cfg.folder, v, pkg, names, channels=list(self.due),
+                                     first_model=self.mf6.model) for v in views]
+        mapped = [c for m in maps for c in m.channels]
+        if sorted(mapped) != sorted(self.due) or len(set(mapped)) != len(mapped):
+            twice = sorted({c for c in mapped if mapped.count(c) > 1})
+            raise ValueError(f"exchange map: channels {twice} have reaches in more than one model; a channel's "
+                             "reaches are in one model" if twice else
+                             f"exchange map channels {mapped} differ from {list(self.due)}")
+        parts = []
+        for v, cmap in zip(views, maps):
+            others = {(w.model.lower(), pkg.lower()): m for w, m in zip(views, maps) if w is not v}
+            parts.append(StreamExchange(v, pkg, cmap, None, sfr=ex.get("sfr", "route"), others=others))
+        self.exchange = StreamExchanges(parts)
+        if any(m == "stage" for m, _ in self.exchange.modes.values()) and not self.sw.has(S.DEPTH):
+            raise ValueError("SFR channels at a fixed stage take SWAT+'s channel depth (swatplus-bmi 0.2.0)")
+
+    def _coupled_entries(self, mf) -> dict[str, tuple[np.ndarray, list[str]]]:
+        """Each package with flows (SIMVALS) of one coupled groundwater model (``mf``, its view), by upper-case name,
+        with a mask of the entries a link sets and the links that set them. Entries no link sets are the model's
+        (coupling/existing.py)."""
+        pkgs = EX.flow_packages(mf)
+        ex = self.exchange
+        several = isinstance(self.mf6, Models)
+        out = {}
+        for p in pkgs:
+            n = mf.nbound(p)
+            m = np.zeros(n, bool)
+            links: list[str] = []
+
+            def take(sel, what, m=m, links=links):
+                sel = np.asarray(sel, bool)
+                if sel.any():
+                    m[sel] = True
+                    links.append(what)
+
+            if p == self.cfg.recharge_package.upper() and self.recharge is not None:
+                take(np.ones(n, bool), "recharge from SWAT+")
+            for part in (getattr(ex, "parts", [ex]) if ex is not None else []):
+                if part.mf6 is mf and p == part.package.upper():
+                    modes = [m for m, _ in part.modes.values()]
+                    how = (f" (routed: {modes.count('route')} channels, at SWAT+'s stage: {modes.count('stage')})"
+                           if "stage" in modes else "")
+                    take(part.map.entry_channel[:n] >= 0, "stream exchange with SWAT+'s channels" + how)
+                if part.mf6 is mf and part.drains and p == part.drains[0].upper():
+                    take(part.drains[1].entry_channel[:n] >= 0, "seepage to SWAT+'s channels")
+                if part.mf6 is mf and getattr(part, "lakes", None) and p == part.lakes[0].upper():
+                    take(part.lakes[1].entry_channel[:n] >= 0, "lakes at a fixed stage, through SWAT+'s channels")
+            if self.gw_soil is not None and p == self.gw_soil.package.upper():
+                take(np.ones(n, bool), "groundwater up into SWAT+'s soil")
+            for lk, s, v in zip(self.cfg.lakes, self.lakes.conn if self.lakes is not None else [],
+                                self.lakes.views if self.lakes is not None else []):
+                if v is mf and p == lk.package.upper():
+                    sel = np.zeros(n, bool)
+                    sel[s] = True
+                    how = "active within the day (A)" if lk.form == "active" else "at a fixed stage (B)"
+                    take(sel, f"lake {lk.lake}'s exchange with SWAT+'s reservoir {lk.reservoir}, {how}")
+            wells = np.zeros(n, bool)
+            named = []
+            for name, (pkg, node) in self.router.wells.items():
+                if pkg.upper() != p:
+                    continue
+                if isinstance(node, tuple):  # a multi-aquifer well: its connections
+                    if self._view(node[2]) is mf:
+                        wells[mf.maw_connections(p, node[1])] = True
+                        named.append(name)
+                    continue
+                v, local = self.mf6.model_of(node) if several else (self.mf6, node)
+                if v is not mf:
+                    continue
+                try:
+                    wells[mf.entry(p, local)] = True
+                except ValueError:  # listed under the well by the start-up; refused by the router in a run
+                    continue
+                named.append(name)
+            take(wells, "users' wells: " + ", ".join(named))
+            out[p] = (m, links)
+        return out
+
+    def _start_takeover(self):
+        """What Basin Ledger takes over in MODFLOW 6 and what it leaves as the model's (coupling/existing.py), once the
+        packages have their entries: ``self.takeover``, one row per package (``<model>/<package>`` with several
+        models coupled). What would count water twice stops the start-up; what a reviewer should know is a warning
+        (a check's notes)."""
+        views = self._views()
+        several = len(views) > 1
+        coupled_names = {v.model for v in views}
+        self._gw_packages = []  # (view, {package: mask of the entries a link sets})
+        self.takeover = []
+        notes, bad = [], []
+        for v in views:
+            coupled = self._coupled_entries(v)
+            self._gw_packages.append((v, {p: m for p, (m, _) in coupled.items()}))
+            rows = EX.roles(v, coupled)
+            if several:
+                for r in rows:
+                    r.package = f"{v.model.lower()}/{r.package}"
+            self.takeover += rows
+        bad, notes = EX.problems(self.takeover, self.gw_soil is not None)
+        # other groundwater models of the simulation: what crosses to one not coupled is water from or to outside;
+        # between coupled models it stays inside the groundwater
+        for v in views:
+            for name, other, sign in v.exchanges():
+                if other.upper() not in coupled_names:
+                    notes.append(f"{name.lower()}: groundwater to and from {other}, another model of the simulation "
+                                 "that Basin Ledger doesn't couple, booked as from or to outside")
+                elif sign > 0:
+                    notes.append(f"{name.lower()}: groundwater between {v.model.lower()} and {other}, both coupled: "
+                                 f"inside the groundwater (groundwater:exchange:{name.lower()}, positive into "
+                                 f"{v.model.lower()})")
+        if self.exchange is not None and any(m == "stage" for m, _ in self.exchange.modes.values()):
+            routed = [c for c, (m, _) in self.exchange.modes.items() if m == "route"]
+            notes.append(f"{self.exchange.package}: channels routed by SFR (A): {', '.join(routed) or 'none'}")
+            for c, (m, why) in self.exchange.modes.items():
+                if m == "stage":
+                    notes.append(f"{self.exchange.package}: channel {c} at a fixed stage from SWAT+'s depth (B): "
+                                 + "; ".join(w.split(": ", 1)[-1] for w in why))
+        if self.cfg.rivers:
+            notes.append(f"{self.cfg.rivers.get('package', 'riv')}: [rivers] sets its stage from the surface model's "
+                         "depth; its flow stays the model's")
+        for n in notes:
+            warnings.warn(n, EX.TakeoverNote, stacklevel=2)
+        if bad:
+            raise ValueError("MODFLOW 6's own packages would count water twice:\n- " + "\n- ".join(bad))
+
     def _groundwater_accounts(self, L):
-        """Every flow in or out of the groundwater model that no link carries, by package (water from or to outside
-        the coupled models: fixed or general heads, drains and rivers not coupled, recharge packages Basin Ledger
-        doesn't set), the release from storage, and the model's closure, all in m3 for the day. Positive is into
-        the aquifer. The closure is checked every day, against the day's gross flow."""
-        mf = self.mf6
-        if not hasattr(self, "_gw_packages"):
-            prefix = mf.model.upper() + "/"
-            names = set(mf.api.get_input_var_names()) | set(mf.api.get_output_var_names())
-            pkgs = sorted({n.split("/")[1] for n in names if n.startswith(prefix) and n.endswith("/SIMVALS")})
-            coupled = {}
-            for p in pkgs:
-                n = mf.nbound(p)
-                m = np.zeros(n, bool)
-                if p == self.cfg.recharge_package.upper():
-                    m[:] = True
-                if self.exchange is not None and p == self.exchange.package.upper():
-                    m |= self.exchange.map.entry_channel[:n] >= 0
-                if self.exchange is not None and self.exchange.drains and p == self.exchange.drains[0].upper():
-                    m |= self.exchange.drains[1].entry_channel[:n] >= 0
-                if self.exchange is not None and self.exchange.lakes and p == self.exchange.lakes[0].upper():
-                    m |= self.exchange.lakes[1].entry_channel[:n] >= 0
-                if self.gw_soil is not None and p == self.gw_soil.package.upper():
-                    m[:] = True
-                for w in self.cfg.wells:
-                    if w.package.upper() == p:
-                        m[mf.entry(p, mf.node(*w.cell))] = True
-                coupled[p] = m
-            self._gw_packages = coupled
+        """Every flow in or out of the groundwater that no link carries, by package (water from or to outside the
+        coupled models: fixed or general heads, drains and rivers not coupled, recharge packages Basin Ledger
+        doesn't set, and what crosses to a groundwater model of the simulation that isn't coupled, by its GWF-GWF
+        exchange), the release from storage, and the closure, all in m3 for the day. Positive is into the aquifer.
+        With several models coupled, each model's accounts are under ``<model>/``, a GWF-GWF exchange between two of
+        them is booked once, inside the groundwater (``groundwater:exchange:<name>``), and each model's closure is
+        checked as well as the whole's. The closure is checked every day, against the day's gross flow."""
+        several = len(self._gw_packages) > 1
+        coupled_names = {v.model for v, _ in self._gw_packages}
+        if not getattr(self, "_closure_declared", False):
             L.zero("groundwater:closure_share", atol=1e-6)
-        net = gross = 0.0
-        for p, m in self._gw_packages.items():
-            q = mf.simvals(p)
-            L.enter(f"groundwater:boundary:{p.lower()}", float(q[~m[: len(q)]].sum()))
-            net += float(q.sum())
-            gross += float(np.abs(q).sum())
-        sto = 0.0
-        for v in ("STRGSS", "STRGSY"):
-            try:
-                x = mf.get(v, mf.model, "STO")
-            except Exception:
-                continue
-            sto += float(np.sum(x))
-        L.enter("groundwater:storage_release", sto)  # MODFLOW 6's STRGSS + STRGSY: positive is released into the flow
+            if several:
+                for v, _ in self._gw_packages:
+                    L.zero(f"groundwater:{v.model.lower()}:closure_share", atol=1e-6)
+            self._closure_declared = True
+        net_all = gross_all = sto_all = 0.0
+        for mf, pkgs in self._gw_packages:
+            pre = f"{mf.model.lower()}/" if several else ""
+            net = gross = 0.0
+            for p, m in pkgs.items():
+                q = mf.simvals(p)
+                L.enter(f"groundwater:boundary:{pre}{p.lower()}", float(q[~m[: len(q)]].sum()))
+                net += float(q.sum())
+                gross += float(np.abs(q).sum())
+            for name, other, sign in mf.exchanges():
+                q = float(mf.exchange_flow(name, sign).sum())
+                if other.upper() not in coupled_names:
+                    L.enter(f"groundwater:boundary:{pre}{name.lower()}", q)
+                elif sign > 0:
+                    L.enter(f"groundwater:exchange:{name.lower()}", q)
+                net += q
+                gross += abs(q)
+            sto = 0.0
+            for v in ("STRGSS", "STRGSY"):
+                try:
+                    x = mf.get(v, mf.model, "STO")
+                except Exception:  # noqa: BLE001, S112  (a steady model has no storage)
+                    continue
+                sto += float(np.sum(x))
+            if several:
+                L.enter(f"groundwater:{mf.model.lower()}:storage_release", sto)
+                L.enter(f"groundwater:{mf.model.lower()}:closure_share", (net + sto) / max(gross + abs(sto), 1.0))
+            net_all, gross_all, sto_all = net_all + net, gross_all + gross, sto_all + sto
+        L.enter("groundwater:storage_release", sto_all)  # MODFLOW 6's STRGSS + STRGSY: positive is released into the flow
         # against the day's gross flow, with a floor of 1 m3 so a day with almost no flow isn't noise over noise
-        L.enter("groundwater:closure_share", (net + sto) / max(gross + abs(sto), 1.0))
+        L.enter("groundwater:closure_share", (net_all + sto_all) / max(gross_all + abs(sto_all), 1.0))
 
     def _enter_exchange(self, L):
         """Today's SWAT+ side of yesterday's exchange, then today's MODFLOW 6 exchange as tomorrow's due."""
@@ -843,6 +1239,7 @@ class Basin:
             "day": self.day, "ledger": self.ledger.state(), "series": self.series,
             "rule_memory": self.rule_memory,
             "exchange_due": self.due,
+            "lakes_due": self.lakes.due if self.lakes is not None else None,
             "gw_soil_due": self.gw_soil.due.tolist() if getattr(self, "gw_soil", None) is not None else None,
         }))
 
@@ -897,8 +1294,8 @@ class Basin:
 
     @classmethod
     def check(cls, cfg: C.ExampleConfig, users: bool = True, run: str = "check", prepare=None,
-              heads: np.ndarray | None = None, wrap_surface=None,
-              parameters: list | None = None) -> tuple[list[str], list[str]]:
+              heads: np.ndarray | None = None, wrap_surface=None, parameters: list | None = None,
+              takeover: list | None = None, units: list | None = None) -> tuple[list[str], list[str]]:
         """Every problem the example's start-up can find, without running a day: (problems, notes). The models start
         as for a run, MODFLOW 6 reads its first day (the packages have their entries then) and the links are built:
         the SWAT+ settings, the parameters, the recharge map and its areas, the wells', head outputs' and rules'
@@ -906,7 +1303,10 @@ class Basin:
         groundwater into the soil and transport. A part with a problem is listed and left out, and the rest go on;
         a problem that leaves a model unable to start ends the check there. Notes are the start-up's warnings.
         ``prepare``, ``heads``, ``wrap_surface`` and ``parameters`` are the run's start-up hooks (``Basin``), so a
-        study checks what it runs: a prepare hook that rewrites a model's files is checked on the files it writes."""
+        study checks what it runs: a prepare hook that rewrites a model's files is checked on the files it writes.
+        ``takeover``, if given, gets what Basin Ledger takes over in MODFLOW 6 and what it leaves, one
+        ``existing.PackageRole`` per package (coupling/existing.py); ``units``, if given, MODFLOW 6's units and
+        the factors converting them at every link (``Modflow6.units_summary``)."""
         problems: list[str] = []
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -924,11 +1324,17 @@ class Basin:
                         if cfg.rivers:
                             b._part("[rivers]", b._build_rivers)
                         for name, (pkg, node) in b.router.wells.items():
-                            b._part(f"well {name}", lambda pkg=pkg, node=node: b.mf6.entry(pkg, node))
+                            if not isinstance(node, tuple):  # a multi-aquifer well is checked by its number
+                                b._part(f"well {name}", lambda pkg=pkg, node=node: b.mf6.entry(pkg, node))
                         if b.gw_soil is not None:
                             b._part("[groundwater_to_soil]", lambda: b.gw_soil.attach(b.mf6))
                         if b.transport:
                             b._part("[transport]", b._build_mass_links)
+                        b._part("[modflow6]", b._start_takeover)
+                        if takeover is not None:
+                            takeover.extend(getattr(b, "takeover", []))
+                    if b.mf6 is not None and units is not None:
+                        units.append(b.mf6.units_summary())
                 finally:
                     b.finalize()
         return problems, list(dict.fromkeys(str(w.message) for w in caught))

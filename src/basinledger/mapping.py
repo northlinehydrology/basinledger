@@ -25,6 +25,7 @@ of its ground in them, and the volume handed to MODFLOW 6 is SWAT+'s percolation
 from __future__ import annotations
 
 import csv
+import functools
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -110,10 +111,19 @@ class AreaMap:
 def cell_node(row: dict, node_of, where="map") -> int:
     """A map row's 0-based reduced node: its ``node``, or its cell, ``layer, row, col`` (DIS) or ``layer, icell2d``
     (DISV), through ``node_of(*cell)``, which refuses a cell in the other grid's form. A row giving both forms, or
-    neither, is refused."""
+    neither, is refused. With several groundwater models coupled, a ``model`` column names the row's model, and the
+    node is in the models' one sequence (``modflow6.Models``)."""
     has = {k for k in ("node", "layer", "row", "col", "icell2d") if (row.get(k) or "").strip()}
+    model = (row.get("model") or "").strip() or None
+    if model is not None:
+        node_of = functools.partial(node_of, model=model)
     if has == {"node"}:
-        return int(row["node"])
+        if model is None:
+            return int(row["node"])
+        try:
+            return node_of(node=int(row["node"]))
+        except ValueError as e:
+            raise ValueError(f"{where}: {e}") from None
     if has == {"layer", "row", "col"}:
         cell = (row["layer"], row["row"], row["col"])
     elif has == {"layer", "icell2d"}:

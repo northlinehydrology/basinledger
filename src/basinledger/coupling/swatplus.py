@@ -152,7 +152,8 @@ def coupling_problems(project: Path, two_way: bool) -> list[str]:
     - two-way: the aquifers pass recharge through, and nothing in ``calibration.cal`` (applied after aquifer.aqu)
       turns their return flow, revap or deep recharge back on;
     - two-way: no channel transmission loss (``k`` in ``hyd-sed-lte.cha``): the stream-aquifer exchange is MODFLOW
-      6's, and SWAT+'s own seepage would go to an aquifer that passes nothing on."""
+      6's, and SWAT+'s own seepage would go to an aquifer that passes nothing on;
+    - two-way: nothing drawn from SWAT+'s aquifers (``aquifer_withdrawals``)."""
     project = Path(project)
     out = []
     step = (project / "time.sim").read_text().splitlines()[2].split()[4]
@@ -175,6 +176,7 @@ def coupling_problems(project: Path, two_way: bool) -> list[str]:
         if bad:
             out.append(f"calibration.cal sets {', '.join(bad)}, which turns SWAT+'s own groundwater or channel loss "
                        "back on; MODFLOW 6 owns both in two-way mode, so leave them out")
+    out += aquifer_withdrawals(project)
     cha = project / "hyd-sed-lte.cha"
     if cha.exists():
         lines = cha.read_text().splitlines()
@@ -247,6 +249,44 @@ def hru_areas(project: Path) -> dict[str, float]:
     cols = lines[1].split()
     i, a = cols.index("name"), cols.index("area")
     return {f[i]: float(f[a]) * 1e4 for f in (l.split() for l in lines[2:]) if f}
+
+
+def aquifer_withdrawals(project: Path) -> list[str]:
+    """What draws water from SWAT+'s own aquifers: an irrigate action whose source is an aquifer (``irrigate ...
+    aqu <n>`` in a decision table, actions.f90) or a water allocation point of diversion of type ``aqu``
+    (point_of_diver.wro, wallo_withdraw.f90). In two-way mode an aquifer only holds the recharge it has passed to
+    MODFLOW 6, so water drawn from it would be pumped twice: groundwater is MODFLOW 6's, and its wells are where it is
+    pumped (docs/design.md, "Large users and irrigation, MODFLOW first")."""
+    project = Path(project)
+    out = []
+    used = set()  # decision tables the project's management schedules and land uses name
+    for name in ("management.sch", "landuse.lum"):
+        if (project / name).exists():
+            used |= set((project / name).read_text(errors="replace").split())
+    for f in sorted(project.glob("*.dtl")):
+        lines = f.read_text(errors="replace").splitlines()
+        table = None
+        for i, ln in enumerate(lines):
+            w = ln.split()
+            if len(w) >= 2 and w[0].lower() == "name" and w[1].lower() == "conds":  # a table's header; its name next
+                nxt = next((x.split() for x in lines[i + 1:] if x.split()), [None])
+                table = nxt[0]
+            elif len(w) >= 3 and w[0] == "irrigate" and w[1] == "aqu" and table in used:
+                out.append(f"{f.name}: decision table {table} irrigates from SWAT+'s aquifer {w[2]}; in two-way mode "
+                           "groundwater is MODFLOW 6's, so irrigation from it is pumped from MODFLOW 6's wells")
+    cio = (project / "file.cio").read_text().splitlines()
+    names = next((ln.split()[1:] for ln in cio if ln.startswith("water_rights")), [])
+    for name in names:
+        f = project / name
+        if name == "null" or not f.exists():
+            continue
+        for ln in f.read_text(errors="replace").splitlines()[3:]:
+            w = ln.split()
+            if (len(w) >= 3 and w[2] == "aqu") or (len(w) >= 4 and w[3] == "aqu"):
+                out.append(f"{name}: water allocation draws from a SWAT+ aquifer; in two-way mode groundwater is "
+                           "MODFLOW 6's, so that withdrawal is pumped from MODFLOW 6's wells")
+                break
+    return out
 
 
 def _half_ulp(text: str) -> float:

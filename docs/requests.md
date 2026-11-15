@@ -50,7 +50,7 @@ what, why, and how Basin Ledger copes until then. Written Nov 4, 2026.
 
 ## swatplus-bmi
 
-*Status: in swatplus-bmi 0.2.0: request 2, channel depth (`channel_water__depth`), and request 4, a channel's groundwater exchange set directly (`channel_water__groundwater_volume_exchange_rate`). Basin Ledger uses both. In swatplus-bmi 0.6.0: request 1, HRU percolation (`soil_water__percolation_rate`), which Basin Ledger's `[recharge] source = "hru"` uses. Still to come: point source loads (3).*
+*Status: in swatplus-bmi 0.2.0: request 2, channel depth (`channel_water__depth`), and request 4, a channel's groundwater exchange set directly (`channel_water__groundwater_volume_exchange_rate`). Basin Ledger uses both. In swatplus-bmi 0.6.0: request 1, HRU percolation (`soil_water__percolation_rate`), which Basin Ledger's `[recharge] source = "hru"` uses. In swatplus-bmi 0.11.0 (on its branch `lakes-irrigation`, not yet released): reservoirs (6) and HRU irrigation (7), which `[irrigation]` and the lakes use. Still to come: point source loads (3).*
 
 1. **HRU percolation (recharge) per HRU**, for mapping recharge to cells by HRU area as Bailey et al. (2025) do. Today
    only aquifer recharge is exposed, and SWAT+'s aquifers are lumped per subbasin.
@@ -66,6 +66,19 @@ what, why, and how Basin Ledger copes until then. Written Nov 4, 2026.
    place of use's own list. With one point of diversion per place of use, as Basin Ledger writes them, the two agree
    for the first channel. A place of use on a second channel may read the wrong entry. Basin Ledger's tests use one
    channel. A test on a two-channel project would settle it.
+
+6. **Reservoirs (lakes), for coupling a model's lakes the way its streams are (Nov 14, 2026).** Per reservoir: its
+   water level (stage, m) and volume after the day; its groundwater exchange set for the next day, positive into the
+   reservoir, with a loss limited to what it holds and read back as what was exchanged (as request 4 does for
+   channels); and its inflow, precipitation and evaporation for the day, read. Basin Ledger then sets MODFLOW 6's lake
+   (LAK) from them each day and returns its exchange, with SWAT+'s reservoir owning the lake's water and quality
+   (docs/design.md, "Extending an existing MODFLOW 6 model", lakes).
+7. **HRU irrigation, for pumping it from MODFLOW 6's wells (Nov 14, 2026).** Per HRU: the irrigation SWAT+ applied
+   the day just run (m3, the decision table's demand from an outside source, `irrig(j)%demand`), read. Basin Ledger
+   then pumps the same volume that day from the MODFLOW 6 wells the study maps to that HRU, so the water is pumped
+   once, from the model that owns groundwater, and lands on SWAT+'s fields (docs/design.md, "Large users and
+   irrigation, MODFLOW first"). Optionally, the HRU's irrigation demand set from outside, for a study that keeps a
+   model's own pumping and applies it to the fields.
 
 A note for the swatplus-bmi docs: SWAT+ keeps one point of diversion per channel (`sd_ch%wallo_pod`), so several
 places of use on one channel must share one `point_of_diver.wro` row listing them all. Separate rows for the same

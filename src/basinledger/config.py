@@ -22,13 +22,24 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     builder = "model:build"             # model.py beside this file: build(workspace, days, start_date)
     builder_args = {}                   # optional keyword arguments for the builder (a scenario's variant)
     # workspace = "mf6"                 # or an existing simulation folder, copied into the run
+    # length_units = "feet"             # the model's, only where its DIS leaves LENGTH_UNITS undefined
+    # time_units = "days"               # the model's, only where its TDIS leaves TIME_UNITS undefined
     model = "gwf"
+    # storage = {sy = 0.15, ss = 1e-5}  # for a model handed over steady: Basin Ledger adds a storage package to the
+                                        #   run's copy (or makes the model's own transient, with storage = {}); sy a
+                                        #   fraction, ss per meter, the study's values [A] (existing.add_storage)
+    # models = ["parent", "inset"]      # or several groundwater models of the simulation coupled together (an LGR
+                                        #   inset and its parent): maps then give each row's model in a model
+                                        #   column, a well its model, and the exchange, a lake and head outputs
+                                        #   theirs (each the first if not given)
 
     [recharge]                          # SWAT+ -> MODFLOW 6 recharge (one-way)
     package = "rch"
     source = "aquifer"                  # each aquifer's recharge (default), or "hru": each HRU's percolation, placed
                                         #   on the cells under its ground (swatplus-bmi 0.6.0; coupling/recharge.py)
     map = "all:aqu001"                  # every top-layer cell to one aquifer (or HRU), or a CSV (see mapping.py)
+    # add = true                        # a model without a recharge package: Basin Ledger adds one, named by package,
+                                        #   on the map's cells (a CSV of cells), to the run's copy (existing.py)
     area_rtol = 1e-6                    # mapped area must match each object's area in the surface model (default 1e-6);
     area_check = false                  #   or no check, where an example maps more or less area on purpose (say why)
 
@@ -48,6 +59,22 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     package = "wel"
     cell = [0, 20, 30]                  # layer, row, col (0-based) on a structured grid (DIS); layer, icell2d on a
                                         #   vertex grid (DISV), e.g. [0, 412]
+    # add = true                        # a well the model doesn't have (a new user's): Basin Ledger adds a WEL
+                                        #   package of its own, named by package, to the run's copy (existing.py)
+    # well = 3                          # or, for a multi-aquifer well (package a MAW package), its number there,
+                                        #   from 1, in place of cell: its rate is set and what it pumped read
+
+    [irrigation]                        # optional: SWAT+'s irrigation pumped from MODFLOW 6's wells (coupling/
+    wells = [{hru = "hru0001", well = "irr1", share = 1.0}]  # irrigation.py; swatplus-bmi 0.11.0): each day, the
+                                        #   water irrigation put on each HRU, from the [[wells]] named, in their
+                                        #   shares; or a CSV with columns hru, well, share. The HRU must irrigate
+                                        #   from an outside source in SWAT+
+
+    [[lakes]]                           # optional: a SWAT+ reservoir holding a MODFLOW 6 lake's water (coupling/
+    reservoir = "res01"                 #   lakes.py; swatplus-bmi 0.11.0): the lake set from the reservoir each day,
+    package = "lak"                     #   its leakage the reservoir's groundwater exchange the next day. lake: its
+    lake = 1                            #   1-based number in the package; form "active" (A, within the day from the
+    form = "active"                     #   reservoir's start) or "fixed_stage" (B, at the stage of its volume)
 
     [exchange]                          # optional: two-way stream-aquifer exchange (MODFLOW 6 RIV or SFR <-> SWAT+)
     package = "riv"                     #   a river (RIV) or streamflow routing (SFR) package
@@ -56,6 +83,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
                                         #   object, reach for SFR's 0-based reach numbers)
     limit = true                        # RIV: a losing reach takes no more than its channel carries (default; SFR
                                         #   does this itself)
+    sfr = "route"                       # SFR: "route" (each channel's reaches route its water, A; a channel that
+                                        #   doesn't line up is refused), "route_or_stage" (A where a channel lines up,
+                                        #   a fixed stage from SWAT+'s depth where it doesn't, B) or "stage" (B for all)
     drains = {package = "drn", map = "maps/drains.csv"}   # optional: seepage cells, to their channels the next day
     lakes = {package = "lakes", map = "maps/lakes.csv"}   # optional: lake cells at a fixed stage (a RIV package of
                                         #   their own), each to its outlet channel, one of the rivers' or drains'
@@ -155,7 +185,29 @@ class UserConfig:
 class WellConfig:
     name: str
     package: str
-    cell: tuple[int, ...]   # (layer, row, col) on a DIS grid, (layer, icell2d) on a DISV grid
+    cell: tuple[int, ...] | None  # (layer, row, col) on a DIS grid, (layer, icell2d) on a DISV grid; None for MAW
+    add: bool = False       # a well the model doesn't have, in a WEL package Basin Ledger adds (existing.add_wells)
+    model: str | None = None  # with several models coupled, the one it's in (the first if not given)
+    well: int | None = None   # a multi-aquifer well (MAW): its number in the package, 1-based, in place of a cell
+
+
+def _flag(path: Path, where: str, v) -> bool:
+    if not isinstance(v, bool):
+        raise ValueError(f"{path}: {where} must be true or false; got {v!r}")
+    return v
+
+
+def _well(path: Path, w: dict) -> WellConfig:
+    """A [[wells]] entry: a cell for a WEL package, or ``well``, a multi-aquifer well's number in a MAW package."""
+    where = f"well {w.get('name')!r}"
+    if "well" in w:
+        if "cell" in w or w.get("add"):
+            raise ValueError(f"{path}: {where}: a MAW well is named by its number (well), not a cell, and isn't added")
+        if not isinstance(w["well"], int) or isinstance(w["well"], bool) or w["well"] < 1:
+            raise ValueError(f"{path}: {where}: well is the MAW well's number in its package, from 1; got {w['well']!r}")
+        return WellConfig(w["name"], w.get("package", "maw"), None, False, w.get("model"), w["well"])
+    return WellConfig(w["name"], w.get("package", "wel"), _cell(path, where, w.get("cell")),
+                      _flag(path, f"{where} add", w.get("add", False)), w.get("model"))
 
 
 def _cell(path: Path, where: str, cell) -> tuple[int, ...]:
@@ -198,8 +250,15 @@ class ExampleConfig:
     mf6_builder_args: dict = field(default_factory=dict)
     transport: dict[str, dict] = field(default_factory=dict)  # species -> recharge, stream (kg m-3) [A], model
     recharge_source: str = "aquifer"   # or "hru"
+    recharge_add: bool = False          # a recharge package Basin Ledger adds, for a model without one
     weather: dict | None = None        # kind -> CSV path, and change (weather.py)
     groundwater_to_soil: dict | None = None  # rule, cap, package (coupling/gwsoil.py)
+    mf6_length_units: str | None = None  # the model's, where its DIS leaves them undefined (coupling/modflow6.py)
+    mf6_time_units: str | None = None
+    mf6_models: list[str] = field(default_factory=list)  # several groundwater models coupled together, the first first
+    mf6_storage: dict | None = None  # sy, ss (per meter), iconvert: storage for a model handed over steady
+    irrigation: dict[str, list[tuple[str, float]]] | None = None  # HRU -> its wells and shares (coupling/irrigation.py)
+    lakes: list = field(default_factory=list)  # LakeConfig: a SWAT+ reservoir coupled to a LAK lake (coupling/lakes.py)
 
     @property
     def surface(self) -> str:
@@ -241,12 +300,24 @@ def load(path: str | Path) -> ExampleConfig:
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
              "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather",
-             "groundwater_to_soil"}
+             "groundwater_to_soil", "irrigation", "lakes"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
+    if "model" in mf and "models" in mf:
+        raise ValueError(f"{path}: [modflow6] takes model (one) or models (several coupled together), not both")
+    models = mf.get("models", [])
+    if "models" in mf and (not isinstance(models, list) or not models or not all(isinstance(m, str) for m in models)):
+        raise ValueError(f"{path}: [modflow6] models is a list of the groundwater models' names; got {models!r}")
+    st = mf.get("storage")
+    if st is not None and (not isinstance(st, dict) or set(st) - {"sy", "ss", "iconvert"}):
+        raise ValueError(f"{path}: [modflow6] storage takes sy, ss (per meter) and iconvert; got {st!r}")
     if "modflow6" in c and bool(mf.get("builder")) == bool(mf.get("workspace")):
         raise ValueError(f"{path}: [modflow6] needs one of builder or workspace")
+    from .coupling.modflow6 import DAYS, METERS
+    for key, known in (("length_units", METERS), ("time_units", DAYS)):
+        if key in mf and mf[key] not in known:
+            raise ValueError(f"{path}: [modflow6] {key} = {mf[key]!r}; one of {', '.join(known)}")
     if ("swatplus" in c) == ("nextgen" in c):
         raise ValueError(f"{path}: needs one surface model, [swatplus] or [nextgen]")
     sw = c.get("swatplus", {})
@@ -291,8 +362,36 @@ def load(path: str | Path) -> ExampleConfig:
             raise ValueError(f"{path}: [transport.{sp}] stream needs the two-way [exchange]")
         if "exchange" in c and "stream" not in t:
             raise ValueError(f"{path}: [transport.{sp}] needs stream (kg m-3): the coupled rivers' losses carry it")
-    lakes = c.get("exchange", {}).get("lakes")
-    if lakes is not None and (not isinstance(lakes, dict) or set(lakes) != {"package", "map"}):
+    irrigation = None
+    if "irrigation" in c:
+        from .coupling.irrigation import read_map
+        ir = c["irrigation"]
+        if set(ir) != {"wells"}:
+            raise ValueError(f"{path}: [irrigation] takes wells (a list of {{hru, well, share}}, or a CSV file "
+                             "with those columns)")
+        if "swatplus" not in c or "modflow6" not in c:
+            raise ValueError(f"{path}: [irrigation] pumps SWAT+'s irrigation from MODFLOW 6's wells; it needs both")
+        irrigation = read_map(base, ir["wells"])
+        named = {w["name"] for w in c.get("wells", [])}
+        missing = sorted({w for ws in irrigation.values() for w, _ in ws} - named)
+        if missing:
+            raise ValueError(f"{path}: [irrigation] wells {missing} aren't in [[wells]]")
+    lakes = []
+    if c.get("lakes"):
+        from .coupling.lakes import FORMS, LakeConfig
+        if "swatplus" not in c or "modflow6" not in c:
+            raise ValueError(f"{path}: [[lakes]] couple SWAT+'s reservoirs to MODFLOW 6's lakes; they need both")
+        for lk in c["lakes"]:
+            if set(lk) - {"reservoir", "package", "lake", "form", "model"} or "reservoir" not in lk or \
+                    "package" not in lk:
+                raise ValueError(f"{path}: each [[lakes]] has reservoir and package, and may have lake (1-based) and "
+                                 f"form; got {sorted(lk)}")
+            if lk.get("form", "active") not in FORMS:
+                raise ValueError(f"{path}: [[lakes]] {lk['reservoir']}: form is one of {', '.join(FORMS)}")
+            lakes.append(LakeConfig(lk["reservoir"], lk["package"], int(lk.get("lake", 1)), lk.get("form", "active"),
+                                    lk.get("model")))
+    ex_lakes = c.get("exchange", {}).get("lakes")
+    if ex_lakes is not None and (not isinstance(ex_lakes, dict) or set(ex_lakes) != {"package", "map"}):
         raise ValueError(f"{path}: [exchange] lakes is {{package = \"<a RIV package>\", map = \"<a map>\"}}")
     for h in c.get("outputs", {}).get("heads", []):
         _cell(path, f"[outputs] heads {h.get('name')!r}", h.get("cell"))
@@ -314,12 +413,14 @@ def load(path: str | Path) -> ExampleConfig:
         swat_project=_path(base, sw["project"]) if sw else None,
         mf6_builder=mf.get("builder"),
         mf6_workspace=_path(base, mf["workspace"]) if mf.get("workspace") else None,
-        mf6_model=mf.get("model", "gwf"),
+        mf6_model=models[0] if models else mf.get("model", "gwf"),
+        mf6_models=list(models),
+        mf6_storage=dict(st) if st is not None else None,
         recharge_package=rch.get("package", "rch"),
         recharge_map=rch.get("map", ""),
+        recharge_add=_flag(path, "[recharge] add", rch.get("add", False)),
         area_rtol=None if rch.get("area_check", True) is False else float(rch.get("area_rtol", 1e-6)),
-        wells=[WellConfig(w["name"], w.get("package", "wel"), _cell(path, f"well {w['name']!r}", w.get("cell")))
-               for w in c.get("wells", [])],
+        wells=[_well(path, w) for w in c.get("wells", [])],
         users=users,
         calibration_record=_path(base, c["calibration"]["record"]) if c.get("calibration", {}).get("record") else None,
         calibration_parameters=(_path(base, c["calibration"]["parameters"])
@@ -334,8 +435,12 @@ def load(path: str | Path) -> ExampleConfig:
         nextgen_run=_path(base, c["nextgen"]["run"]) if "nextgen" in c else None,
         rivers=c.get("rivers"),
         mf6_builder_args=mf.get("builder_args", {}),
+        mf6_length_units=mf.get("length_units"),
+        mf6_time_units=mf.get("time_units"),
         transport={sp: dict(t) for sp, t in transport.items()},
         recharge_source=rch.get("source", "aquifer"),
         weather=weather,
         groundwater_to_soil=dict(gs) if gs is not None else None,
+        irrigation=irrigation,
+        lakes=lakes,
     )
