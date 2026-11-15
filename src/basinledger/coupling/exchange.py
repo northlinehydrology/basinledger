@@ -37,7 +37,8 @@ fixed stage and for the stage-lowering limit, and SWAT+ stays the only model rou
 at start-up (``sfr_problems``): a connection between channels anywhere but from one's last reach into another's
 top reach, and a coupled channel flowing into a reach not coupled (SFR would route between channels too, counting
 their water twice); a channel whose reaches aren't one chain from one top reach;
-diversions, the mover and SFR's storage option (kinematic-wave routing: stored water a restart would need); and a
+diversions, the mover where it doesn't line up (below), and SFR's storage option (kinematic-wave routing: stored
+water a restart would need); and a
 Manning's constant for other units than meters and days (UNIT_CONVERSION 86400). MODFLOW 6's default, 1, is for
 meters and seconds, and makes a stream centimeters deep come out meters deep.
 
@@ -48,6 +49,14 @@ model's own reaches into a channel's top reach), and are cut each day by setting
 (``gridmaps.sfr_confluences`` lists them). A package built from SWAT+'s channel lines has no such connections and runs
 as before.
 
+**The mover** (coupling/mover.py, read from its files): a move from one of the package's reaches to another is a
+connection to the rule, and so is a move into a channel's reach from another model's SFR or another SFR package (as
+the model's own reaches). Lined up, it is cut each day by its value (it moves nothing), and the water stays with the
+provider: down its own connections, or out of SFR as its external outflow. Refused by name: a move within a channel,
+from a coupled reach to a reach no channel has or to any other package or model, and into a channel from a package
+that isn't SFR (a drain's, a lake's, a well's: water SWAT+'s channel doesn't see). Moves among the model's own
+entries stay the model's.
+
 Other limits of this version:
 - MODFLOW 6's river stage is fixed in its input unless the example's ``[rivers]`` section sets it from the surface
   model's channel depth (``stage = "surface_depth"``; SWAT+'s depth needs swatplus-bmi 0.2.0);
@@ -57,12 +66,13 @@ Other limits of this version:
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from ..mapping import cell_node
+from . import mover as MV
 from .modflow6 import Modflow6
 
 
@@ -140,6 +150,8 @@ class SfrLayout:
     top: dict[str, int]                    # each channel's top reach, where it lines up
     last: dict[str, int]                   # each channel's last reach, where it lines up
     cut: list[int]                         # reaches whose upstream fraction is set to 0 each day
+    moves_cut: list = field(default_factory=list)  # the mover's moves set to move nothing each day (coupling/mover.py)
+    movers: list = field(default_factory=list)     # the simulation's movers, read from their files
 
 
 def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> SfrLayout:
@@ -170,11 +182,40 @@ def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> SfrLayout:
                    "restart would need saved; not built")
     if int(g("IDIVERSIONS")[0]) or np.any(g("NDIV")):
         out.append(f"{package}: diversions take water out of a channel that SWAT+ doesn't see")
-    if int(g("IMOVER")[0]):
-        out.append(f"{package}: the mover moves water SWAT+ doesn't see")
     e = cmap.entry_channel
     name = lambda i: cmap.channels[e[i]] if e[i] >= 0 else "no channel"  # noqa: E731
     links = sfr_reach_links(mf6, package)
+    movers, moved, moves_cut = [], [], []  # moved: (up, down, move) between this package's reaches, cut each day
+    if int(g("IMOVER")[0]):
+        movers = MV.movers(mf6.ws)
+        me = (mf6.model.lower(), package.lower())
+        for m in sorted({m for mv in movers for m in mv.moves}, key=lambda m: (m.mover, m.period, m.index)):
+            p_mine = (m.provider.model, m.provider.package) == me
+            r_mine = (m.receiver.model, m.receiver.package) == me
+            u = m.provider.id if p_mine else None
+            d = m.receiver.id if r_mine else None
+            via = f"through the mover ({m.mover.split('/')[0]}, period {m.period}'s move {m.index + 1})"
+            if u is not None and d is not None:
+                if e[u] < 0 and e[d] < 0:
+                    continue  # the model's own reaches
+                if e[u] == e[d]:
+                    out.append(f"{package}: reach {u} gives water to reach {d} in channel {name(u)} {via}; a "
+                               "mover within a channel isn't built")
+                elif e[d] < 0:
+                    out.append(f"{package}: reach {u} ({name(u)}) gives water to reach {d} (no channel) {via}; SWAT+ "
+                               "routes water between channels, so SFR would carry the channel's water on")
+                else:
+                    moved.append((u, d, m))
+            elif u is not None and e[u] >= 0:
+                out.append(f"{package}: reach {u} ({name(u)}) gives water to {m.receiver} {via}; SWAT+ routes the "
+                           "channel's water, so the mover can't take it elsewhere")
+            elif d is not None and e[d] >= 0:
+                kind = _type_of(mf6, m.provider)
+                if kind == "sfr":  # another model's reaches, or another SFR package's, as the model's own reaches
+                    moved.append((None, d, m))
+                else:
+                    out.append(f"{package}: {m.provider} ({kind.upper() or 'a package'}) gives water to reach {d} "
+                               f"({name(d)}) {via}: water SWAT+'s channel doesn't see; not built")
     within = [(u, d) for u, d in links if e[u] == e[d] and e[u] >= 0]
     fed = {d for _, d in within}
     bad: dict[str, list[str]] = {ch: [] for ch in cmap.channels}
@@ -198,27 +239,42 @@ def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> SfrLayout:
         top[ch] = tops[0]
         last[ch] = [r for r in mine if r not in down][0]
     cut = set()
-    for up, down in links:
-        if e[up] == e[down]:
+    joins = [(up, down, None) for up, down in links] + moved
+    for up, down, m in joins:
+        if m is None and e[up] == e[down]:
             continue
-        if e[down] < 0:
+        if m is None and e[down] < 0:
             out.append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}); SWAT+ routes "
                        "water between channels, so SFR would carry the channel's water on (cut that connection, or "
                        "give the reaches below a channel)")
             continue
-        cut.add(int(down))
+        if m is None:
+            cut.add(int(down))
+        else:
+            moves_cut.append(m)
+        how = "flows into" if m is None else "gives water through the mover to"
+        src = f"reach {up} ({name(up)})" if up is not None else str(m.provider)
         if top.get(name(down)) != down:
             bad[name(down)].append(
-                f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}), inside channel "
+                f"{package}: {src} {how} reach {down} ({name(down)}), inside channel "
                 f"{name(down)}; every confluence must fall on a channel boundary (a SWAT+ outlet at reach {down}'s top)")
-        if e[up] >= 0 and last.get(name(up)) != up:
-            bad[name(up)].append(f"{package}: reach {up} ({name(up)}) flows into reach {down} ({name(down)}) from "
+        if up is not None and e[up] >= 0 and last.get(name(up)) != up:
+            bad[name(up)].append(f"{package}: {src} {how} reach {down} ({name(down)}) from "
                                  f"inside channel {name(up)}; a channel leaves SFR only from its last reach")
     bad = {ch: v for ch, v in bad.items() if v}
     for ch in bad:
         top.pop(ch, None)
         last.pop(ch, None)
-    return SfrLayout(out, bad, top, last, sorted(cut))
+    return SfrLayout(out, bad, top, last, sorted(cut), sorted(moves_cut, key=lambda m: (m.mover, m.period, m.index)),
+                     movers)
+
+
+def _type_of(mf6: Modflow6, entry) -> str:
+    """The type of a mover's provider or receiver package, from libmf6 ("" where it isn't found)."""
+    try:
+        return str(mf6.api.get_value(f"{entry.model.upper()}/{entry.package.upper()}/PACKAGE_TYPE")[0]).strip().lower()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def stage_entries(mf6: Modflow6, package: str, cmap: ChannelMap, channel: str, cut: list[int]) -> dict[int, float]:
@@ -321,6 +377,7 @@ class StreamExchange:
             if problems:
                 raise ValueError("the SFR package can't be coupled:\n- " + "\n- ".join(problems))
             self._cut = lay.cut
+            self._movers, self._moves_cut = lay.movers, lay.moves_cut
             for ch in cmap.channels:
                 if sfr == "stage" or ch in lay.channel_problems:
                     why = lay.channel_problems.get(ch, ["[exchange] sfr = \"stage\""])
@@ -363,6 +420,8 @@ class StreamExchange:
             ustrf = self.mf6.get("USTRF", self.mf6.model, P).astype(float)
             ustrf[self._cut] = 0.0
             self.mf6.set("USTRF", P, ustrf)
+        if self._moves_cut:  # and what the mover would carry into a channel, or out of one into another
+            MV.cut(self.mf6, self._movers, self._moves_cut)
         if self._stage:
             if depth is None:
                 raise ValueError("SFR channels at a fixed stage need SWAT+'s channel depth for the day")

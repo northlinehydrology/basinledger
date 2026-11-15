@@ -340,6 +340,11 @@ class Modflow6:
         return self.api.get_end_time() * self.days
 
     @property
+    def period(self) -> int:
+        """The stress period of the day prepared (1-based)."""
+        return int(self.api.get_value("TDIS/KPER")[0])
+
+    @property
     def time(self) -> float:
         """The simulation's time, days."""
         return self.api.get_current_time() * self.days
