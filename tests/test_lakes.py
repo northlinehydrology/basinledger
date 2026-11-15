@@ -225,8 +225,8 @@ def test_a_coupled_lakes_outlets_are_cut(libmf6):
         assert LK.outlet_flow(mf, "lake", 1) == 0.0
         assert LK.problems(mf, [LK.LakeConfig("res01", "lake", 1)], ["res01"], None) == []  # its own outlets: cut
         bad = LK.problems(mf, [LK.LakeConfig("res02", "lake", 2)], ["res02"], None)
-        assert bad == ["[[lakes]] res02: lake's outlet 2 brings lake 1's water into lake 2, water SWAT+'s reservoir "
-                       "doesn't see; couple lake 1 too"]
+        assert bad == [("[[lakes]] res02: lake's outlet 2 brings lake 1's water into lake 2, water SWAT+'s reservoir "
+                        "doesn't see; couple lake 1 too")]
         both = [LK.LakeConfig("res01", "lake", 1), LK.LakeConfig("res02", "lake", 2)]
         assert LK.problems(mf, both, ["res01", "res02"], None) == []
     finally:
