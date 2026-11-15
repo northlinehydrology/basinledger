@@ -229,7 +229,7 @@ class Basin:
                 warnings.warn(note, EX.TakeoverNote, stacklevel=2)
             several = len(cfg.mf6_models) > 1  # several groundwater models coupled together (modflow6.Models)
             if several:
-                for what, on in (("transport", cfg.transport), ("[rivers]", cfg.rivers),
+                for what, on in (("transport", cfg.transport),
                                  ("[groundwater_to_soil]", cfg.groundwater_to_soil)):
                     if on:
                         raise ValueError(f"{what} with several groundwater models coupled isn't built")
@@ -583,35 +583,51 @@ class Basin:
             return list(dict.fromkeys(r["object"] for r in csv.DictReader(f)))
 
     def _rivers_day(self):
-        """Set today's river stages (if from NextGen's depth), before the solve."""
+        """Set today's river stages (if from NextGen's depth), before the solve, in each model with river cells."""
         rv = self.cfg.rivers
         if self.rivers is None:
             self._build_rivers()
-        pkg, cmap, rbot, stage0 = self.rivers
         if rv.get("stage") in ("surface_depth", "nextgen_depth"):
             depth = dict(zip(self.sw.names(S.DEPTH), self.sw.get(S.DEPTH)))  # yesterday's (SWAT+) or today's (replay)
-            e = cmap.entry_channel
-            stage = stage0.copy()
-            for i, c in enumerate(cmap.channels):
-                stage[e == i] = rbot[e == i] + float(rv.get("bed_thickness", 1.0)) + depth[c]
-            self.mf6.set_stage(pkg, stage)
+            for mf, pkg, cmap, rbot, stage0 in self.rivers:
+                e = cmap.entry_channel
+                stage = stage0.copy()
+                for i, c in enumerate(cmap.channels):
+                    stage[e == i] = rbot[e == i] + float(rv.get("bed_thickness", 1.0)) + depth[c]
+                mf.set_stage(pkg, stage)
 
     def _build_rivers(self):
-        """The river cells by flowpath, once MODFLOW 6 has read its first day."""
+        """The river cells by flowpath, once MODFLOW 6 has read its first day: with several models coupled, each
+        model's river package that the map's rows name (a row's model column, or the first's), its cells mapped
+        there."""
         rv = self.cfg.rivers
         pkg = rv.get("package", "riv")
-        if package_type(self.mf6, pkg) != "riv":
-            raise ValueError(f"[rivers] sets a river (RIV) package's stage; {pkg!r} is "
-                             f"{package_type(self.mf6, pkg).upper()}")
-        cmap = ChannelMap.from_spec(rv.get("map", ""), self.cfg.folder, self.mf6, pkg, self.sw.names(S.QOUT))
-        self.rivers = (pkg, cmap, self.mf6.get("RBOT", self.mf6.model, pkg.upper()).astype(float),
-                       self.mf6.get("STAGE", self.mf6.model, pkg.upper()).astype(float))
+        several = isinstance(self.mf6, Models)
+        views = [v for v in self._views() if v.has_package(pkg)] if several else [self.mf6]
+        if not views:
+            raise ValueError(f"[rivers]: no coupled model has a package {pkg!r}")
+        self.rivers = []
+        for v in views:
+            if package_type(v, pkg) != "riv":
+                raise ValueError(f"[rivers] sets a river (RIV) package's stage; {pkg!r} is "
+                                 f"{package_type(v, pkg).upper()}")
+            cmap = ChannelMap.from_spec(rv.get("map", ""), self.cfg.folder, v, pkg, self.sw.names(S.QOUT),
+                                        first_model=self.mf6.model if several else None)
+            if several and not (cmap.entry_channel >= 0).any():
+                continue  # the map has no rows in this model
+            self.rivers.append((v, pkg, cmap, v.get("RBOT", v.model, pkg.upper()).astype(float),
+                                v.get("STAGE", v.model, pkg.upper()).astype(float)))
+        if not self.rivers:
+            raise ValueError(f"[rivers]: the map has no rows in a coupled model with a package {pkg!r}")
 
     def _rivers_out(self):
-        pkg, cmap, _, _ = self.rivers
-        q = self.mf6.simvals(pkg)  # m3 d-1, positive into the aquifer
-        for i, c in enumerate(cmap.channels):
-            self.series[f"baseflow:{c}"].append(-float(q[cmap.entry_channel == i].sum()) / DAY)
+        base: dict[str, float] = {}
+        for mf, pkg, cmap, _, _ in self.rivers:
+            q = mf.simvals(pkg)  # m3 d-1, positive into the aquifer
+            for i, c in enumerate(cmap.channels):
+                base[c] = base.get(c, 0.0) - float(q[cmap.entry_channel == i].sum())
+        for c, v in base.items():
+            self.series[f"baseflow:{c}"].append(v / DAY)
 
     def _forcing(self, u: C.UserConfig, comp) -> dict:
         """Hourly weather inputs for a user, from its forcing source, for the inputs its component takes, and its
