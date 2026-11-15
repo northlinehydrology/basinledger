@@ -409,6 +409,30 @@ class Modflow6:
         """Each entry's simulated flow for the last day, m3 d-1, positive into the aquifer."""
         return self.get("SIMVALS", self.model, package.upper())[: self.nbound(package)].astype(float)
 
+    # what an advanced package carries from day to day, by its type, for a restart: a lake's stage; a multi-aquifer
+    # well's head and its wellbore's storage head
+    PACKAGE_STATE = {"lak": ("XNEWPAK",), "maw": ("HEAD", "XSTO")}
+
+    def package_state(self) -> dict[str, np.ndarray]:
+        """The advanced packages' state (``PACKAGE_STATE``) as MODFLOW 6 holds it, by memory address."""
+        names = set(self.api.get_input_var_names()) | set(self.api.get_output_var_names())
+        out = {}
+        for n in sorted(names):
+            parts = n.split("/")
+            if len(parts) == 3 and parts[0] == self.model and parts[2] == "PACKAGE_TYPE":
+                kind = str(self.api.get_value(n)[0]).strip().lower()
+                for var in self.PACKAGE_STATE.get(kind, ()):
+                    out[f"{self.model}/{parts[1]}/{var}"] = self.api.get_value(f"{self.model}/{parts[1]}/{var}").copy()
+        return out
+
+    def set_package_state(self, state: dict[str, np.ndarray]):
+        """Set saved advanced packages' state: call after initialize and before the first prepare_day."""
+        for address, value in state.items():
+            if address.split("/")[0] == self.model:
+                if self.api.get_value(address).shape != np.shape(value):
+                    raise ValueError(f"saved {address} doesn't match the model's")
+                self.api.set_value(address, np.asarray(value, dtype=np.float64))
+
     def set_heads(self, heads: np.ndarray):
         """Heads, m, per reduced node: call after initialize and before the first prepare_day."""
         if self.api.get_value(self.address("X", self.model, "")).shape != np.shape(heads):
@@ -580,6 +604,13 @@ class Models:
 
     def head(self) -> np.ndarray:
         return np.concatenate([v.head() for v in self.views])
+
+    def package_state(self) -> dict[str, np.ndarray]:
+        return {k: v for view in self.views for k, v in view.package_state().items()}
+
+    def set_package_state(self, state: dict[str, np.ndarray]):
+        for view in self.views:
+            view.set_package_state(state)
 
     def set_heads(self, heads: np.ndarray):
         heads = np.asarray(heads, float)

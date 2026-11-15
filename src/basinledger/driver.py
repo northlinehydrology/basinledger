@@ -278,14 +278,16 @@ class Basin:
                     raise
             if saved:
                 self.mf6.set_heads(np.load(Path(restart) / "heads.npy"))
+                packages = Path(restart) / "packages.npz"  # lakes' stages, multi-aquifer wells' heads
+                if packages.exists():
+                    with np.load(packages) as z:
+                        self.mf6.set_package_state({k.replace("|", "/"): z[k] for k in z.files})
                 # what a restart doesn't carry: packages holding water from day to day start from their files
-                held = {"maw": "its wells' water", "uzf": "the unsaturated zone's water", "lak": "the lakes' stages",
-                        "csub": "compaction"}
-                coupled_lakes = {lk.package.upper() for lk in cfg.lakes}  # their stages come from SWAT+ each day
+                held = {"uzf": "the unsaturated zone's water", "csub": "compaction"}
                 for v in self._views():
                     for p in EX.flow_packages(v, v.model):
                         t = str(v.get("PACKAGE_TYPE", v.model, p)[0]).strip().lower()
-                        if t in held and p.upper() not in coupled_lakes:
+                        if t in held:
                             warnings.warn(f"{p.lower()}: a restart carries MODFLOW 6's heads but not {held[t]} "
                                           f"({t.upper()}), which start from the model's files", EX.TakeoverNote,
                                           stacklevel=2)
@@ -1305,6 +1307,9 @@ class Basin:
         self.swat.save_state(str(folder / "surface"))
         if self.mf6 is not None:
             np.save(folder / "heads.npy", self.mf6.head())
+            state = self.mf6.package_state()  # lakes' stages, multi-aquifer wells' heads (Modflow6.PACKAGE_STATE)
+            if state:
+                np.savez(folder / "packages.npz", **{k.replace("/", "|"): v for k, v in state.items()})
             for sp, t in self.transport.items():
                 np.save(folder / f"concentration_{sp}.npy", t.concentration())
         (folder / "basin.json").write_text(json.dumps({
