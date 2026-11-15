@@ -49,6 +49,7 @@ from . import rules as R
 from .chain import UtilityChain
 from .coupling import existing as EX
 from .coupling import irrigation as IR
+from .coupling import lakes as LK
 from .coupling import recharge as RC
 from .coupling import swatplus as S
 from .coupling.exchange import ChannelMap, StreamExchange, package_type
@@ -220,9 +221,10 @@ class Basin:
                 # what a restart doesn't carry: packages holding water from day to day start from their files
                 held = {"maw": "its wells' water", "uzf": "the unsaturated zone's water", "lak": "the lakes' stages",
                         "csub": "compaction"}
+                coupled_lakes = {lk.package.upper() for lk in cfg.lakes}  # their stages come from SWAT+ each day
                 for p in EX.flow_packages(self.mf6, self.mf6.model):
                     t = str(self.mf6.get("PACKAGE_TYPE", self.mf6.model, p)[0]).strip().lower()
-                    if t in held:
+                    if t in held and p.upper() not in coupled_lakes:
                         warnings.warn(f"{p.lower()}: a restart carries MODFLOW 6's heads but not {held[t]} ({t.upper()}"
                                       "), which start from the model's files", EX.TakeoverNote, stacklevel=2)
             elif heads is not None:
@@ -265,6 +267,10 @@ class Basin:
         self.irrigation = None
         if cfg.irrigation:
             self._part("[irrigation]", lambda: self._irrigation(cfg, swat_dir, wells))
+        # lakes: SWAT+'s reservoirs holding MODFLOW 6's lakes' water (coupling/lakes.py)
+        self.lakes = None
+        if cfg.lakes:
+            self._part("[[lakes]]", lambda: self._lakes(cfg, swat_dir, saved))
 
         # stream-aquifer exchange (built on the first day, once MODFLOW 6's river package has its entries)
         self.exchange = None
@@ -444,6 +450,37 @@ class Basin:
         self._irrigation_rest = np.ones(len(names), bool)
         for i, _ in self.irrigation:
             self._irrigation_rest[i] = False
+
+    def _lakes(self, cfg, swat_dir, saved):
+        if not self.sw.has(LK.VOLUME) or not self.sw.has(LK.GW):
+            raise ValueError("[[lakes]] read and set SWAT+'s reservoirs (reservoir_water__volume and its groundwater "
+                             "exchange, swatplus-bmi 0.11.0)")
+        if self.mf6 is None:
+            raise ValueError("[[lakes]] need a [modflow6] model")
+        bad = LK.problems(self.mf6, cfg.lakes, list(self.sw.names(LK.VOLUME)), swat_dir)
+        if bad:
+            raise ValueError("\n- ".join(["the lakes can't be coupled as configured:"] + bad))
+        self.lakes = LK.LakeLink(self.mf6, self.sw, cfg.lakes)
+        if saved and saved.get("lakes_due"):
+            self.lakes.due = dict(saved["lakes_due"])
+        for lk in cfg.lakes:
+            k = f"lake:{lk.reservoir}:"
+            self.ledger.pair(k + "due", [k + "applied", k + "shortfall"], rtol=FLOAT32)
+
+    def _lakes_day(self, L):
+        """Each lake's day: yesterday's leakage as SWAT+'s reservoir took it, and today's leakage, due tomorrow."""
+        form = {lk.reservoir: lk.form for lk in self.cfg.lakes}
+        for res, d in self.lakes.after_solve().items():
+            k = f"lake:{res}:"
+            short = d["due"] - d["applied"] if d["due"] < 0 and d["applied"] > d["due"] else 0.0  # a loss it lacked
+            L.enter(k + "due", d["due"])
+            L.enter(k + "applied", d["applied"])
+            L.enter(k + "shortfall", short)
+            L.enter(k + "to_aquifer", d["to_aquifer"])       # today's, out of the lake into MODFLOW 6
+            L.enter(k + "stage_m", d["stage"])
+            L.enter(k + "volume", d["volume"])
+            if form[res] == "active":  # where LAK's stage ended the day; not kept, tomorrow starts from SWAT+'s
+                L.enter(k + "mf6_end_stage_m", d["mf6_end_stage"])
 
     def _irrigate(self, L, rt):
         """The day's irrigation on the mapped HRUs, requested from their wells; the rest stays water from outside."""
@@ -721,8 +758,12 @@ class Basin:
         if self.direct_exchange:
             names = self.sw.names(S.GW_EXCHANGE)
             self.sw.set(S.GW_EXCHANGE, np.array([self.due.get(c, 0.0) / DAY for c in names]))
+        if self.lakes is not None:  # yesterday's lake leakage, on the reservoirs today
+            self.lakes.before_swat()
         self.swat.update()
         rt.read_swat()
+        if self.lakes is not None:
+            self.lakes.after_swat()
         if self.irrigation is not None:  # the day's irrigation, pumped from MODFLOW 6's wells today
             self._irrigate(L, rt)
         if gw_soil is not None:
@@ -764,6 +805,8 @@ class Basin:
         if self.aquifer_check is not None:
             L.enter("recharge:swat_aquifers", float(np.sum(self.sw.get(RC.RECHARGE) * DAY * self.aquifer_check)))
         rt.apply_wells()
+        if self.lakes is not None:
+            self.lakes.before_solve()
         if self.cfg.rivers:
             self._rivers_day()
         limit = None
@@ -799,6 +842,8 @@ class Basin:
                 L.enter(f"exchange:{c}:stage_lowered_m", d)
             self.exchange.end_day()
         L.enter("recharge:received", self.recharge.received())
+        if self.lakes is not None:
+            self._lakes_day(L)
         if self.gw_soil is not None:
             sent, at_bottom = self.gw_soil.after_solve()
             L.enter("gw_soil:sent", sent)                  # out of MODFLOW 6 today, into SWAT+'s soil tomorrow
@@ -867,6 +912,12 @@ class Basin:
                 take(ex.drains[1].entry_channel[:n] >= 0, "seepage to SWAT+'s channels")
             if self.gw_soil is not None and p == self.gw_soil.package.upper():
                 take(np.ones(n, bool), "groundwater up into SWAT+'s soil")
+            for lk, s in zip(self.cfg.lakes, self.lakes.conn if self.lakes is not None else []):
+                if p == lk.package.upper():
+                    sel = np.zeros(n, bool)
+                    sel[s] = True
+                    how = "active within the day (A)" if lk.form == "active" else "at a fixed stage (B)"
+                    take(sel, f"lake {lk.lake}'s exchange with SWAT+'s reservoir {lk.reservoir}, {how}")
             wells = np.zeros(n, bool)
             named = []
             for name, (pkg, node) in self.router.wells.items():
@@ -982,6 +1033,7 @@ class Basin:
             "day": self.day, "ledger": self.ledger.state(), "series": self.series,
             "rule_memory": self.rule_memory,
             "exchange_due": self.due,
+            "lakes_due": self.lakes.due if self.lakes is not None else None,
             "gw_soil_due": self.gw_soil.due.tolist() if getattr(self, "gw_soil", None) is not None else None,
         }))
 

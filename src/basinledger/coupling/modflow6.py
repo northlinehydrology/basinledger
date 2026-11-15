@@ -70,6 +70,8 @@ DIMENSION = {
     "RAIN": LT, "EVAP": LT, "STRTOP": L, "SSTAGE": L, "LENGTH": L, "WIDTH": L, "USTRF": ONE, "SLOPE": ONE,
     "RAINFALL": LT, "EVAPORATION": LT, "WITHDRAWAL": Q, "XNEWPAK": L, "XOLDPAK": L,
     "RATESIM": Q, ("maw", "RATE"): Q, ("evt", "RATE"): LT,
+    ("lak", "TELEV"): L, ("lak", "BELEV"): L, ("lak", "SAREA"): A, ("lak", "LAKEBOT"): L, ("lak", "LAKETOP"): L,
+    ("lak", "STRT"): L,
     ("gwt", "X"): C, ("gwt", "SIMVALS"): MT, ("gwt", "FLOW"): Q, ("gwt", "AUXVAR"): C,
     ("gwt", "RATESTO"): MT, ("gwt", "RATESRB"): MT,
 }

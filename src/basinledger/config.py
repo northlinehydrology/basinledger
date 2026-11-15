@@ -61,6 +61,12 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
                                         #   shares; or a CSV with columns hru, well, share. The HRU must irrigate
                                         #   from an outside source in SWAT+
 
+    [[lakes]]                           # optional: a SWAT+ reservoir holding a MODFLOW 6 lake's water (coupling/
+    reservoir = "res01"                 #   lakes.py; swatplus-bmi 0.11.0): the lake set from the reservoir each day,
+    package = "lak"                     #   its leakage the reservoir's groundwater exchange the next day. lake: its
+    lake = 1                            #   1-based number in the package; form "active" (A, within the day from the
+    form = "active"                     #   reservoir's start) or "fixed_stage" (B, at the stage of its volume)
+
     [exchange]                          # optional: two-way stream-aquifer exchange (MODFLOW 6 RIV or SFR <-> SWAT+)
     package = "riv"                     #   a river (RIV) or streamflow routing (SFR) package
     map = "all:cha01"                   # every RIV entry to one channel, or a CSV: object, layer, row, col (or
@@ -224,6 +230,7 @@ class ExampleConfig:
     mf6_length_units: str | None = None  # the model's, where its DIS leaves them undefined (coupling/modflow6.py)
     mf6_time_units: str | None = None
     irrigation: dict[str, list[tuple[str, float]]] | None = None  # HRU -> its wells and shares (coupling/irrigation.py)
+    lakes: list = field(default_factory=list)  # LakeConfig: a SWAT+ reservoir coupled to a LAK lake (coupling/lakes.py)
 
     @property
     def surface(self) -> str:
@@ -265,7 +272,7 @@ def load(path: str | Path) -> ExampleConfig:
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
              "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather",
-             "groundwater_to_soil", "irrigation"}
+             "groundwater_to_soil", "irrigation", "lakes"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -333,6 +340,18 @@ def load(path: str | Path) -> ExampleConfig:
         missing = sorted({w for ws in irrigation.values() for w, _ in ws} - named)
         if missing:
             raise ValueError(f"{path}: [irrigation] wells {missing} aren't in [[wells]]")
+    lakes = []
+    if c.get("lakes"):
+        from .coupling.lakes import FORMS, LakeConfig
+        if "swatplus" not in c or "modflow6" not in c:
+            raise ValueError(f"{path}: [[lakes]] couple SWAT+'s reservoirs to MODFLOW 6's lakes; they need both")
+        for lk in c["lakes"]:
+            if set(lk) - {"reservoir", "package", "lake", "form"} or "reservoir" not in lk or "package" not in lk:
+                raise ValueError(f"{path}: each [[lakes]] has reservoir and package, and may have lake (1-based) and "
+                                 f"form; got {sorted(lk)}")
+            if lk.get("form", "active") not in FORMS:
+                raise ValueError(f"{path}: [[lakes]] {lk['reservoir']}: form is one of {', '.join(FORMS)}")
+            lakes.append(LakeConfig(lk["reservoir"], lk["package"], int(lk.get("lake", 1)), lk.get("form", "active")))
     for h in c.get("outputs", {}).get("heads", []):
         _cell(path, f"[outputs] heads {h.get('name')!r}", h.get("cell"))
     for r in c.get("rules", []):
@@ -382,4 +401,5 @@ def load(path: str | Path) -> ExampleConfig:
         weather=weather,
         groundwater_to_soil=dict(gs) if gs is not None else None,
         irrigation=irrigation,
+        lakes=lakes,
     )
