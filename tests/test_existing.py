@@ -354,6 +354,46 @@ def test_another_groundwater_model_in_the_simulation_is_outside(swatplus):
     assert t["recharge:received"] == pytest.approx(t["recharge:made"], rel=1e-9)
 
 
+def with_a_new_well(cfg, cell=(1, 3, 3), package="wel_users"):
+    """A second plant drawing from a well the model doesn't have, which Basin Ledger adds."""
+    cfg.wells.append(C.WellConfig("new1", package, cell, add=True))
+    plant = copy.deepcopy(cfg.users[0])
+    plant.name, plant.withdrawal = "plant2", "well:new1"
+    cfg.users.append(plant)
+    return cfg
+
+
+def test_a_well_the_model_doesnt_have_is_added(swatplus):
+    from basinledger.driver import Basin
+    rows = []
+    found, notes = Basin.check(with_a_new_well(config()), run="existing-check-new-well", takeover=rows)
+    assert found == []
+    assert ("wel_users: a well package Basin Ledger adds to the run's copy for wells the model doesn't have: new1 at "
+            "[1, 3, 3]") in notes
+    assert {r.package: (r.role, r.entries) for r in rows}["wel_users"] == ("Basin Ledger's", 1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        b = Basin(with_a_new_well(config()), run="existing-run-new-well", days=75)
+        try:
+            b.run()
+            t = b.ledger.totals()
+        finally:
+            b.finalize()
+    assert t["route:well:new1:requested"] > 0.0
+    assert t["route:well:new1:delivered"] == pytest.approx(t["route:well:new1:requested"])
+    assert t["route:well:city1:delivered"] == pytest.approx(t["route:well:city1:requested"])
+    assert abs(t["groundwater:closure_share"]) < 1e-6 * 75
+    assert "groundwater:boundary:wel_users" in t and t["groundwater:boundary:wel_users"] == 0.0  # all of it a user's
+
+
+def test_an_added_well_refused(swatplus):
+    from basinledger.driver import Basin
+    found, _ = Basin.check(with_a_new_well(config(), package="wel_city"), run="existing-check-new-well-bad")
+    assert len(found) == 1 and "the model has a package 'wel_city'" in found[0]
+    found, _ = Basin.check(with_a_new_well(config(), cell=(1, 3)), run="existing-check-new-well-bad")
+    assert len(found) == 1 and "cell [1, 3] isn't a DIS cell" in found[0]
+
+
 def test_the_models_own_boundaries_are_booked_as_from_or_to_outside(runs):
     t, _, _ = runs["dis"]
     assert t["groundwater:boundary:wel_city"] == pytest.approx(-25.0 * 75)  # the other city well, the model's rate
