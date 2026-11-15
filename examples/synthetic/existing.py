@@ -86,7 +86,7 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
           steps: int = 1, tsmult: float = 1.0, septic: bool = False, length_units: str = "meters",
           time_units: str = "days", state_units: bool = True, complexity: str = "moderate",
           neighbor: bool = False, lake: bool = False, neighbor_recharge: bool = False,
-          neighbor_river: bool = False, maw: bool = False) -> Path:
+          neighbor_river: bool = False, maw: bool = False, steady: str | None = None) -> Path:
     if grid not in ("dis", "disv"):
         raise ValueError("grid is dis or disv")
     if neighbor and grid != "dis":
@@ -125,8 +125,14 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
                                  yorigin=y0, angrot=ANGLE, pname="disv_kzoo")
     flopy.mf6.ModflowGwfnpf(gwf, icelltype=[1, 0], k=[u(8.0, *LT), u(2.0, *LT)], k33=[u(0.8, *LT), u(0.2, *LT)],
                             pname="k_glacial")
-    flopy.mf6.ModflowGwfsto(gwf, iconvert=[1, 0], sy=0.2, ss=[u(1e-5, -1), u(5e-6, -1)], transient={0: True},
-                            pname="sto_glacial")
+    if steady is None:
+        flopy.mf6.ModflowGwfsto(gwf, iconvert=[1, 0], sy=0.2, ss=[u(1e-5, -1), u(5e-6, -1)], transient={0: True},
+                                pname="sto_glacial")
+    elif steady == "sto":  # handed over steady, its storage package's periods steady
+        flopy.mf6.ModflowGwfsto(gwf, iconvert=[1, 0], sy=0.2, ss=[u(1e-5, -1), u(5e-6, -1)], steady_state={0: True},
+                                pname="sto_glacial")
+    elif steady != "no_sto":  # "no_sto": handed over steady with no storage package, as Kalamazoo's
+        raise ValueError("steady is None, 'sto' or 'no_sto'")
     flopy.mf6.ModflowGwfic(gwf, strt=u(STAGE + 0.5))
     seasonal = [0.0008, 0.0006, 0.0012, 0.0015, 0.0007, 0.0003, 0.0001, 0.0001, 0.0002, 0.0005, 0.0009, 0.0010]
     month = lambda i: (start.month - 1 + i) % 12  # noqa: E731

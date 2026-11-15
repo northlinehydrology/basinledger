@@ -506,3 +506,63 @@ def test_a_multi_aquifer_well_refused(swatplus, tmp_path):
     (tmp_path / "x.toml").write_text(base.replace("cell = [1, 5, 6]", "well = 0"))
     with pytest.raises(ValueError, match="well is the MAW well's number in its package, from 1"):
         C.load(tmp_path / "x.toml")
+
+
+def test_storage_for_a_model_handed_over_steady(tmp_path):
+    """``existing.add_storage``: a model with no storage package gets one of Basin Ledger's own, transient; a model
+    whose own is steady has its periods made transient, its values kept; the refusals."""
+    import flopy
+
+    from basinledger.coupling import existing as X
+    ws = tmp_path / "no_sto"
+    E.build(ws, 31, START, steady="no_sto")
+    assert X.steady_periods(ws, "kzoo") == "no STO"
+    with pytest.raises(ValueError, match="kzoo has no storage package; give sy and ss"):
+        X.add_storage(ws, "kzoo", None, None)
+    with pytest.raises(ValueError, match="sy is a fraction"):
+        X.add_storage(ws, "kzoo", 1.5, 1e-5)
+    notes = X.add_storage(ws, "kzoo", 0.15, 1e-5)
+    assert notes == ["sto_basinledger: a storage package Basin Ledger adds to the run's copy, the model having none: "
+                     "ICONVERT 1, SY 0.15, SS 1e-05 per meter, transient from the first day"]
+    assert X.steady_periods(ws, "kzoo") is None
+    sto = flopy.mf6.MFSimulation.load(sim_ws=str(ws), verbosity_level=0).get_model("kzoo").get_package("sto")
+    assert float(sto.sy.array.max()) == 0.15 and sto.transient.get_data() is True  # flopy reads it back
+    ws = tmp_path / "feet"
+    E.build(ws, 31, START, steady="no_sto", length_units="feet")
+    X.add_storage(ws, "kzoo", 0.15, 1e-5)
+    assert "CONSTANT 3.048e-06" in (ws / "kzoo.sto_basinledger.sto").read_text()  # per foot
+    ws = tmp_path / "steady"
+    E.build(ws, 31, START, steady="sto")
+    assert X.steady_periods(ws, "kzoo") == "steady"
+    with pytest.raises(ValueError, match="has its own storage package"):
+        X.add_storage(ws, "kzoo", 0.15, 1e-5)
+    assert X.add_storage(ws, "kzoo", None, None) == [
+        "sto_glacial: the model's storage package made transient in the run's copy (1 steady period), its "
+        "own SY and SS kept"]
+    assert X.steady_periods(ws, "kzoo") is None
+
+
+@pytest.mark.parametrize("storage", [None, {"sy": 0.2, "ss": 1e-5}])
+def test_a_model_handed_over_steady_coupled(swatplus, storage):
+    """With no storage package, each day is the day's steady state (noted) and nothing is released from storage;
+    with [modflow6] storage, the model runs transient, storage releasing and taking water, and the ledger closes."""
+    from basinledger.driver import Basin
+    cfg = config(steady="no_sto")
+    cfg.mf6_storage = storage
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        b = Basin(cfg, run=f"existing-run-steady-{bool(storage)}", days=75)
+        try:
+            b.run()
+            t = b.ledger.table()
+        finally:
+            b.finalize()
+    notes = [str(w.message) for w in caught]
+    sto = t["groundwater:storage_release"]
+    if storage is None:
+        assert any(n.startswith("kzoo: no storage package, so MODFLOW 6 solves those days without storage") for n in notes)
+        assert (sto == 0).all()
+    else:
+        assert any(n.startswith("sto_basinledger: a storage package Basin Ledger adds") for n in notes)
+        assert (np.abs(sto) > 0).all()  # storage in every day's balance (heads falling from their start: released)
+    assert np.abs(t["groundwater:closure_share"]).max() < 1e-6

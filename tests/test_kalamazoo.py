@@ -60,3 +60,22 @@ def test_its_size_and_its_boundaries():
     assert count("kala.drn", "MAXBOUND") == 29897
     assert count("kala.ghb", "MAXBOUND") == 137100
     assert count("kala.ib.ibound.chd", "MAXBOUND") == 28424
+
+
+def test_storage_added_to_the_steady_model(tmp_path):
+    """Kalamazoo has no storage package (steady): ``[modflow6] storage`` adds one to a run's copy, its SS written per
+    foot, the units the study states (its DIS leaves them undefined). Text only: the name file copied, the grid
+    linked, nothing run."""
+    import shutil
+
+    from basinledger.coupling.existing import add_storage, steady_periods
+    for name in ("mfsim.nam", "kala.nam"):
+        shutil.copy(WS / name, tmp_path / name)
+    (tmp_path / "kala.dis").symlink_to(WS / "kala.dis")
+    assert steady_periods(tmp_path, "kala") == "no STO"
+    with pytest.raises(ValueError, match="length units are undefined"):
+        add_storage(tmp_path, "kala", 0.15, 1e-5)
+    add_storage(tmp_path, "kala", 0.15, 1e-5, length_units="feet")
+    assert "STO6  kala.sto_basinledger.sto  sto_basinledger" in (tmp_path / "kala.nam").read_text()
+    assert "CONSTANT 3.048e-06" in (tmp_path / "kala.sto_basinledger.sto").read_text()
+    assert steady_periods(tmp_path, "kala") is None
