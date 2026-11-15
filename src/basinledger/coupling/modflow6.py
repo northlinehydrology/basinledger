@@ -114,6 +114,10 @@ class Modflow6:
             self.api.finalize()
             raise
         self.meters, self.days = METERS[self.length_units], DAYS[self.time_units]
+        self._read_grid()
+
+    def _read_grid(self):
+        """The model's grid: cell areas, shape, and the user-to-reduced node numbering."""
         self.cell_area = self.get("AREA", self.model, "DIS").astype(float)
         self.nodes = len(self.cell_area)
         shape = self.get("MSHAPE", self.model, "DIS")
@@ -124,6 +128,25 @@ class Modflow6:
         nuser = int(np.prod(self.shape))
         self._reduced = reduced.astype(int) if reduced is not None and len(reduced) == nuser else None
         self._rows: dict[str, np.ndarray] = {}
+
+    def view(self, model: str) -> Modflow6:
+        """Another groundwater model of the same simulation, through the same libmf6 (one simulation per process):
+        its own grid and packages, the simulation's time and units. A view doesn't step the simulation. Models in
+        other length units than this one are refused (the conversion is one per run)."""
+        v = object.__new__(Modflow6)
+        v.__dict__.update({k: x for k, x in self.__dict__.items() if k not in ("_types",)})
+        v.model = model.upper()
+        v._types = {}
+        try:
+            code = int(v.get_model_units("LENUNI", v.model, "DIS")[0])
+        except Exception as e:  # noqa: BLE001  (no such model)
+            raise ValueError(f"[modflow6] models: {model.lower()!r} isn't a groundwater model of the simulation") from e
+        own = LENUNI.get(code)
+        if own is not None and own != self.length_units:
+            raise ValueError(f"[modflow6] models: {model} is in {own} and {self.model.lower()} in "
+                             f"{self.length_units}; coupled models must share their length units")
+        v._read_grid()
+        return v
 
     # ---------- units ----------
     @staticmethod
@@ -226,9 +249,17 @@ class Modflow6:
         self.api.set_value(self.address(var, m, package.upper()), self._scale(values, var, m, package.upper(), True))
 
     # ---------- cells ----------
-    def node(self, *cell: int) -> int:
+    def node(self, *cell: int, model: str | None = None, node: int | None = None) -> int:
         """0-based ``(layer, row, col)`` of a DIS grid or ``(layer, icell2d)`` of a DISV grid -> 0-based reduced
-        node. A cell in the other grid's form, outside the grid or inactive is refused."""
+        node. A cell in the other grid's form, outside the grid or inactive is refused. ``model``, if given, must be
+        this one (``Models`` takes the others); ``node`` instead of a cell is a reduced node, checked."""
+        if model is not None and model.upper() != self.model:
+            raise ValueError(f"a cell of model {model}, but the model coupled is {self.model.lower()} (several models "
+                             "are coupled with [modflow6] models)")
+        if node is not None:
+            if not 0 <= int(node) < self.nodes:
+                raise ValueError(f"node {node} is outside the model's {self.nodes} nodes")
+            return int(node)
         cell = tuple(int(c) for c in cell)
         if self.grid == "disu" or len(cell) != len(self.shape):
             raise ValueError(f"cell {cell}: this model's grid is {self.grid.upper()}, whose cells are "
@@ -249,6 +280,13 @@ class Modflow6:
 
     def nbound(self, package: str) -> int:
         return int(self.get("NBOUND", self.model, package.upper())[0])
+
+    def has_package(self, package: str) -> bool:
+        return self._has(self.model, package.upper())
+
+    def aux_multiplier(self, package: str) -> bool:
+        """Whether a boundary package multiplies its values by an auxiliary variable."""
+        return int(self.get("IAUXMULTCOL", self.model, package.upper())[0]) > 0
 
     def entry(self, package: str, node: int) -> int:
         idx = np.flatnonzero(self.package_nodes(package) == node)
@@ -374,6 +412,109 @@ class Modflow6:
 
     def finalize(self):
         self.api.finalize()
+
+
+class Models:
+    """Several groundwater models of one simulation coupled together (``[modflow6] models``; docs/design.md, "Several
+    groundwater models coupled together"): a view of each, and their cells numbered in one sequence, each model's
+    after the one before, so a map, the recharge and the wells take a cell of any of them. A package named in more
+    than one model is the same name in each (the recharge package): its entries are each model's in turn. What runs
+    the simulation (prepare, solve, time) is the first model's, the one libmf6 was started for.
+
+    Links that are one model's (the stream exchange, a lake, rivers) take that model's view (``view_of``)."""
+
+    def __init__(self, first: Modflow6, models: list[str]):
+        names = [m.upper() for m in models]
+        if names[0] != first.model:
+            raise ValueError(f"[modflow6] models: the first is {models[0]}, the model started is {first.model.lower()}")
+        if len(set(names)) != len(names):
+            raise ValueError(f"[modflow6] models: {models} names a model twice")
+        self.first = first
+        self.views = [first] + [first.view(m) for m in names[1:]]
+        self.offset = np.concatenate([[0], np.cumsum([v.nodes for v in self.views])]).astype(int)
+        self.cell_area = np.concatenate([v.cell_area for v in self.views])
+        self.nodes = int(self.offset[-1])
+        self.model = first.model
+
+    def __getattr__(self, name):  # the simulation's own: api, ws, units, prepare_day, solve_day, end, ...
+        if name == "first":
+            raise AttributeError(name)
+        return getattr(self.first, name)
+
+    @property
+    def names(self) -> list[str]:
+        return [v.model for v in self.views]
+
+    def view_of(self, model: str | None) -> Modflow6:
+        if model is None:
+            return self.first
+        for v in self.views:
+            if v.model == model.upper():
+                return v
+        raise ValueError(f"model {model!r} isn't one of the coupled models {[n.lower() for n in self.names]}")
+
+    def model_of(self, node: int) -> tuple[Modflow6, int]:
+        """The model a node of the sequence is in, and its node there."""
+        i = int(np.searchsorted(self.offset, node, side="right")) - 1
+        return self.views[i], int(node - self.offset[i])
+
+    def node(self, *cell: int, model: str | None = None, node: int | None = None) -> int:
+        v = self.view_of(model)
+        return int(self.offset[self.views.index(v)]) + v.node(*cell, node=node)
+
+    def _parts(self, package: str):
+        return [(v, int(self.offset[i])) for i, v in enumerate(self.views) if v.has_package(package)]
+
+    def package_nodes(self, package: str) -> np.ndarray:
+        parts = self._parts(package)
+        if not parts:
+            raise ValueError(f"no coupled model has a package {package!r}")
+        return np.concatenate([np.where(n >= 0, n + off, n) for v, off in parts
+                               for n in [v.package_nodes(package)]])
+
+    def nbound(self, package: str) -> int:
+        return sum(v.nbound(package) for v, _ in self._parts(package))
+
+    def has_package(self, package: str) -> bool:
+        return bool(self._parts(package))
+
+    def aux_multiplier(self, package: str) -> bool:
+        return any(v.aux_multiplier(package) for v, _ in self._parts(package))
+
+    def entry(self, package: str, node: int) -> int:
+        idx = np.flatnonzero(self.package_nodes(package) == node)
+        if len(idx) != 1:
+            raise ValueError(f"{package}: {len(idx)} entries at node {node}")
+        return int(idx[0])
+
+    def _entry_of(self, package: str, entry: int) -> tuple[Modflow6, int]:
+        for v, _ in self._parts(package):
+            n = v.nbound(package)
+            if entry < n:
+                return v, entry
+            entry -= n
+        raise IndexError(f"{package}: no entry {entry}")
+
+    def set_recharge(self, package: str, rate_per_node: np.ndarray):
+        for v, off in self._parts(package):
+            v.set_recharge(package, rate_per_node[off:off + v.nodes])
+
+    def set_well(self, package: str, entry: int, q: float):
+        v, i = self._entry_of(package, entry)
+        v.set_well(package, i, q)
+
+    def simvals(self, package: str) -> np.ndarray:
+        return np.concatenate([v.simvals(package) for v, _ in self._parts(package)])
+
+    def head(self) -> np.ndarray:
+        return np.concatenate([v.head() for v in self.views])
+
+    def set_heads(self, heads: np.ndarray):
+        heads = np.asarray(heads, float)
+        if heads.shape != (self.nodes,):
+            raise ValueError("saved heads don't match the coupled models' nodes")
+        for i, v in enumerate(self.views):
+            v.set_heads(heads[self.offset[i]:self.offset[i + 1]])
 
 
 def remaining_simulation(src: Path, dst: Path, day: int, time_units: str | None = None):

@@ -44,6 +44,7 @@ class LakeConfig:
     package: str            # MODFLOW 6's lake package
     lake: int = 1           # the lake's number in the package, 1-based as in its file
     form: str = "active"    # "active" (A) or "fixed_stage" (B)
+    model: str | None = None  # with several groundwater models coupled, the lake's (the first if not given)
 
 
 def eps_quadratic(top: np.ndarray, bot: np.ndarray, x: float, eps: float = 1e-6) -> np.ndarray:
@@ -166,6 +167,11 @@ def own_seepage(project: str | Path) -> dict[str, float]:
     return {r[1]: hyd.get(res.get(r[7], ""), 0.0) for r in rows("reservoir.con") if len(r) > 7}
 
 
+def view(mf6, lake: LakeConfig):
+    """The lake's model: one of several coupled (``modflow6.Models``), or the one."""
+    return mf6.view_of(lake.model) if hasattr(mf6, "view_of") else mf6
+
+
 def problems(mf6, lakes: list[LakeConfig], reservoirs: list[str], project) -> list[str]:
     """What the start-up refuses in the lakes as configured."""
     bad = []
@@ -184,6 +190,11 @@ def problems(mf6, lakes: list[LakeConfig], reservoirs: list[str], project) -> li
             bad.append(f"{where}: lake {lk.lake} of {lk.package} is coupled twice")
         seen.add((lk.package.lower(), lk.lake))
         try:
+            mf6_all, mf6 = mf6, view(mf6, lk)
+        except ValueError as e:
+            bad.append(f"{where}: {e}")
+            continue
+        try:
             t = str(mf6.get("PACKAGE_TYPE", mf6.model, lk.package.upper())[0]).strip().lower()
         except Exception:  # noqa: BLE001  (no such package in the model)
             bad.append(f"{where}: the model has no package {lk.package!r}")
@@ -198,6 +209,7 @@ def problems(mf6, lakes: list[LakeConfig], reservoirs: list[str], project) -> li
         if int(mf6.get_model_units("NOUTLETS", mf6.model, lk.package.upper())[0]) > 0:
             bad.append(f"{where}: {lk.package} has outlets, water between water bodies, which SWAT+ routes; cutting "
                        "a coupled lake's outlets isn't built")
+        mf6 = mf6_all
     return bad
 
 
@@ -207,10 +219,11 @@ class LakeLink:
 
     def __init__(self, mf6, sw, lakes: list[LakeConfig]):
         self.mf6, self.sw, self.lakes = mf6, sw, lakes
+        self.views = [view(mf6, lk) for lk in lakes]
         names = list(sw.names(VOLUME))
         self.index = [names.index(lk.reservoir) for lk in lakes]
-        self.curves = [curve(mf6, lk.package, lk.lake) for lk in lakes]
-        self.conn = [connections(mf6, lk.package, lk.lake) for lk in lakes]
+        self.curves = [curve(v, lk.package, lk.lake) for v, lk in zip(self.views, lakes)]
+        self.conn = [connections(v, lk.package, lk.lake) for v, lk in zip(self.views, lakes)]
         self.due = {lk.reservoir: 0.0 for lk in lakes}         # m3 for the next day, positive into the reservoir
         self.start_volume = sw.get(VOLUME)[self.index].astype(float)  # the reservoirs at the first day's start
         self.day: dict[str, dict[str, float]] = {}
@@ -236,8 +249,7 @@ class LakeLink:
 
     def before_solve(self):
         """Each lake set from its reservoir's day, after MODFLOW 6 prepares the day."""
-        mf = self.mf6
-        for lk, c in zip(self.lakes, self.curves):
+        for lk, c, mf in zip(self.lakes, self.curves, self.views):
             d, p, j = self.day[lk.reservoir], lk.package, lk.lake - 1
             for var in ("RAINFALL", "EVAPORATION", "RUNOFF", "INFLOW", "WITHDRAWAL"):  # SWAT+ owns the lake's water
                 x = mf.get(var, mf.model, p.upper())
@@ -267,8 +279,7 @@ class LakeLink:
 
     def after_solve(self) -> dict[str, dict[str, float]]:
         """Each lake's leakage today (positive into the aquifer), due on its reservoir tomorrow; and its day."""
-        mf = self.mf6
-        for lk, s in zip(self.lakes, self.conn):
+        for lk, s, mf in zip(self.lakes, self.conn, self.views):
             d = self.day[lk.reservoir]
             d["to_aquifer"] = float(mf.simvals(lk.package)[s].sum())
             d["mf6_end_stage"] = float(mf.get("XNEWPAK", mf.model, lk.package.upper())[lk.lake - 1])

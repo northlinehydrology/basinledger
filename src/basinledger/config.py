@@ -25,6 +25,10 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     # length_units = "feet"             # the model's, only where its DIS leaves LENGTH_UNITS undefined
     # time_units = "days"               # the model's, only where its TDIS leaves TIME_UNITS undefined
     model = "gwf"
+    # models = ["parent", "inset"]      # or several groundwater models of the simulation coupled together (an LGR
+                                        #   inset and its parent): maps then give each row's model in a model
+                                        #   column, a well its model, and the exchange, a lake and head outputs
+                                        #   theirs (each the first if not given)
 
     [recharge]                          # SWAT+ -> MODFLOW 6 recharge (one-way)
     package = "rch"
@@ -176,6 +180,7 @@ class WellConfig:
     package: str
     cell: tuple[int, ...]   # (layer, row, col) on a DIS grid, (layer, icell2d) on a DISV grid
     add: bool = False       # a well the model doesn't have, in a WEL package Basin Ledger adds (existing.add_wells)
+    model: str | None = None  # with several models coupled, the one it's in (the first if not given)
 
 
 def _flag(path: Path, where: str, v) -> bool:
@@ -229,6 +234,7 @@ class ExampleConfig:
     groundwater_to_soil: dict | None = None  # rule, cap, package (coupling/gwsoil.py)
     mf6_length_units: str | None = None  # the model's, where its DIS leaves them undefined (coupling/modflow6.py)
     mf6_time_units: str | None = None
+    mf6_models: list[str] = field(default_factory=list)  # several groundwater models coupled together, the first first
     irrigation: dict[str, list[tuple[str, float]]] | None = None  # HRU -> its wells and shares (coupling/irrigation.py)
     lakes: list = field(default_factory=list)  # LakeConfig: a SWAT+ reservoir coupled to a LAK lake (coupling/lakes.py)
 
@@ -276,6 +282,11 @@ def load(path: str | Path) -> ExampleConfig:
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
+    if "model" in mf and "models" in mf:
+        raise ValueError(f"{path}: [modflow6] takes model (one) or models (several coupled together), not both")
+    models = mf.get("models", [])
+    if "models" in mf and (not isinstance(models, list) or not models or not all(isinstance(m, str) for m in models)):
+        raise ValueError(f"{path}: [modflow6] models is a list of the groundwater models' names; got {models!r}")
     if "modflow6" in c and bool(mf.get("builder")) == bool(mf.get("workspace")):
         raise ValueError(f"{path}: [modflow6] needs one of builder or workspace")
     from .coupling.modflow6 import DAYS, METERS
@@ -346,12 +357,14 @@ def load(path: str | Path) -> ExampleConfig:
         if "swatplus" not in c or "modflow6" not in c:
             raise ValueError(f"{path}: [[lakes]] couple SWAT+'s reservoirs to MODFLOW 6's lakes; they need both")
         for lk in c["lakes"]:
-            if set(lk) - {"reservoir", "package", "lake", "form"} or "reservoir" not in lk or "package" not in lk:
+            if set(lk) - {"reservoir", "package", "lake", "form", "model"} or "reservoir" not in lk or \
+                    "package" not in lk:
                 raise ValueError(f"{path}: each [[lakes]] has reservoir and package, and may have lake (1-based) and "
                                  f"form; got {sorted(lk)}")
             if lk.get("form", "active") not in FORMS:
                 raise ValueError(f"{path}: [[lakes]] {lk['reservoir']}: form is one of {', '.join(FORMS)}")
-            lakes.append(LakeConfig(lk["reservoir"], lk["package"], int(lk.get("lake", 1)), lk.get("form", "active")))
+            lakes.append(LakeConfig(lk["reservoir"], lk["package"], int(lk.get("lake", 1)), lk.get("form", "active"),
+                                    lk.get("model")))
     for h in c.get("outputs", {}).get("heads", []):
         _cell(path, f"[outputs] heads {h.get('name')!r}", h.get("cell"))
     for r in c.get("rules", []):
@@ -372,13 +385,14 @@ def load(path: str | Path) -> ExampleConfig:
         swat_project=_path(base, sw["project"]) if sw else None,
         mf6_builder=mf.get("builder"),
         mf6_workspace=_path(base, mf["workspace"]) if mf.get("workspace") else None,
-        mf6_model=mf.get("model", "gwf"),
+        mf6_model=models[0] if models else mf.get("model", "gwf"),
+        mf6_models=list(models),
         recharge_package=rch.get("package", "rch"),
         recharge_map=rch.get("map", ""),
         recharge_add=_flag(path, "[recharge] add", rch.get("add", False)),
         area_rtol=None if rch.get("area_check", True) is False else float(rch.get("area_rtol", 1e-6)),
         wells=[WellConfig(w["name"], w.get("package", "wel"), _cell(path, f"well {w['name']!r}", w.get("cell")),
-                          _flag(path, f"well {w['name']!r} add", w.get("add", False)))
+                          _flag(path, f"well {w['name']!r} add", w.get("add", False)), w.get("model"))
                for w in c.get("wells", [])],
         users=users,
         calibration_record=_path(base, c["calibration"]["record"]) if c.get("calibration", {}).get("record") else None,

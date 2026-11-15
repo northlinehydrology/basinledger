@@ -74,7 +74,7 @@ class RechargeLink:
         if len(np.unique(nodes)) != len(nodes):
             raise ValueError(f"MODFLOW 6's {self.package} package has {len(nodes) - len(np.unique(nodes))} cells with "
                              "more than one entry; Basin Ledger sets one rate per cell")
-        if int(self.mf6.get("IAUXMULTCOL", self.mf6.model, self.package.upper())[0]) > 0:
+        if self.mf6.aux_multiplier(self.package):
             raise ValueError(f"MODFLOW 6's {self.package} package has an auxiliary multiplier; Basin Ledger sets "
                              "the rate itself")
 
