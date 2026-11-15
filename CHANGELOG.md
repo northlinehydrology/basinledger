@@ -63,6 +63,11 @@ MODFLOW 6 model").
   is left out. The start-up says what was rewritten, and notes a TDIS start date that isn't the run's. A one-period
   model of longer steps now restarts. The synthetic foreign model in five growing steps a month gives its daily
   twin's run.
+- The mover in the SFR line-up rule: movers read from their files (`coupling/mover.py`, a model's own or an
+  exchange's), each move between SFR reaches checked as a connection and, lined up, cut each day (its value set to
+  move nothing, for each type). A move within a channel, out of a coupled channel to anything but another channel's
+  top reach, or into a channel from a drain, lake or well is refused by name; moves among the model's own entries
+  stay the model's. Pleasant Lake's exchange mover lines up on the parent's side.
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS

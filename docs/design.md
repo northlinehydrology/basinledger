@@ -605,7 +605,8 @@ through a river (RIV) or a streamflow routing (SFR) package, and that exchange r
     the only model routing water between channels. SFR's reaches therefore connect only within a channel. A reach
     flowing into a reach of another channel, or one not coupled, is refused at start-up (cut that connection when
     building the model from the SWAT+ channels), as is a channel with more than one top reach.
-  - Also refused: diversions and the mover (water SWAT+ doesn't see), SFR's storage option (kinematic-wave routing:
+  - Also refused: diversions and the mover where it doesn't line up (water SWAT+ doesn't see; below, "the mover in
+    the line-up rule"), SFR's storage option (kinematic-wave routing:
     water held in the reaches from day to day, which a restart would need), `[exchange] limit = false`, `[rivers]` on
     the SFR package, and transport with an SFR exchange (MODFLOW 6's SFT package, not built).
   - Manning's constant must be for the model's units: `UNIT_CONVERSION 86400` (or `TIME_CONVERSION 86400`) for meters
@@ -1235,7 +1236,9 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
 
    What it needs before a coupled run, in order:
    1. Daily steps (built, below): its 85 periods become 2,558 days, its steady first day still a steady day.
-   2. The mover allowed where it only joins coupled reaches, cut each day like the line-up rule's connections.
+   2. The mover allowed where it only joins coupled reaches, cut each day like the line-up rule's connections
+      (built, below): on the parent's side its two moves land on top reaches and are cut; on the inset's they take
+      coupled streams to another model, refused until both models are coupled (3).
    3. Several groundwater models in one simulation: each with its own maps, recharge and exchange, and the
       GWF-GWF exchange's flow inside the ledger's groundwater, not a boundary.
    4. The lake coupled, as streams are (below, "Lakes").
@@ -1428,6 +1431,34 @@ aquifer.
   rewritten, gives its daily twin's heads to the last digit for 59 days. Coupled to Osu_1hru for 75 days, the same
   model gives the daily model's ledger to 1e-12; handed over as a folder dated two years after the run, the check
   rewrites its steps, notes the 730 days, and leaves the folder as it was.
+
+**Built (Nov 14, 2026): the mover in the line-up rule** (Pleasant Lake's second need).
+
+- **Read from its files** (`coupling/mover.py`). libmf6 holds each mover's types and values (`<model>/MVR` for a
+  model's own, `GWF-GWF_<n>/MVR` for an exchange's) but not which entries a move joins, so Basin Ledger reads the
+  mover's file: a model's own from its name file's `MVR6`, an exchange's from the exchange's options; with or without
+  `MODELNAMES`; each period block in effect until the next, as MODFLOW 6 reads them.
+- **A move is a connection to the rule.** A move from one of the coupled SFR package's reaches to another, or into
+  one of its reaches from another SFR package or another model's (taken as the model's own reaches), is checked
+  as SFR's connections are: allowed from a channel's last reach (or the model's own) into a channel's top reach, a
+  channel problem anywhere else (B runs it). Allowed moves are cut each day after the day's period data are read,
+  their value set to move nothing: 0 for FACTOR and UPTO, 10^30 for EXCESS and THRESHOLD. The water stays with the
+  provider, down its own connections or out of SFR as its external outflow, which SFR's budget books; SWAT+
+  carries it on, as for a cut connection.
+- **Refused by name**, with the mover and the period block's move: a move within a channel (not built); from a
+  coupled reach to a reach no channel has, to another package or to another model (SWAT+ routes the channel's
+  water); and into a channel from a package that isn't SFR, such as tile drains or a lake outlet (water SWAT+'s
+  channel doesn't see; to be built with lakes and drains as the study needs). Moves among the model's own entries
+  stay the model's: a drain's water moved into the model's own reaches is the model's boundary flow, as before.
+- **Pleasant Lake:** the exchange's two moves carry the inset's outlet reaches into two of the parent's top reaches.
+  Coupling the parent, they line up and are cut; coupling the inset, they take its coupled streams to the parent and
+  are refused, until both models are coupled together (need 3).
+- **Tested** (`tests/test_mover.py`, `tests/test_central_sands.py`): the line-up network with its tributary joined
+  through the mover instead of SFR's connections. Lined up, the move is cut and the main stem carries only its own
+  water while the tributary's leaves SFR at its last reach; the model's own tributary moved into a top reach is cut
+  and keeps its inflow; each of the four types is cut each day across period blocks; a move into the middle of a
+  channel is refused for A and runs as B; and the refusals and the drain's move into the model's own reaches. On
+  Pleasant Lake, the mover read from the exchange's file and cut through it.
 
 **Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
 on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a
