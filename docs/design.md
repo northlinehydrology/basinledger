@@ -1307,8 +1307,19 @@ aquifer.
   soil), and MODFLOW 6 pumps it. The irrigate action takes its water from an outside source in SWAT+, and Basin
   Ledger pumps the same volume that day from the wells the study maps to that field's HRUs. So the demand responds
   to climate and land-use scenarios, the water is pumped once, from the model that owns groundwater, and it lands on
-  SWAT+'s fields, where its return flow and its losses are SWAT+'s. This needs swatplus-bmi to report each HRU's
-  irrigation (docs/requests.md, request 7) and a map of wells to HRUs. Not built.
+  SWAT+'s fields, where its return flow and its losses are SWAT+'s.
+- **Built** (`coupling/irrigation.py`, `[irrigation] wells`; swatplus-bmi 0.11.0 reads each HRU's irrigation,
+  request 7). After SWAT+'s day, the water the day's irrigation put on each mapped HRU (what reached the soil and
+  what ran off; an application's losses never enter SWAT+'s balance) is requested from the HRU's wells in their
+  shares, and MODFLOW 6 pumps it that day. The ledger books `irrigation:pumped` against the wells' shares, and each
+  well's request against what MODFLOW 6 delivered, as for a user's well (a well can serve both). Irrigation on HRUs
+  not mapped stays water from outside (`irrigation:from_outside`). The start-up reads each HRU's sources from its
+  land use's schedule and decision tables (hru.con, hru-data.hru, landuse.lum, management.sch, lum.dtl): only an
+  outside source is pumped (`irrigate` from `null`, `irr_demand` from `unlim`, a scheduled `irrm`); a mapped HRU
+  that irrigates from a SWAT+ channel, reservoir or aquifer, or through water allocation (its source unknown here),
+  is refused, since that water already comes out of SWAT+. Tested on the synthetic model through Osu_1hru's first
+  irrigated days: 60 mm on the 10 ha paddy on 8 May, 6,000 m3, pumped that day from two added wells 60:40, the
+  ledger closing every day.
 - **Keeping a model's own pumping** (its calibrated irrigation rates, as Pleasant Lake's 244 wells have from SWB) is
   the other way: the wells stay the model's, as the start-up check lists them, and SWAT+ doesn't irrigate those
   fields. It reproduces the model as calibrated, but the water pumped never reaches SWAT+'s fields, and a scenario

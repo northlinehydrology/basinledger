@@ -80,6 +80,12 @@ MODFLOW 6 model").
   and two added wells at one cell are refused.
 - A recharge package for a model without one: `[recharge] add = true` adds an RCH package of Basin Ledger's own on
   the recharge map's cells to the run's copy (`existing.add_recharge`).
+- Irrigation pumped from MODFLOW 6's wells (`coupling/irrigation.py`, `[irrigation] wells`; needs swatplus-bmi
+  0.11.0, `land_irrigation_water__volume_flow_rate`): each day the water SWAT+'s irrigation put on each mapped HRU is
+  pumped that day from the `[[wells]]` the map names, in their shares (`irrigation:pumped`,
+  `irrigation:well:<name>`); irrigation on HRUs not mapped stays water from outside (`irrigation:from_outside`).
+  Each HRU's irrigation sources are read from its land use's schedule and decision tables, and a mapped HRU that
+  irrigates from a SWAT+ channel, reservoir or aquifer, or through water allocation, is refused.
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS
