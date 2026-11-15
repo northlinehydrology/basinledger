@@ -25,6 +25,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     # length_units = "feet"             # the model's, only where its DIS leaves LENGTH_UNITS undefined
     # time_units = "days"               # the model's, only where its TDIS leaves TIME_UNITS undefined
     model = "gwf"
+    # storage = {sy = 0.15, ss = 1e-5}  # for a model handed over steady: Basin Ledger adds a storage package to the
+                                        #   run's copy (or makes the model's own transient, with storage = {}); sy a
+                                        #   fraction, ss per meter, the study's values [A] (existing.add_storage)
     # models = ["parent", "inset"]      # or several groundwater models of the simulation coupled together (an LGR
                                         #   inset and its parent): maps then give each row's model in a model
                                         #   column, a well its model, and the exchange, a lake and head outputs
@@ -251,6 +254,7 @@ class ExampleConfig:
     mf6_length_units: str | None = None  # the model's, where its DIS leaves them undefined (coupling/modflow6.py)
     mf6_time_units: str | None = None
     mf6_models: list[str] = field(default_factory=list)  # several groundwater models coupled together, the first first
+    mf6_storage: dict | None = None  # sy, ss (per meter), iconvert: storage for a model handed over steady
     irrigation: dict[str, list[tuple[str, float]]] | None = None  # HRU -> its wells and shares (coupling/irrigation.py)
     lakes: list = field(default_factory=list)  # LakeConfig: a SWAT+ reservoir coupled to a LAK lake (coupling/lakes.py)
 
@@ -303,6 +307,9 @@ def load(path: str | Path) -> ExampleConfig:
     models = mf.get("models", [])
     if "models" in mf and (not isinstance(models, list) or not models or not all(isinstance(m, str) for m in models)):
         raise ValueError(f"{path}: [modflow6] models is a list of the groundwater models' names; got {models!r}")
+    st = mf.get("storage")
+    if st is not None and (not isinstance(st, dict) or set(st) - {"sy", "ss", "iconvert"}):
+        raise ValueError(f"{path}: [modflow6] storage takes sy, ss (per meter) and iconvert; got {st!r}")
     if "modflow6" in c and bool(mf.get("builder")) == bool(mf.get("workspace")):
         raise ValueError(f"{path}: [modflow6] needs one of builder or workspace")
     from .coupling.modflow6 import DAYS, METERS
@@ -403,6 +410,7 @@ def load(path: str | Path) -> ExampleConfig:
         mf6_workspace=_path(base, mf["workspace"]) if mf.get("workspace") else None,
         mf6_model=models[0] if models else mf.get("model", "gwf"),
         mf6_models=list(models),
+        mf6_storage=dict(st) if st is not None else None,
         recharge_package=rch.get("package", "rch"),
         recharge_map=rch.get("map", ""),
         recharge_add=_flag(path, "[recharge] add", rch.get("add", False)),

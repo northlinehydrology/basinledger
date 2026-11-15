@@ -211,3 +211,112 @@ def add_wells(ws, model: str, wells: list[tuple[str, str, tuple[int, ...]]]) -> 
         notes.append(f"{package}: a well package Basin Ledger adds to the run's copy for wells the model doesn't have: "
                      + ", ".join(f"{w} at {list(c)}" for w, c in added))
     return notes
+
+
+def _package_file(ws, nam, ftypes: tuple[str, ...]):
+    """The first package of these types in the model's name file: (its file, its name), or (None, None). A package
+    the name file doesn't name is called by its file's name."""
+    from .mover import _blocks
+    for name, _, lines in _blocks(nam, ws):
+        if name == "PACKAGES":
+            for words in lines:
+                if words[0].upper() in ftypes:
+                    f = ws / words[1].strip("'\"")
+                    return f, (words[2].lower() if len(words) > 2 else f.name)
+    return None, None
+
+
+def _length_units(ws, nam, stated: str | None) -> str:
+    """The model's length units from its DIS file's options (read only as far as they go: a DIS file can be
+    hundreds of megabytes), else the config's (``[modflow6] length_units``)."""
+    from .modflow6 import METERS
+    dis, _ = _package_file(ws, nam, ("DIS6", "DISV6", "DISU6"))
+    own = None
+    if dis is not None:
+        with open(dis, errors="replace") as f:
+            inside = False
+            for line in f:
+                w = line.split()
+                if not w or w[0].startswith(("#", "!", "//")):
+                    continue
+                if w[0].upper() == "BEGIN":
+                    inside = len(w) > 1 and w[1].upper() == "OPTIONS"
+                elif w[0].upper() == "END":
+                    if inside:
+                        break
+                elif inside and w[0].upper() == "LENGTH_UNITS" and len(w) > 1:
+                    own = w[1].lower()
+    if own in METERS:
+        return own
+    if stated in METERS:
+        return stated
+    raise ValueError("[modflow6] storage: the model's length units are undefined (DIS LENGTH_UNITS); state them, "
+                     "[modflow6] length_units")
+
+
+def steady_periods(ws, model: str) -> str | None:
+    """Whether a model solves any day without storage: "no STO" (no storage package: every period steady),
+    "steady" (a STO package with a STEADY-STATE period, or no period block, which MODFLOW 6 takes as steady), or
+    None (transient throughout)."""
+    from pathlib import Path
+
+    from .mover import _blocks
+    ws = Path(ws)
+    nam, _, _ = _model_nam(ws, model)
+    sto, _ = _package_file(ws, nam, ("STO6",))
+    if sto is None:
+        return "no STO"
+    periods = [(words, lines) for name, words, lines in _blocks(sto, ws) if name == "PERIOD"]
+    if not periods or any(w and w[0].upper() == "STEADY-STATE" for _, lines in periods for w in lines):
+        return "steady"
+    return None
+
+
+def add_storage(ws, model: str, sy: float | None, ss: float | None, iconvert: int = 1,
+                length_units: str | None = None) -> list[str]:
+    """Storage for a model handed over steady, in a run's copy (``[modflow6] storage``): daily steps need specific
+    yield and specific storage, which a steady model never needed (the study's [A]). A model without a STO package
+    gets one of Basin Ledger's own, every cell's ``iconvert``, ``sy`` and ``ss`` (given per meter, written in the
+    model's length units), transient from the first period; a model with one has its steady periods made transient
+    and keeps its own values (``sy`` and ``ss`` given as well are refused: set them in its file). Returns the
+    start-up's notes."""
+    import re
+    from pathlib import Path
+
+    from .modflow6 import METERS
+    from .mover import _blocks
+    ws = Path(ws)
+    nam, have, _ = _model_nam(ws, model)
+    sto, pname = _package_file(ws, nam, ("STO6",))
+    if sto is None:
+        if sy is None or ss is None:
+            raise ValueError(f"[modflow6] storage: {model} has no storage package; give sy and ss, the study's values")
+        if not (0 <= sy <= 1 and ss >= 0 and iconvert in (0, 1)):
+            raise ValueError("[modflow6] storage: sy is a fraction (0 to 1), ss per meter (0 or more), iconvert 0 or 1")
+        meters = METERS[_length_units(ws, nam, length_units)]
+        name = "sto_basinledger" if "sto_basinledger" not in have else "sto_basinledger_1"
+        f = f"{model.lower()}.{name}.sto"
+        (ws / f).write_text(f"# Basin Ledger: storage for a model handed over steady (coupling/existing.py)\n"
+                            "BEGIN options\nEND options\n\nBEGIN griddata\n"
+                            f"  ICONVERT\n    CONSTANT {iconvert}\n  SS\n    CONSTANT {ss * meters:.10g}\n"
+                            f"  SY\n    CONSTANT {sy:.10g}\nEND griddata\n\nBEGIN period  1\n  TRANSIENT\nEND period  1\n")
+        text = nam.read_text().splitlines()
+        end = next(i for i, x in enumerate(text) if [w.upper() for w in x.split()[:2]] == ["END", "PACKAGES"])
+        nam.write_text("\n".join(text[:end] + [f"  STO6  {f}  {name}"] + text[end:]) + "\n")
+        return [(f"{name}: a storage package Basin Ledger adds to the run's copy, the model having none: ICONVERT "
+                 f"{iconvert}, SY {sy:g}, SS {ss:g} per meter, transient from the first day")]
+    if sy is not None or ss is not None:
+        raise ValueError(f"[modflow6] storage: {model} has its own storage package ({pname}); its values stay "
+                         "the model's (set them in its file), and storage = {} only makes its steady periods transient")
+    text = sto.read_text()
+    periods = [p for name, p, _ in _blocks(sto, ws) if name == "PERIOD"]
+    n = len(re.findall(r"(?im)^\s*STEADY-STATE\b", text))
+    text = re.sub(r"(?im)^(\s*)STEADY-STATE\b", r"\1TRANSIENT", text)
+    if not periods:  # MODFLOW 6 takes a STO package without period blocks as steady
+        text = text.rstrip("\n") + "\n\nBEGIN period  1\n  TRANSIENT\nEND period  1\n"
+    if n == 0 and periods:
+        return []
+    sto.write_text(f"# Basin Ledger: steady periods made transient (coupling/existing.py)\n{text}")
+    return [f"{pname}: the model's storage package made transient in the run's copy ("
+            + (f"{n} steady period{'s' if n != 1 else ''}" if n else "no period block, which is steady")
+            + "), its own SY and SS kept"]

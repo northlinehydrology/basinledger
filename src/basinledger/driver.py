@@ -208,6 +208,17 @@ class Basin:
             for model, added in by_model.items():
                 for note in EX.add_wells(ws, model, added):
                     warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            for model in (cfg.mf6_models or [cfg.mf6_model]):  # storage, for a model handed over steady
+                if cfg.mf6_storage is not None:
+                    st = cfg.mf6_storage
+                    for note in EX.add_storage(ws, model, st.get("sy"), st.get("ss"), int(st.get("iconvert", 1)),
+                                               cfg.mf6_length_units):
+                        warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+                elif (how := EX.steady_periods(ws, model)) is not None:
+                    warnings.warn(f"{model}: {'no storage package' if how == 'no STO' else 'steady periods'}, so "
+                                  "MODFLOW 6 solves those days without storage, each day's heads the day's steady "
+                                  "state; [modflow6] storage gives it specific yield and storage",
+                                  EX.TakeoverNote, stacklevel=2)
             if cfg.recharge_add:  # a model without recharge: a package of Basin Ledger's own on the map's cells
                 for note in EX.add_recharge(ws, cfg.mf6_model, cfg.recharge_package, self._map_cells(cfg)):
                     warnings.warn(note, EX.TakeoverNote, stacklevel=2)
