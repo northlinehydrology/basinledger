@@ -197,3 +197,158 @@ def test_streams_in_both_models(libmf6):
         assert np.isfinite(free[1]["cha01"])
     finally:
         m.finalize()
+
+
+def test_drains_and_lakes_in_both_models(libmf6, tmp_path):
+    """Each model's drains and lakes at a fixed stage, onto that model's own channels (``exchange.part_map``,
+    ``lake_map`` with ``first_model``), one exchange through both (``StreamExchanges``), MODFLOW 6 alone: kzoo's tile
+    drains seep to its creek's channel, the neighbor's drains (named as kzoo's) and its lake to its river's, and the
+    day's seepage and lake flow come back by channel, each its own model's."""
+    from basinledger.coupling import exchange as X
+    ws = RUNS / "models-drains-lakes"
+    if ws.exists():
+        shutil.rmtree(ws)
+    E.build(ws, 31, START, neighbor=True, neighbor_river=True, neighbor_drains=True, neighbor_lake=True)
+    m = Models(Modflow6(ws, "kzoo"), MODELS)
+    try:
+        kz, ea = m.views
+        m.prepare_day()
+        swat = ["cha01", "cha02"]
+        creek = X.ChannelMap.from_spec("maps/existing_river.csv", SYNTHETIC, kz, "riv_creek", swat, channels=swat,
+                                       first_model="KZOO")
+        river = X.ChannelMap(["cha02"], np.zeros(ea.nbound("riv_east"), int))
+        (tmp_path / "drains.csv").write_text(
+            "object,model,layer,row,col\n" + "".join(f"cha01,kzoo,{k},{r},{c}\n" for k, r, c in E.TILES)
+            + "".join(f"cha02,kzoo_east,0,{r},2\n" for r in range(2, 10)))
+        (tmp_path / "lakes.csv").write_text("object,model,layer,row,col\ncha02,kzoo_east,0,10,1\ncha02,kzoo_east,0,10,2\n")
+        dk, extra_k = X.part_map("drains.csv", tmp_path, kz, "drn_tile", swat, creek.channels, "KZOO")
+        de, extra_e = X.part_map("drains.csv", tmp_path, ea, "drn_tile", swat, river.channels, "KZOO")
+        assert extra_k == extra_e == [] and (dk.entry_channel == 0).all() and (de.entry_channel == 0).all()
+        X.check_lake_package(ea, "lakes_east", "riv_east", "drn_tile")
+        lm = X.lake_map("lakes.csv", tmp_path, ea, "lakes_east", swat, river.channels, first_model="KZOO")
+        ex = X.StreamExchanges([X.StreamExchange(kz, "riv_creek", creek, ("drn_tile", dk)),
+                                X.StreamExchange(ea, "riv_east", river, ("drn_tile", de), lakes=("lakes_east", lm))])
+        assert ex.drains is not None and ex.lakes is not None
+        m.solve_day(ex.limit({"cha01": 1e6, "cha02": 1e6}))
+        due = ex.after_solve()
+        assert ex.lake_lowered == {"cha01": 0.0, "cha02": 0.0}
+        ex.end_day()
+        assert ex.seepage["cha01"] == pytest.approx(-float(kz.simvals("drn_tile").sum()), rel=1e-12)
+        assert ex.seepage["cha02"] == pytest.approx(-float(ea.simvals("drn_tile").sum()), rel=1e-12)
+        assert ex.seepage["cha02"] > 0.0                                   # the neighbor's drains run
+        assert ex.lake_flow["cha02"] == pytest.approx(-float(ea.simvals("lakes_east").sum()), rel=1e-12)
+        assert ex.lake_flow["cha02"] < 0.0 and ex.lake_flow["cha01"] == 0.0  # the lake loses to the aquifer
+        river_flow = -float(ea.simvals("riv_east").sum())
+        assert due["cha02"] == pytest.approx(river_flow + ex.seepage["cha02"] + ex.lake_flow["cha02"], rel=1e-12)
+        # a drain in the neighbor seeping to the creek, whose reaches are kzoo's: named, for the start-up to refuse
+        (tmp_path / "bad.csv").write_text("object,model,layer,row,col\ncha01,kzoo_east,0,2,2\n")
+        assert X.part_map("bad.csv", tmp_path, ea, "drn_tile", swat, river.channels, "KZOO")[1] == ["cha01"]
+    finally:
+        m.finalize()
+
+
+def test_a_recharge_package_added_in_both_models(swatplus):
+    """Both models handed over without recharge (kzoo's rch_swb out of its name file, the neighbor built without
+    one): ``[recharge] add = true`` puts a package of Basin Ledger's own in each model the map has cells in, and
+    SWAT+'s recharge reaches both through them, by the map."""
+    from basinledger.driver import Basin
+    ws = RUNS / "models-no-recharge"
+    if ws.exists():
+        shutil.rmtree(ws)
+    E.build(ws, 75, START, neighbor=True)
+    nam = ws / "kzoo.nam"
+    nam.write_text("\n".join(x for x in nam.read_text().splitlines() if "rch_swb" not in x) + "\n")
+    cfg = both(config(neighbor=True))
+    cfg.mf6_builder, cfg.mf6_workspace = None, ws
+    cfg.recharge_package, cfg.recharge_add = "rch_swat", True
+    rows = []
+    found, notes = Basin.check(cfg, run="models-check-no-recharge", takeover=rows)
+    assert found == []
+    assert ("kzoo: rch_swat: a recharge package Basin Ledger adds to the run's copy, the model having none: 64 cells "
+            "of the recharge map") in notes
+    assert ("kzoo_east: rch_swat: a recharge package Basin Ledger adds to the run's copy, the model having none: 36 "
+            "cells of the recharge map") in notes
+    roles = {r.package: r.role for r in rows}
+    assert roles["kzoo/rch_swat"] == roles["kzoo_east/rch_swat"] == "Basin Ledger's"
+    t, _, _ = run(cfg, "models-run-no-recharge")
+    rk, re = t["recharge:received:kzoo"], t["recharge:received:kzoo_east"]
+    assert re.sum() > 0
+    np.testing.assert_allclose(re, rk * 36 / 64, rtol=1e-9)
+    assert np.nansum(t["recharge:received"]) == pytest.approx(np.nansum(t["recharge:made"]), rel=1e-9)
+    assert np.abs(t["groundwater:closure_share"]).max() < 1e-6
+
+
+def test_river_stages_in_both_models(swatplus, tmp_path):
+    """``[rivers]`` with several models coupled: the stage of each model's river package (named alike, the
+    neighbor's river ``riv_creek`` as kzoo's) set every day from SWAT+'s channel depth, on the cells the map's rows
+    give in each model, kzoo's creek also exchanging with SWAT+."""
+    from basinledger.coupling import swatplus as S
+    from basinledger.driver import Basin
+    cfg = both()
+    cfg.mf6_builder_args = dict(cfg.mf6_builder_args, neighbor_river="riv_creek")
+    path = tmp_path / "rivers.csv"
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["object", "model", "layer", "row", "col"])
+        w.writerows(["cha01", "kzoo", 0, r, 1] for r in range(1, 11))
+        w.writerows(["cha01", "kzoo_east", 0, r, 1] for r in range(2, 10))
+    cfg.rivers = {"package": "riv_creek", "map": str(path), "stage": "surface_depth", "bed_thickness": 1.0}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        b = Basin(cfg, run="models-rivers", days=30)
+        try:
+            for _ in range(30):
+                b.step()
+                depth = float(b.sw.get(S.DEPTH)[0])  # the day's, which set the day's stages
+                assert [mf.model for mf, *_ in b.rivers] == ["KZOO", "KZOO_EAST"]
+                for mf, pkg, cmap, rbot, stage0 in b.rivers:
+                    on = cmap.entry_channel >= 0
+                    stage = mf.get("STAGE", mf.model, pkg.upper())
+                    assert on.sum() == (10 if mf.model == "KZOO" else 8)
+                    np.testing.assert_allclose(stage[on], rbot[on] + 1.0 + depth, atol=1e-5)
+                    np.testing.assert_array_equal(stage[~on], stage0[~on])  # the tributary's, the model's own
+            t = b.ledger.table()
+        finally:
+            b.finalize()
+    assert np.abs(t["groundwater:closure_share"]).max() < 1e-6
+
+
+def test_groundwater_up_into_the_soil_from_both_models(swatplus, tmp_path):
+    """``[groundwater_to_soil]`` with several models coupled: Osu_1hru's HRU on 64 of kzoo's top cells and 36 of its
+    neighbor's, land surface 1 m above the regional stage so the water table rises into the soil profile, and a
+    ``soil`` drain on every mapped cell of both models (the riparian EVT left out, as the link requires). The soil
+    link sets both models' drains each day and splits what both give among the HRU's layers; each model gives some,
+    and every closure holds."""
+    from basinledger.driver import Basin
+    cfg = both(config(neighbor=True, neighbor_recharge=True, soil=True, riparian=False, land=89.0))
+    path = tmp_path / "hru.csv"
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["object", "model", "layer", "row", "col", "area_m2"])
+        w.writerows(["hru0001", "kzoo", 0, r, c, 1000.0] for r in range(1, 9) for c in range(1, 9))
+        w.writerows(["hru0001", "kzoo_east", 0, r, c, 1000.0] for r in range(12) for c in range(3))
+    cfg.recharge_source, cfg.recharge_map = "hru", str(path)
+    cfg.groundwater_to_soil = {"rule": "drain", "cap": "room", "package": "soil"}
+    rows = []
+    found, _ = Basin.check(cfg, run="models-check-soil", takeover=rows)
+    assert found == []
+    roles = {r.package: r.role for r in rows}
+    assert roles["kzoo/soil"] == roles["kzoo_east/soil"] == "Basin Ledger's"
+    given = {"KZOO": 0.0, "KZOO_EAST": 0.0}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        b = Basin(cfg, run="models-soil", days=75)
+        try:
+            for _ in range(75):
+                b.step()
+                for v in b.mf6.views:
+                    given[v.model] += float(np.clip(-v.simvals("soil"), 0.0, None).sum())
+            t = b.ledger.table()
+        finally:
+            b.finalize()
+    sent = np.nansum(t["gw_soil:sent"])
+    assert given["KZOO"] > 0 and given["KZOO_EAST"] > 0
+    assert sent == pytest.approx(given["KZOO"] + given["KZOO_EAST"], rel=1e-9)
+    for m in ("kzoo", "kzoo_east"):
+        assert np.abs(t[f"groundwater:{m}:closure_share"]).max() < 1e-6
+    assert np.abs(t["groundwater:closure_share"]).max() < 1e-6

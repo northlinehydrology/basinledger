@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.0 (2026-11-15)
+
+- Several coupled models, more links: drains and lakes at a fixed stage with streams in several models, each model's
+  on its own channels (`exchange.part_map`); `[recharge] add` in each model the map has cells in; `[rivers]` setting
+  each model's river stages; groundwater up into the soil from each model's soil package (`Models.node_values`,
+  `entry_values`, `set_entries`). `Models.set` without a model refuses a package that's in several. Transport stays
+  refused with several models.
+- A drain's move into a coupled channel's reach is cut each day and the drain's water is that channel's
+  (`exchange:<channel>:drains_moved`, part of `to_stream`), in place of refusing it. A lake's outlet or a well moving
+  water into a channel stays refused.
+- Restarts carry the advanced packages' state: lakes' stages (LAK) and multi-aquifer wells' heads and wellbore
+  storage (MAW), saved beside the heads (`packages.npz`). UZF and CSUB still start from their files, as noted.
+- MODFLOW 6 parameters by pilot point: `<package>.<array>:pp=<set>`, the points' locations in `[calibration]
+  pilot_points`' file, their values kriged over each layer (ordinary kriging, exponential covariance;
+  `calibration.kriging_weights`), in log10 for log-transformed sets. Each point is a parameter row, so the PEST++
+  files take them as they are.
+- A failed start-up finalizes the models it started.
+
 ## 0.8.1 (2026-11-15)
 
 - A recharge package left as the model's is refused only where it recharges ground SWAT+'s recharge also covers: on

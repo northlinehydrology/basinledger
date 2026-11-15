@@ -10,8 +10,8 @@ model with an LGR inset or a diversion's return has it, rather than through SFR'
   (its value set to move nothing, for each of the four types): the tributary's water leaves SFR at its last reach,
   and the main stem carries only its own;
 - refused by name: a move into the middle of a channel (A; B runs it, cut), from a coupled reach to a reach no
-  channel has or to another package, within a channel, and from a drain into a channel; a drain's move into the
-  model's own reaches stays the model's.
+  channel has or to another package, and within a channel; a drain's move into a channel is cut and its water the
+  channel's, and its move into the model's own reaches stays the model's.
 """
 
 from __future__ import annotations
@@ -173,8 +173,23 @@ def test_moves_refused_by_name(run):
     assert "reach 12 (trib) gives water to reach 5 (no channel) through the mover (GWF, period 1's move 1)" in text
     assert "reach 10 gives water to reach 12 in channel trib through the mover" in text
     assert "a mover within a channel isn't built" in text
-    assert ("gwf's drn_tile entry 0 (DRN) gives water to reach 7 (down) through the mover (GWF, period 1's move 3): "
-            "water SWAT+'s channel doesn't see; not built") in text
+    assert "drn_tile" not in text  # a drain's move into a channel is cut, its water the channel's (below)
+
+
+def test_a_drains_move_into_a_channel_is_cut_and_its_water_the_channels(run):
+    """A drain giving water through the mover to a coupled reach: the move is cut each day (SWAT+ carries the
+    channel's water), and the drain's water is the channel's, as the exchange's drains' seepage is."""
+    mf = run({0: [TRIB_INTO_MAIN, ("drn_tile", 0, "sfr_river", 7, "FACTOR", 1.0)]}, drain=True)
+    ex = StreamExchange(mf, "sfr_river", channels(up=MAIN[:5], trib=TRIBUTARY, down=MAIN[5:]))
+    assert {(m.provider.package, m.receiver.id) for m in ex._moves_cut} == {("sfr_river", INTO), ("drn_tile", 7)}
+    assert ex._drains_in == {"down": [("GWF", "DRN_TILE", 0)]}
+    ex.set_inflow({"up": 1000.0, "trib": 200.0, "down": 500.0})
+    mf.solve_day()
+    assert mf.get("QFROMMVR", mf.model, P)[7] == 0.0  # nothing moved into reach 7
+    q = -float(mf.simvals("drn_tile")[0])
+    due = ex.after_solve()
+    assert q > 0.0 and ex.drains_moved == {"up": 0.0, "trib": 0.0, "down": pytest.approx(q, rel=1e-12)}
+    assert due["down"] - q == pytest.approx(-float(mf.simvals("sfr_river")[MAIN[5:]].sum()), rel=1e-9)
 
 
 def test_a_drains_move_into_the_models_own_reaches_stays_the_models(run):

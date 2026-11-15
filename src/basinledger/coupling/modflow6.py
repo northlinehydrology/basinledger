@@ -312,6 +312,18 @@ class Modflow6:
         """Whether a boundary package multiplies its values by an auxiliary variable."""
         return int(self.get("IAUXMULTCOL", self.model, package.upper())[0]) > 0
 
+    def node_values(self, var: str, package: str) -> np.ndarray:
+        """A per-node variable of one of the model's own packages (``DIS``'s TOP, ``STO``'s SY), m and d."""
+        return self.get(var, self.model, package.upper()).astype(float)[: self.nodes]
+
+    def entry_values(self, var: str, package: str) -> np.ndarray:
+        """A per-entry variable of a boundary package (a drain's COND), m and d."""
+        return self.get(var, self.model, package.upper()).astype(float)[: self.nbound(package)]
+
+    def set_entries(self, var: str, package: str, values: np.ndarray):
+        """A per-entry variable of a boundary package, given in m and d."""
+        self.set(var, package, np.asarray(values, float))
+
     def entry_multipliers(self, package: str) -> np.ndarray:
         """Each entry's multiplier: its auxiliary multiplier column (AUXMULTNAME), or 1 where the package has none."""
         n = self.nbound(package)
@@ -396,6 +408,30 @@ class Modflow6:
     def simvals(self, package: str) -> np.ndarray:
         """Each entry's simulated flow for the last day, m3 d-1, positive into the aquifer."""
         return self.get("SIMVALS", self.model, package.upper())[: self.nbound(package)].astype(float)
+
+    # what an advanced package carries from day to day, by its type, for a restart: a lake's stage; a multi-aquifer
+    # well's head and its wellbore's storage head
+    PACKAGE_STATE = {"lak": ("XNEWPAK",), "maw": ("HEAD", "XSTO")}
+
+    def package_state(self) -> dict[str, np.ndarray]:
+        """The advanced packages' state (``PACKAGE_STATE``) as MODFLOW 6 holds it, by memory address."""
+        names = set(self.api.get_input_var_names()) | set(self.api.get_output_var_names())
+        out = {}
+        for n in sorted(names):
+            parts = n.split("/")
+            if len(parts) == 3 and parts[0] == self.model and parts[2] == "PACKAGE_TYPE":
+                kind = str(self.api.get_value(n)[0]).strip().lower()
+                for var in self.PACKAGE_STATE.get(kind, ()):
+                    out[f"{self.model}/{parts[1]}/{var}"] = self.api.get_value(f"{self.model}/{parts[1]}/{var}").copy()
+        return out
+
+    def set_package_state(self, state: dict[str, np.ndarray]):
+        """Set saved advanced packages' state: call after initialize and before the first prepare_day."""
+        for address, value in state.items():
+            if address.split("/")[0] == self.model:
+                if self.api.get_value(address).shape != np.shape(value):
+                    raise ValueError(f"saved {address} doesn't match the model's")
+                self.api.set_value(address, np.asarray(value, dtype=np.float64))
 
     def set_heads(self, heads: np.ndarray):
         """Heads, m, per reduced node: call after initialize and before the first prepare_day."""
@@ -514,6 +550,33 @@ class Models:
     def aux_multiplier(self, package: str) -> bool:
         return any(v.aux_multiplier(package) for v, _ in self._parts(package))
 
+    def set(self, var: str, package: str, values: np.ndarray, model: str | None = None):
+        """A variable of one model's package. Without ``model``, a package in more than one coupled model is refused:
+        the first model's alone would be set (``set_entries`` splits values across the models)."""
+        if model is None and len(self._parts(package)) > 1:
+            raise ValueError(f"{package}: in {len(self._parts(package))} coupled models; name the model, or set its "
+                             "entries in all of them (set_entries)")
+        self.first.set(var, package, values, model=model)
+
+    def node_values(self, var: str, package: str) -> np.ndarray:
+        """A per-node variable of each model's own package, the models' nodes in their one sequence."""
+        return np.concatenate([v.node_values(var, package) for v in self.views])
+
+    def entry_values(self, var: str, package: str) -> np.ndarray:
+        """A per-entry variable of a package named alike in several models, their entries one after the other."""
+        return np.concatenate([v.entry_values(var, package) for v, _ in self._parts(package)])
+
+    def set_entries(self, var: str, package: str, values: np.ndarray):
+        """A per-entry variable of a package named alike in several models, split back to each."""
+        values = np.asarray(values, float)
+        i = 0
+        for v, _ in self._parts(package):
+            n = v.nbound(package)
+            v.set_entries(var, package, values[i:i + n])
+            i += n
+        if i != len(values):
+            raise ValueError(f"{package}: {len(values)} values for {i} entries")
+
     def entry(self, package: str, node: int) -> int:
         idx = np.flatnonzero(self.package_nodes(package) == node)
         if len(idx) != 1:
@@ -541,6 +604,13 @@ class Models:
 
     def head(self) -> np.ndarray:
         return np.concatenate([v.head() for v in self.views])
+
+    def package_state(self) -> dict[str, np.ndarray]:
+        return {k: v for view in self.views for k, v in view.package_state().items()}
+
+    def set_package_state(self, state: dict[str, np.ndarray]):
+        for view in self.views:
+            view.set_package_state(state)
 
     def set_heads(self, heads: np.ndarray):
         heads = np.asarray(heads, float)

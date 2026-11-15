@@ -60,6 +60,7 @@ from .coupling.exchange import (
     check_lake_package,
     lake_map,
     package_type,
+    part_map,
 )
 from .coupling.exchange import requests as exchange_requests
 from .coupling.gwsoil import GroundwaterToSoil
@@ -130,7 +131,8 @@ class Basin:
         user_prepare = prepare
 
         def prepare(model, folder):
-            apply_parameters(model, folder, self.parameters, cfg.calibration_zones, cfg.mf6_model)
+            apply_parameters(model, folder, self.parameters, cfg.calibration_zones, cfg.mf6_model,
+                             cfg.calibration_pilot_points)
             if user_prepare:
                 user_prepare(model, folder)
 
@@ -228,8 +230,7 @@ class Basin:
                 warnings.warn(note, EX.TakeoverNote, stacklevel=2)
             several = len(cfg.mf6_models) > 1  # several groundwater models coupled together (modflow6.Models)
             if several:
-                for what, on in (("transport", cfg.transport), ("[rivers]", cfg.rivers),
-                                 ("[groundwater_to_soil]", cfg.groundwater_to_soil), ("[recharge] add", cfg.recharge_add)):
+                for what, on in (("transport", cfg.transport),):
                     if on:
                         raise ValueError(f"{what} with several groundwater models coupled isn't built")
             by_model: dict[str, list] = {}  # new users' wells, a package of its own in each model that has them
@@ -250,9 +251,11 @@ class Basin:
                                   "MODFLOW 6 solves those days without storage, each day's heads the day's steady "
                                   "state; [modflow6] storage gives it specific yield and storage",
                                   EX.TakeoverNote, stacklevel=2)
-            if cfg.recharge_add:  # a model without recharge: a package of Basin Ledger's own on the map's cells
-                for note in EX.add_recharge(ws, cfg.mf6_model, cfg.recharge_package, self._map_cells(cfg)):
-                    warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            if cfg.recharge_add:  # a model without recharge: a package of Basin Ledger's own on the map's cells,
+                # in each coupled model the map has cells in
+                for model, cells in self._map_cells(cfg).items():
+                    for note in EX.add_recharge(ws, model, cfg.recharge_package, cells):
+                        warnings.warn(f"{model}: {note}" if several else note, EX.TakeoverNote, stacklevel=2)
             if saved and not cfg.mf6_builder:
                 remaining_simulation(ws, ws, self.day, cfg.mf6_time_units)
             elif not saved:
@@ -276,14 +279,16 @@ class Basin:
                     raise
             if saved:
                 self.mf6.set_heads(np.load(Path(restart) / "heads.npy"))
+                packages = Path(restart) / "packages.npz"  # lakes' stages, multi-aquifer wells' heads
+                if packages.exists():
+                    with np.load(packages) as z:
+                        self.mf6.set_package_state({k.replace("|", "/"): z[k] for k in z.files})
                 # what a restart doesn't carry: packages holding water from day to day start from their files
-                held = {"maw": "its wells' water", "uzf": "the unsaturated zone's water", "lak": "the lakes' stages",
-                        "csub": "compaction"}
-                coupled_lakes = {lk.package.upper() for lk in cfg.lakes}  # their stages come from SWAT+ each day
+                held = {"uzf": "the unsaturated zone's water", "csub": "compaction"}
                 for v in self._views():
                     for p in EX.flow_packages(v, v.model):
                         t = str(v.get("PACKAGE_TYPE", v.model, p)[0]).strip().lower()
-                        if t in held and p.upper() not in coupled_lakes:
+                        if t in held:
                             warnings.warn(f"{p.lower()}: a restart carries MODFLOW 6's heads but not {held[t]} "
                                           f"({t.upper()}), which start from the model's files", EX.TakeoverNote,
                                           stacklevel=2)
@@ -580,35 +585,51 @@ class Basin:
             return list(dict.fromkeys(r["object"] for r in csv.DictReader(f)))
 
     def _rivers_day(self):
-        """Set today's river stages (if from NextGen's depth), before the solve."""
+        """Set today's river stages (if from NextGen's depth), before the solve, in each model with river cells."""
         rv = self.cfg.rivers
         if self.rivers is None:
             self._build_rivers()
-        pkg, cmap, rbot, stage0 = self.rivers
         if rv.get("stage") in ("surface_depth", "nextgen_depth"):
             depth = dict(zip(self.sw.names(S.DEPTH), self.sw.get(S.DEPTH)))  # yesterday's (SWAT+) or today's (replay)
-            e = cmap.entry_channel
-            stage = stage0.copy()
-            for i, c in enumerate(cmap.channels):
-                stage[e == i] = rbot[e == i] + float(rv.get("bed_thickness", 1.0)) + depth[c]
-            self.mf6.set_stage(pkg, stage)
+            for mf, pkg, cmap, rbot, stage0 in self.rivers:
+                e = cmap.entry_channel
+                stage = stage0.copy()
+                for i, c in enumerate(cmap.channels):
+                    stage[e == i] = rbot[e == i] + float(rv.get("bed_thickness", 1.0)) + depth[c]
+                mf.set_stage(pkg, stage)
 
     def _build_rivers(self):
-        """The river cells by flowpath, once MODFLOW 6 has read its first day."""
+        """The river cells by flowpath, once MODFLOW 6 has read its first day: with several models coupled, each
+        model's river package that the map's rows name (a row's model column, or the first's), its cells mapped
+        there."""
         rv = self.cfg.rivers
         pkg = rv.get("package", "riv")
-        if package_type(self.mf6, pkg) != "riv":
-            raise ValueError(f"[rivers] sets a river (RIV) package's stage; {pkg!r} is "
-                             f"{package_type(self.mf6, pkg).upper()}")
-        cmap = ChannelMap.from_spec(rv.get("map", ""), self.cfg.folder, self.mf6, pkg, self.sw.names(S.QOUT))
-        self.rivers = (pkg, cmap, self.mf6.get("RBOT", self.mf6.model, pkg.upper()).astype(float),
-                       self.mf6.get("STAGE", self.mf6.model, pkg.upper()).astype(float))
+        several = isinstance(self.mf6, Models)
+        views = [v for v in self._views() if v.has_package(pkg)] if several else [self.mf6]
+        if not views:
+            raise ValueError(f"[rivers]: no coupled model has a package {pkg!r}")
+        self.rivers = []
+        for v in views:
+            if package_type(v, pkg) != "riv":
+                raise ValueError(f"[rivers] sets a river (RIV) package's stage; {pkg!r} is "
+                                 f"{package_type(v, pkg).upper()}")
+            cmap = ChannelMap.from_spec(rv.get("map", ""), self.cfg.folder, v, pkg, self.sw.names(S.QOUT),
+                                        first_model=self.mf6.model if several else None)
+            if several and not (cmap.entry_channel >= 0).any():
+                continue  # the map has no rows in this model
+            self.rivers.append((v, pkg, cmap, v.get("RBOT", v.model, pkg.upper()).astype(float),
+                                v.get("STAGE", v.model, pkg.upper()).astype(float)))
+        if not self.rivers:
+            raise ValueError(f"[rivers]: the map has no rows in a coupled model with a package {pkg!r}")
 
     def _rivers_out(self):
-        pkg, cmap, _, _ = self.rivers
-        q = self.mf6.simvals(pkg)  # m3 d-1, positive into the aquifer
-        for i, c in enumerate(cmap.channels):
-            self.series[f"baseflow:{c}"].append(-float(q[cmap.entry_channel == i].sum()) / DAY)
+        base: dict[str, float] = {}
+        for mf, pkg, cmap, _, _ in self.rivers:
+            q = mf.simvals(pkg)  # m3 d-1, positive into the aquifer
+            for i, c in enumerate(cmap.channels):
+                base[c] = base.get(c, 0.0) - float(q[cmap.entry_channel == i].sum())
+        for c, v in base.items():
+            self.series[f"baseflow:{c}"].append(v / DAY)
 
     def _forcing(self, u: C.UserConfig, comp) -> dict:
         """Hourly weather inputs for a user, from its forcing source, for the inputs its component takes, and its
@@ -635,20 +656,26 @@ class Basin:
         return out
 
     @staticmethod
-    def _map_cells(cfg: C.ExampleConfig) -> list[tuple[int, ...]]:
-        """The recharge map's cells, 0-based, in the grid's form, for a recharge package Basin Ledger adds."""
+    def _map_cells(cfg: C.ExampleConfig) -> dict[str, list[tuple[int, ...]]]:
+        """The recharge map's cells, 0-based, in the grid's form, by model (a row's ``model``, or the first), for a
+        recharge package Basin Ledger adds."""
         import csv
         if cfg.recharge_map.startswith("all:") or not cfg.recharge_map:
             raise ValueError("[recharge] add = true needs a map of cells (a CSV), not \"all:\"")
-        out = []
+        coupled = [m.lower() for m in (cfg.mf6_models or [cfg.mf6_model])]
+        out: dict[str, list[tuple[int, ...]]] = {}
         with open(cfg.folder / cfg.recharge_map, newline="") as f:
             for r in csv.DictReader(f):
+                model = ((r.get("model") or "").strip() or coupled[0]).lower()
+                if model not in coupled:
+                    raise ValueError(f"{cfg.recharge_map}: a row of model {model!r}, which isn't coupled")
                 if (r.get("row") or "").strip():
-                    out.append((int(r["layer"]), int(r["row"]), int(r["col"])))
+                    cell = (int(r["layer"]), int(r["row"]), int(r["col"]))
                 elif (r.get("icell2d") or "").strip():
-                    out.append((int(r["layer"]), int(r["icell2d"])))
+                    cell = (int(r["layer"]), int(r["icell2d"]))
                 else:
                     raise ValueError(f"{cfg.recharge_map}: [recharge] add = true needs cells, not nodes")
+                out.setdefault(model, []).append(cell)
         return out
 
     def _area_map(self, spec: str, aquifers: list[str]) -> AreaMap:
@@ -998,6 +1025,12 @@ class Basin:
             raise ValueError("[exchange] limit = false: SFR limits a reach's loss to what it carries itself; the "
                              "limit is for a river (RIV) package")
 
+    def _drains_moved(self) -> bool:
+        """Whether the exchange has drains whose moves into a coupled channel's reaches are cut, their water the
+        channel's (exchange.sfr_problems)."""
+        ex = self.exchange
+        return ex is not None and any(getattr(p, "_drains_in", {}) for p in getattr(ex, "parts", [ex]))
+
     def _exchange_models(self) -> list[str]:
         """With several groundwater models coupled, the models the exchange map's rows name (a row without one is the
         first model's), if more than one: the streams then run through each model's package (``StreamExchanges``)."""
@@ -1017,10 +1050,6 @@ class Basin:
         """The stream exchange through each coupled model's package, its channels mapped there; the mover between
         the models lined up and cut as a connection between channels is (exchange.sfr_problems, ``others``)."""
         ex = self.cfg.exchange
-        if ex.get("drains"):
-            raise ValueError("[exchange] drains with streams in several groundwater models isn't built")
-        if ex.get("lakes"):
-            raise ValueError("[exchange] lakes with streams in several groundwater models isn't built")
         pkg, names = ex.get("package", "riv"), self.sw.names(S.QOUT)
         views = [self.mf6.view_of(m) for m in self._exchange_models()]
         maps = [ChannelMap.from_spec(ex["map"], self.cfg.folder, v, pkg, names, channels=list(self.due),
@@ -1034,7 +1063,32 @@ class Basin:
         parts = []
         for v, cmap in zip(views, maps):
             others = {(w.model.lower(), pkg.lower()): m for w, m in zip(views, maps) if w is not v}
-            parts.append(StreamExchange(v, pkg, cmap, None, sfr=ex.get("sfr", "route"), others=others))
+            drains = lakes = None
+            if ex.get("drains"):  # each model's drains, onto its own channels
+                dp = ex["drains"].get("package", "drn")
+                if v.has_package(dp):
+                    dmap, extra = part_map(ex["drains"]["map"], self.cfg.folder, v, dp, names, cmap.channels,
+                                           self.mf6.model)
+                    if extra:
+                        raise ValueError(f"[exchange] drains: {v.model.lower()}'s drains seep to {', '.join(extra)}, "
+                                         f"whose reaches are in another model; a drain seeps to a channel of its own "
+                                         "model")
+                    drains = (dp, dmap)
+            if ex.get("lakes"):  # each model's lakes at a fixed stage, onto its own channels
+                lp = ex["lakes"]["package"]
+                if v.has_package(lp):
+                    if self.cfg.rivers and self.cfg.rivers.get("package", "riv").lower() == lp.lower():
+                        raise ValueError(f"[exchange] lakes: [rivers] sets the stages of {lp!r}; a lake's stage is "
+                                         "fixed in the package's input")
+                    check_lake_package(v, lp, pkg, drains[0] if drains else None)
+                    lakes = (lp, lake_map(ex["lakes"]["map"], self.cfg.folder, v, lp, names, cmap.channels,
+                                          first_model=self.mf6.model))
+            parts.append(StreamExchange(v, pkg, cmap, drains, sfr=ex.get("sfr", "route"), others=others,
+                                        lakes=lakes))
+        if ex.get("drains") and all(p.drains is None for p in parts):
+            raise ValueError(f"[exchange] drains: no coupled model has a package {ex['drains'].get('package', 'drn')!r}")
+        if ex.get("lakes") and all(p.lakes is None for p in parts):
+            raise ValueError(f"[exchange] lakes: no coupled model has a package {ex['lakes']['package']!r}")
         self.exchange = StreamExchanges(parts)
         if any(m == "stage" for m, _ in self.exchange.modes.values()) and not self.sw.has(S.DEPTH):
             raise ValueError("SFR channels at a fixed stage take SWAT+'s channel depth (swatplus-bmi 0.2.0)")
@@ -1068,6 +1122,12 @@ class Basin:
                     take(part.map.entry_channel[:n] >= 0, "stream exchange with SWAT+'s channels" + how)
                 if part.mf6 is mf and part.drains and p == part.drains[0].upper():
                     take(part.drains[1].entry_channel[:n] >= 0, "seepage to SWAT+'s channels")
+                for entries in getattr(part, "_drains_in", {}).values():
+                    for model, package, i in entries:
+                        if model == mf.model.upper() and package == p:
+                            sel = np.zeros(n, bool)
+                            sel[i] = True
+                            take(sel, "seepage to SWAT+'s channels through the mover (cut)")
                 if part.mf6 is mf and getattr(part, "lakes", None) and p == part.lakes[0].upper():
                     take(part.lakes[1].entry_channel[:n] >= 0, "lakes at a fixed stage, through SWAT+'s channels")
             if self.gw_soil is not None and p == self.gw_soil.package.upper():
@@ -1229,6 +1289,8 @@ class Basin:
                 L.enter(f"exchange:{c}:seepage", self.exchange.seepage[c])  # the drains' part of to_stream
             if self.exchange.lakes is not None:
                 L.enter(f"exchange:{c}:lakes", self.exchange.lake_flow[c])  # the lakes' part of to_stream
+            if self._drains_moved():
+                L.enter(f"exchange:{c}:drains_moved", self.exchange.drains_moved[c])  # drains moved in, cut
 
     def run(self, days: int | None = None):
         n = self.days - self.day if days is None else days
@@ -1246,6 +1308,9 @@ class Basin:
         self.swat.save_state(str(folder / "surface"))
         if self.mf6 is not None:
             np.save(folder / "heads.npy", self.mf6.head())
+            state = self.mf6.package_state()  # lakes' stages, multi-aquifer wells' heads (Modflow6.PACKAGE_STATE)
+            if state:
+                np.savez(folder / "packages.npz", **{k.replace("/", "|"): v for k, v in state.items()})
             for sp, t in self.transport.items():
                 np.save(folder / f"concentration_{sp}.npy", t.concentration())
         (folder / "basin.json").write_text(json.dumps({
