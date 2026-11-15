@@ -180,3 +180,54 @@ def test_a_restart_carries_the_lake_and_the_irrigation(swatplus):
     assert set(ta) == set(tb)
     for key in ta:
         assert np.array_equal(ta[key], tb[key], equal_nan=True), key
+
+
+def outlet_model(ws):
+    """Two lakes on a small model: lake 1 with a weir to outside and a specified outlet into lake 2."""
+    import flopy
+    if ws.exists():
+        shutil.rmtree(ws)
+    ws.mkdir(parents=True)
+    sim = flopy.mf6.MFSimulation(sim_name="p", sim_ws=str(ws), exe_name="mf6")
+    flopy.mf6.ModflowTdis(sim, time_units="days", nper=1, perioddata=[(3.0, 3, 1.0)])
+    flopy.mf6.ModflowIms(sim, complexity="moderate")
+    gwf = flopy.mf6.ModflowGwf(sim, modelname="gwf")
+    idomain = np.ones((2, 10, 10), int)
+    idomain[0, 4:6, 4:6] = 0
+    idomain[0, 1, 1] = 0
+    flopy.mf6.ModflowGwfdis(gwf, length_units="meters", nlay=2, nrow=10, ncol=10, delr=100., delc=100., top=20.,
+                            botm=[0., -20.], idomain=idomain)
+    flopy.mf6.ModflowGwfnpf(gwf, k=10., icelltype=1)
+    flopy.mf6.ModflowGwfsto(gwf, sy=0.2, ss=1e-5, iconvert=1, transient={0: True})
+    flopy.mf6.ModflowGwfic(gwf, strt=15.)
+    flopy.mf6.ModflowGwfchd(gwf, stress_period_data=[((0, r, 0), 15.) for r in range(2, 10)])
+    conn = [(0, k, (1, r, c), "vertical", 0.1, 0., 0., 0., 0.) for k, (r, c) in enumerate([(4, 4), (4, 5), (5, 4),
+                                                                                          (5, 5)])]
+    conn.append((1, 0, (1, 1, 1), "vertical", 0.1, 0., 0., 0., 0.))
+    flopy.mf6.ModflowGwflak(gwf, pname="lake", nlakes=2, packagedata=[(0, 16., 4), (1, 15., 1)], connectiondata=conn,
+                            noutlets=2, outlets=[(0, 0, -1, "weir", 15.5, 1.0, 1.0, 0.0),
+                                                 (1, 0, 1, "specified", 0.0, 0.0, 0.0, 0.0)],
+                            perioddata={0: [(1, "rate", -50.0)]}, length_conversion=1.0, time_conversion=86400.0)
+    sim.write_simulation(silent=True)
+    return ws
+
+
+def test_a_coupled_lakes_outlets_are_cut(libmf6):
+    mf = Modflow6(outlet_model(RUNS / "lakes-outlets"), "gwf")
+    try:
+        assert LK.outlets(mf, "lake") == [(1, 0), (1, 2)]
+        mf.prepare_day()
+        mf.solve_day()
+        assert LK.outlet_flow(mf, "lake", 1) > 1000.0  # the weir and the 50 m3 a day into lake 2, as the model has them
+        mf.prepare_day()
+        LK.cut_outlets(mf, "lake", 1)
+        mf.solve_day()
+        assert LK.outlet_flow(mf, "lake", 1) == 0.0
+        assert LK.problems(mf, [LK.LakeConfig("res01", "lake", 1)], ["res01"], None) == []  # its own outlets: cut
+        bad = LK.problems(mf, [LK.LakeConfig("res02", "lake", 2)], ["res02"], None)
+        assert bad == ["[[lakes]] res02: lake's outlet 2 brings lake 1's water into lake 2, water SWAT+'s reservoir "
+                       "doesn't see; couple lake 1 too"]
+        both = [LK.LakeConfig("res01", "lake", 1), LK.LakeConfig("res02", "lake", 2)]
+        assert LK.problems(mf, both, ["res01", "res02"], None) == []
+    finally:
+        mf.finalize()
