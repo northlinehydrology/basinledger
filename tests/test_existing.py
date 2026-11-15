@@ -456,3 +456,53 @@ def test_dis_and_disv_give_the_same_run(runs):
     for k in ("recharge:received", "exchange:cha01:to_stream", "groundwater:boundary:ghb_regional",
               "groundwater:boundary:riv_creek", "groundwater:storage_release"):
         assert tv[k] == pytest.approx(td[k], rel=1e-6, abs=1e-6), k
+
+
+def with_a_farm_well(cfg):
+    """A second plant drawing from the farm's multi-aquifer well (``maw=True``), screened through both layers."""
+    cfg.mf6_builder_args = dict(cfg.mf6_builder_args, maw=True)
+    cfg.wells.append(C.WellConfig("farm1", "maw_farm", None, well=1))
+    plant = copy.deepcopy(cfg.users[0])
+    plant.name, plant.withdrawal = "plant2", "well:farm1"
+    cfg.users.append(plant)
+    return cfg
+
+
+def test_a_multi_aquifer_well_as_a_users_well(swatplus):
+    """MAW: the user's withdrawal is the well's rate each day; MODFLOW 6 splits it between the layers, and what it
+    pumped is delivered, from the aquifer by its connections and from the wellbore's water (to MAW's own solve)."""
+    from basinledger.driver import Basin
+    rows = []
+    found, _ = Basin.check(with_a_farm_well(config()), run="existing-check-maw", takeover=rows)
+    assert found == []
+    assert {r.package: (r.role, r.entries) for r in rows}["maw_farm"] == ("Basin Ledger's", 2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        b = Basin(with_a_farm_well(config()), run="existing-run-maw", days=75)
+        try:
+            b.run()
+            t = b.ledger.table()
+        finally:
+            b.finalize()
+    k = "route:well:farm1:"
+    assert t[k + "requested"].sum() > 0
+    np.testing.assert_allclose(t[k + "delivered"], t[k + "requested"], rtol=1e-12)
+    np.testing.assert_allclose(t[k + "from_aquifer"] + t[k + "from_wellbore"], t[k + "delivered"], rtol=1e-4)
+    assert np.abs(t[k + "from_wellbore"]).max() < 1e-3 * t[k + "delivered"].max()
+    assert np.abs(t["groundwater:closure_share"]).max() < 1e-6
+    assert np.nansum(t["groundwater:boundary:maw_farm"]) == 0.0  # all of it the user's
+
+
+def test_a_multi_aquifer_well_refused(swatplus, tmp_path):
+    from basinledger.driver import Basin
+    cfg = config()
+    cfg.wells.append(C.WellConfig("farm1", "wel_city", None, well=1))
+    found, _ = Basin.check(cfg, run="existing-check-maw-bad")
+    assert len(found) == 1 and "well = 1 names a multi-aquifer well, but wel_city is a WEL package" in found[0]
+    base = CONFIG.read_text().replace('"maps/', f'"{SYNTHETIC}/maps/')
+    (tmp_path / "x.toml").write_text(base.replace("cell = [1, 5, 6]", "cell = [1, 5, 6]\nwell = 1"))
+    with pytest.raises(ValueError, match="a MAW well is named by its number .well., not a cell"):
+        C.load(tmp_path / "x.toml")
+    (tmp_path / "x.toml").write_text(base.replace("cell = [1, 5, 6]", "well = 0"))
+    with pytest.raises(ValueError, match="well is the MAW well's number in its package, from 1"):
+        C.load(tmp_path / "x.toml")

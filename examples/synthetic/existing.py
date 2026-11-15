@@ -86,7 +86,7 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
           steps: int = 1, tsmult: float = 1.0, septic: bool = False, length_units: str = "meters",
           time_units: str = "days", state_units: bool = True, complexity: str = "moderate",
           neighbor: bool = False, lake: bool = False, neighbor_recharge: bool = False,
-          neighbor_river: bool = False) -> Path:
+          neighbor_river: bool = False, maw: bool = False) -> Path:
     if grid not in ("dis", "disv"):
         raise ValueError("grid is dis or disv")
     if neighbor and grid != "dis":
@@ -153,6 +153,13 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
                             pname="evt_riparian", filename="kzoo.evt_riparian.evt")
     flopy.mf6.ModflowGwfoc(gwf, budget_filerecord="kzoo.cbc", head_filerecord="kzoo.hds",
                            saverecord=[("HEAD", "LAST"), ("BUDGET", "LAST")], printrecord=[("BUDGET", "LAST")])
+    if maw:  # a farm's multi-aquifer well, screened through both layers, idle in its own files
+        r, col = 7, 4
+        flopy.mf6.ModflowGwfmaw(gwf, pname="maw_farm", nmawwells=1, packagedata=[(0, u(0.15), u(BOTTOM), u(STAGE),
+                                                                                  "thiem", 2)],
+                                connectiondata=[(0, 0, c((0, r, col)), u(TOP), u(MIDDLE), 0.0, 0.0),
+                                                (0, 1, c((1, r, col)), u(MIDDLE), u(BOTTOM), 0.0, 0.0)],
+                                perioddata={0: [(0, "rate", 0.0)]}, filename="kzoo.maw_farm.maw")
     if lake:  # a pond in the top layer's inactive ring, as a lake's cells are, its bed connected down to the cells below
         conn = [(0, k, c(x), "vertical", u(0.01, 0, -1), 0.0, 0.0, 0.0, 0.0) for k, x in enumerate(POND)]
         flopy.mf6.ModflowGwflak(gwf, pname="lak_pond", nlakes=1, packagedata=[(0, u(MIDDLE + 0.5), len(conn), "pond")],
