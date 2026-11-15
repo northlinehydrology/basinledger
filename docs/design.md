@@ -1548,17 +1548,28 @@ couples more than one of them.
   exchange between two coupled models is booked once, inside the groundwater (`groundwater:exchange:gwf-gwf_<n>`,
   positive into its first model), and cancels in the whole's closure; one to a model not coupled stays a boundary,
   as before. The start-up check lists each model's packages as `<model>/<package>` and notes each exchange.
-- **One model's links.** The stream exchange, a lake and the head outputs each name their model; streams in two
-  models at once (an inset's channels and its parent's) are not built yet: the exchange is one package of one model.
-  Transport, `[rivers]`, `[groundwater_to_soil]` and `[recharge] add` are refused with several models.
+- **Streams in several models.** An exchange map whose rows name more than one model runs the streams through each
+  model's package (`exchange.StreamExchanges`): one exchange per model, each with its own channels (a channel's
+  reaches are in one model, or it is refused), the day's inflow, supply limit and exchange asked of each and put
+  together by channel. The SFR line-up rule takes the other models' maps (`sfr_problems(..., others)`): a coupled
+  reach giving water through the mover to another model's coupled reach lines up as a connection between channels
+  does, from its channel's last reach into the other's top reach, and is cut; into the same channel there it is a
+  move within a channel, refused. On Pleasant Lake, each model's SFR to its own lines with a SWAT+ outlet where the
+  inset meets its parent: the mover from the inset's two outlet reaches into the parent's top reaches lines up on both
+  sides and is cut; the lines as SFRmaker numbered them, the same line on both sides of the edge, are refused as a
+  move within a channel (`tests/test_central_sands.py`). Drains coupled with streams in several models aren't built.
+- **One model's links.** A lake, the head outputs and an exchange in one model name their model (`[exchange]
+  model`). Transport, `[rivers]`, `[groundwater_to_soil]` and `[recharge] add` are refused with several models.
 - **Restarts** save every model's heads and set them back.
 - **Tested** (`tests/test_models.py`) on the synthetic foreign model and its neighbor, both coupled: Osu_1hru's
   10 ha aquifer recharging 64 of kzoo's top cells and 36 of its neighbor's through one map (each model's share as the
   map's, 36:64, every day), a second plant on a well added in the neighbor, the exchange between them inside the
   groundwater, each model's closure and the whole's holding over 75 days; a restart continuing the unbroken run to
   the last digit; the models' cells in one sequence; the settings read and refused.
-- **Next for Pleasant Lake:** streams in both models (one exchange per model, or one across them), then the study's
-  SWAT+ build.
+  With streams in both models, MODFLOW 6 alone: the synthetic creek in kzoo and a losing river in its neighbor, one
+  exchange through both, the supply limit holding the neighbor's river to the water its channel carries.
+- **Next for Pleasant Lake:** the study's SWAT+ build, with an outlet where the inset meets its parent and the lake as
+  a reservoir.
 
 **Built (Nov 14, 2026): wells the model doesn't have** (a new large user's, the question Basin Ledger exists for).
 A `[[wells]]` entry with `add = true` is a well the model lacks: Basin Ledger writes a WEL package of its own, named
