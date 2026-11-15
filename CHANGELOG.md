@@ -101,7 +101,9 @@ MODFLOW 6 model").
   active within the day from the reservoir's starting volume with its day's water in and out, or B at a fixed stage,
   and its leakage is the reservoir's groundwater exchange the next day (`lake:<reservoir>:due`, `applied`,
   `shortfall`, `to_aquifer`). The stage is LAK's own at SWAT+'s volume: its table, or its connections as MODFLOW 6
-  computes a lake's volume, inverted. A lake with outlets, and a reservoir with its own seepage on, are refused.
+  computes a lake's volume, inverted. A coupled lake's outlets are cut each day (SWAT+ routes its release) and
+  checked; an outlet from a lake not coupled into a coupled one, and a reservoir with its own seepage on, are
+  refused.
 - Irrigation pumped from MODFLOW 6's wells (`coupling/irrigation.py`, `[irrigation] wells`; needs swatplus-bmi
   0.11.0, `land_irrigation_water__volume_flow_rate`): each day the water SWAT+'s irrigation put on each mapped HRU is
   pumped that day from the `[[wells]]` the map names, in their shares (`irrigation:pumped`,

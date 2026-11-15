@@ -1319,10 +1319,13 @@ chosen per study and applied per lake:
   sets it constant at the stage of the day's ending volume. After the solve the lake's leakage (its connections'
   `SIMVALS`, positive into the aquifer) is the reservoir's exchange the next day. The ledger books
   `lake:<reservoir>:due` against `applied` (what SWAT+ took) plus `shortfall` (a loss the reservoir couldn't
-  supply), and `to_aquifer`, `stage_m`, `volume` and, for A, LAK's own `mf6_end_stage_m`, which isn't kept. The
-  start-up check lists the lake's connections as Basin Ledger's, and refuses a lake with outlets (cutting them isn't
-  built), a reservoir whose own seepage (`k` in hydrology.res) isn't 0, which would leak twice, and a package that
-  isn't LAK or a lake it doesn't have. A restart carries the leakage due. Tested on the synthetic model with a pond
+  supply), and `to_aquifer`, `stage_m`, `volume` and, for A, LAK's own `mf6_end_stage_m`, which isn't kept. A
+  coupled lake's outlets are cut each day (a specified outlet's `OUTRATE` and a weir's or Manning's `OUTWIDTH` set
+  to 0 after the day is prepared), since SWAT+ routes the reservoir's release, and the ledger checks nothing left
+  through them (`lake:<reservoir>:outlet_flow`, zero). The start-up check lists the lake's connections as Basin
+  Ledger's, and refuses an outlet bringing another lake's water into a coupled lake unless that lake is coupled too
+  (water SWAT+'s reservoir doesn't see), a reservoir whose own seepage (`k` in hydrology.res) isn't 0, which would
+  leak twice, and a package that isn't LAK or a lake it doesn't have. A restart carries the leakage due. Tested on the synthetic model with a pond
   in its top layer's inactive ring (its bed on the bottom layer) and Osu_1hru with a reservoir below its channel,
   both forms, 75 days: the pond, below the aquifer's heads, gains 130 m3 a day falling to 79 as it fills, each
   day's gain reaches the reservoir the next day, and the ledger closes. Pleasant Lake, a seepage lake with no
