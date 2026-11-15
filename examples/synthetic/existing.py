@@ -8,8 +8,9 @@ What makes it foreign, against the models ``model.py`` writes for the studies' o
   rotated 15 degrees, so maps from geometry must go through the model's own grid.
 - **Two layers, with inactive cells:** 12 x 12 cells of 31.6 m in each layer. The top layer's outer ring is inactive,
   leaving 10 x 10 active cells, Osu_1hru's 10 ha; the bottom layer is active everywhere.
-- **Monthly stress periods,** each with daily steps (one step per month with ``daily=False``, which the driver
-  refuses until it can rewrite the time discretization).
+- **Monthly stress periods,** each with daily steps; or, with ``daily=False``, ``steps`` steps a month (one by
+  default) growing by ``tsmult``, as a model built for a study usually has. A run rewrites those to daily steps in
+  its copy (coupling/timesteps.py), so both give the same run.
 - **Its own package names and its own boundaries:** the recharge it was calibrated with (``rch_swb``, a rate for each
   month), a creek (``riv_creek``) down the second column with a tributary along row 5 that no SWAT+ channel reaches,
   tile drains (``drn_tile``), a regional boundary on the east (``ghb_regional``), a fixed head on the south
@@ -76,8 +77,8 @@ def cellid(cell, grid: str):
 
 
 def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", daily: bool = True,
-          septic: bool = False, length_units: str = "meters", time_units: str = "days",
-          state_units: bool = True, complexity: str = "moderate") -> Path:
+          steps: int = 1, tsmult: float = 1.0, septic: bool = False, length_units: str = "meters",
+          time_units: str = "days", state_units: bool = True, complexity: str = "moderate") -> Path:
     if grid not in ("dis", "disv"):
         raise ValueError("grid is dis or disv")
     u = units(length_units, time_units)
@@ -86,8 +87,9 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
     lengths = months(start, days)
     nper = len(lengths)
     sim = flopy.mf6.MFSimulation(sim_name="kzoo_regional", sim_ws=ws, exe_name="mf6")
+    periods = [(u(n, 0, 1), n, 1.0) if daily else (u(n, 0, 1), min(steps, n), tsmult) for n in lengths]
     flopy.mf6.ModflowTdis(sim, time_units=time_units if state_units else None, start_date_time=start.isoformat(),
-                          nper=nper, perioddata=[(u(n, 0, 1), n if daily else 1, 1.0) for n in lengths])
+                          nper=nper, perioddata=periods)
     rclose = 1e-8 if time_units == "days" else 1e-7  # m3 d-1: in seconds, 1e-8 is 4e-12 ft3 s-1, past the solver
     flopy.mf6.ModflowIms(sim, complexity=complexity, outer_dvclose=u(1e-8), inner_dvclose=u(1e-10),
                          rcloserecord=[u(rclose, *Q), "strict"], pname="solver")

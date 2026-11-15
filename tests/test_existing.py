@@ -18,6 +18,7 @@ import csv
 import datetime as dt
 import importlib.util
 import io
+import shutil
 from contextlib import redirect_stdout
 
 import numpy as np
@@ -178,13 +179,15 @@ def test_the_examples_maps_are_what_the_helpers_write(built):
             assert (folder / name).read_text() == (SYNTHETIC / "maps" / name).read_text()
 
 
-def test_one_step_a_month_is_refused_until_the_time_discretization_is_rewritten(libmf6):
+def test_one_step_a_month_is_refused_by_modflow6_alone(libmf6):
+    """A run rewrites the time discretization to daily steps first (coupling/timesteps.py, tests/test_timesteps.py);
+    MODFLOW 6 alone, on the model as given, refuses a step longer than a day."""
     from basinledger.coupling.modflow6 import Modflow6
     ws = RUNS / "existing-monthly"
     E.build(ws, 59, START, daily=False)
     mf = Modflow6(ws, "kzoo")
     try:
-        with pytest.raises(ValueError, match="time step is 31.0 days"):
+        with pytest.raises(ValueError, match="time step is 31.0 days.*timesteps.daily_steps"):
             mf.prepare_day()
     finally:
         mf.finalize()
@@ -260,6 +263,44 @@ def test_coupled_across_monthly_stress_periods_the_ledger_closes(runs):
     assert t["recharge:received"] == pytest.approx(t["recharge:made"], rel=1e-9)
     assert t["route:well:city1:delivered"] == pytest.approx(t["route:well:city1:requested"])
     assert abs(t["groundwater:closure_share"]) < 1e-6 * 75
+
+
+def test_monthly_steps_growing_give_the_daily_models_run(runs):
+    """The same model with five steps a month growing by 1.2, as a study's model usually has: the run rewrites it to
+    daily steps in its copy and says so, and the run is the daily model's."""
+    from basinledger.driver import Basin
+    with pytest.warns(Warning) as caught:
+        b = Basin(config(daily=False, steps=5, tsmult=1.2), run="existing-run-monthly", days=75)
+    try:
+        b.run()
+        t = b.ledger.totals()
+    finally:
+        b.finalize()
+    notes = [str(w.message) for w in caught]
+    assert ("MODFLOW 6's time steps rewritten to one day each in the run's copy: 3 stress periods, 75 days (they "
+            "had 15 steps, growing in 3 periods); each period's input stays as given") in notes
+    daily = runs["dis"][0]
+    assert set(t) == set(daily)
+    for k, v in daily.items():
+        assert t[k] == pytest.approx(v, rel=1e-12, abs=1e-12), k
+
+
+def test_a_models_own_folder_with_its_own_start_date(swatplus):
+    """A model handed over as a folder (``workspace``), its periods monthly and its dates two years after the run's:
+    the check rewrites its steps and notes that its stress periods fall before its dates."""
+    from basinledger.driver import Basin
+    ws = RUNS / "existing-handed-over"
+    if ws.exists():
+        shutil.rmtree(ws)
+    E.build(ws, 75, dt.date(2012, 1, 1), daily=False)
+    cfg = config()
+    cfg.mf6_builder, cfg.mf6_workspace = None, ws
+    found, notes = Basin.check(cfg, run="existing-check-handed-over")
+    assert found == []
+    assert any(n.startswith("MODFLOW 6's time steps rewritten to one day each") for n in notes)
+    assert ("MODFLOW 6's time starts on 2012-01-01 (TDIS START_DATE_TIME) and the run on 2010-01-01: the model's "
+            "first day is taken as the run's, so its stress periods fall 730 days earlier than its dates") in notes
+    assert "Basin Ledger" not in (ws / "kzoo_regional.tdis").read_text()  # the model handed over is as it was
 
 
 def test_the_models_own_boundaries_are_booked_as_from_or_to_outside(runs):
