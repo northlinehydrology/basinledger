@@ -98,6 +98,27 @@ def test_the_mover_is_refused_by_name(mf, sim):
         StreamExchange(mf, "sfr_0", lines(sim, INSET), sfr="route_or_stage")
 
 
+def renamed(cmap: ChannelMap, model: str) -> ChannelMap:
+    """The lines as channels of their own model, as if SWAT+ had an outlet where the inset meets its parent."""
+    return ChannelMap([f"{model}:{c}" for c in cmap.channels], cmap.entry_channel)
+
+
+def test_both_models_streams_line_up_with_the_mover_between_them(mf, sim):
+    """Both models coupled: each model's SFR to its own lines, and the mover from the inset's two outlet reaches into
+    the parent's top reaches lined up on both sides and cut. Its lines as SFRmaker numbered them, the same line on
+    both sides of the inset's edge is one channel, and the move a move within a channel, refused."""
+    parent = mf.view(PARENT)
+    inset_map, parent_map = renamed(lines(sim, INSET), "inset"), renamed(lines(sim, PARENT), "parent")
+    li = sfr_problems(mf, "sfr_0", inset_map, {(PARENT, "sfr_0"): parent_map})
+    lp = sfr_problems(parent, "sfr_0", parent_map, {(INSET, "sfr_0"): inset_map})
+    assert li.problems == [] and li.channel_problems == {} and lp.problems == [] and lp.channel_problems == {}
+    assert [(m.provider.id, m.receiver.id) for m in li.moves_cut] == [(24, 218), (4, 213)]
+    assert li.moves_cut == lp.moves_cut
+    assert {24, 4} <= set(li.last.values()) and {218, 213} <= set(lp.top.values())
+    same = sfr_problems(mf, "sfr_0", lines(sim, INSET), {(PARENT, "sfr_0"): lines(sim, PARENT)})
+    assert any("a mover within a channel isn't built" in p for p in same.problems)
+
+
 def test_confluences_listed_for_swat_outlets(sim):
     from basinledger import gridmaps as G
     assert G.sfr_confluences(sim.get_model(INSET), "sfr_0") == []

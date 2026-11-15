@@ -156,3 +156,44 @@ def test_a_restart_of_both_models_continues_the_unbroken_run(swatplus):
     assert set(ta) == set(tb)
     for key in ta:
         assert np.array_equal(ta[key], tb[key], equal_nan=True), key
+
+
+def test_streams_in_both_models(libmf6):
+    """A channel's reaches in each model (kzoo's creek, the neighbor's losing river), one exchange through both
+    (``StreamExchanges``), MODFLOW 6 alone: the supply limit holds each model's channel to what it carries, and the
+    day's exchange comes back by channel from both."""
+    from basinledger.coupling.exchange import (
+        ChannelMap,
+        StreamExchange,
+        StreamExchanges,
+    )
+    ws = RUNS / "models-streams"
+    if ws.exists():
+        shutil.rmtree(ws)
+    E.build(ws, 31, START, neighbor=True, neighbor_river=True)
+    m = Models(Modflow6(ws, "kzoo"), MODELS)
+    try:
+        kz, ea = m.views
+        m.prepare_day()  # the packages have their entries once the first day is prepared
+        creek = ChannelMap.from_spec("maps/existing_river.csv", SYNTHETIC, kz, "riv_creek", ["cha01", "cha02"],
+                                     channels=["cha01", "cha02"], first_model="KZOO")
+        assert creek.channels == ["cha01"]
+        river = ChannelMap(["cha02"], np.zeros(ea.nbound("riv_east"), int))
+        ex = StreamExchanges([StreamExchange(kz, "riv_creek", creek), StreamExchange(ea, "riv_east", river)])
+        assert ex.channels == ["cha01", "cha02"] and ex.kind == "riv"
+        free = {}
+        for day, have in enumerate(({"cha01": 1e6, "cha02": 1e6}, {"cha01": 1e6, "cha02": 0.0})):
+            if day:
+                m.prepare_day()
+            m.solve_day(ex.limit(have))
+            free[day] = ex.after_solve()
+            lowered = ex.lowered
+            ex.end_day()
+        assert free[0]["cha02"] < -1.0                       # the neighbor's river loses, with water to lose
+        # with none, the limit holds it to nothing, within its stage tolerance: 1 mm on 8 entries of 10 m2 d-1
+        from basinledger.coupling.exchange import STAGE_TOLERANCE_M
+        assert free[1]["cha02"] >= -8 * 10.0 * STAGE_TOLERANCE_M and free[1]["cha02"] > free[0]["cha02"] / 100
+        assert lowered["cha02"] > 0 and lowered["cha01"] == 0.0
+        assert np.isfinite(free[1]["cha01"])
+    finally:
+        m.finalize()

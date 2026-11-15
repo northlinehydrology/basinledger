@@ -85,7 +85,8 @@ def cellid(cell, grid: str):
 def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", daily: bool = True,
           steps: int = 1, tsmult: float = 1.0, septic: bool = False, length_units: str = "meters",
           time_units: str = "days", state_units: bool = True, complexity: str = "moderate",
-          neighbor: bool = False, lake: bool = False, neighbor_recharge: bool = False) -> Path:
+          neighbor: bool = False, lake: bool = False, neighbor_recharge: bool = False,
+          neighbor_river: bool = False) -> Path:
     if grid not in ("dis", "disv"):
         raise ValueError("grid is dis or disv")
     if neighbor and grid != "dis":
@@ -159,7 +160,7 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
                                 perioddata={0: [(0, "rainfall", u(0.002, *LT)), (0, "evaporation", u(0.003, *LT))]},
                                 filename="kzoo.lak_pond.lak")
     if neighbor:
-        _neighbor(sim, ims, u, lu, neighbor_recharge)
+        _neighbor(sim, ims, u, lu, neighbor_recharge, neighbor_river)
     sim.write_simulation(silent=True)
     return ws
 
@@ -209,10 +210,11 @@ def reservoir_project(dest: str | Path, refdata: str | Path) -> Path:
 EAST_COLS = 4
 
 
-def _neighbor(sim, ims, u, lu, recharge=False):
+def _neighbor(sim, ims, u, lu, recharge=False, river=False):
     """``kzoo_east``: the aquifer east of the grid, its far column at the regional head, joined to kzoo's east
     column (bottom layer, where kzoo's top layer is inactive) by a GWF-GWF exchange. With ``recharge``, its own
-    recharge package, ``rch_swb`` as kzoo's, for coupling both models together."""
+    recharge package, ``rch_swb`` as kzoo's, for coupling both models together; with ``river``, a river above the
+    regional head down its second column, ``riv_east``, losing to the aquifer."""
     LT = (1, -1)
     east = flopy.mf6.ModflowGwf(sim, modelname="kzoo_east", save_flows=True)
     cell = u(CELL)
@@ -225,6 +227,10 @@ def _neighbor(sim, ims, u, lu, recharge=False):
                                                           for r in range(N)]}, pname="chd_regional")
     if recharge:
         flopy.mf6.ModflowGwfrcha(east, recharge=u(0.0008, *LT), pname="rch_swb", filename="kzoo_east.rch_swb.rcha")
+    if river:
+        flopy.mf6.ModflowGwfriv(east, stress_period_data={0: [((0, r, 1), u(STAGE + 2.0), u(10.0, 2, -1),
+                                                                u(STAGE - 1.0)) for r in range(2, 10)]},
+                                pname="riv_east", filename="kzoo_east.riv_east.riv")
     flopy.mf6.ModflowGwfoc(east, budget_filerecord="kzoo_east.cbc", saverecord=[("BUDGET", "LAST")])
     flopy.mf6.ModflowGwfgwf(sim, exgtype="GWF6-GWF6", exgmnamea="kzoo", exgmnameb="kzoo_east", nexg=N,
                             exchangedata=[((1, r, N - 1), (1, r, 0), 1, cell / 2, cell / 2, cell * u(MIDDLE - BOTTOM))
