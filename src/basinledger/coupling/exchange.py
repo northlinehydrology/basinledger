@@ -57,6 +57,15 @@ from a coupled reach to a reach no channel has or to any other package or model,
 that isn't SFR (a drain's, a lake's, a well's: water SWAT+'s channel doesn't see). Moves among the model's own
 entries stay the model's.
 
+**Lakes at a fixed stage** (``[exchange] lakes``, a RIV package of their own): a lake's cells exchange with the aquifer
+at the lake's surface, set by the study in the package's input. A lake couples through a channel, as the drains do (built before
+swatplus-bmi 0.11.0 had a reservoir exchange; a LAK lake coupled to its reservoir is coupling/lakes.py): the study maps each lake's cells to the channel its reservoir
+flows into, one of the exchange's coupled channels, and the lakes' net exchange joins that channel's the next day.
+A lake can't take more than its channel has: with a RIV exchange the supply limit lowers a channel's river and lake
+stages by one depth together; with SFR the lakes have a limit of their own, which doesn't count SFR's reach losses
+from the same channel (a combined excess is a shortfall in the ledger). Basin Ledger never changes a lake's stage
+otherwise, and puts it back after the day.
+
 Other limits of this version:
 - MODFLOW 6's river stage is fixed in its input unless the example's ``[rivers]`` section sets it from the surface
   model's channel depth (``stage = "surface_depth"``; SWAT+'s depth needs swatplus-bmi 0.2.0);
@@ -385,17 +394,56 @@ def requests(due: dict[str, float]) -> dict[str, float]:
     return out
 
 
+def check_lake_package(mf6: Modflow6, lakes: str, package: str, drains: str | None = None):
+    """The lakes' package is a river (RIV) package of their own: not the exchange's, nor the drains'."""
+    if lakes.lower() == package.lower():
+        raise ValueError(f"[exchange] lakes: {lakes!r} is the exchange's own package; lakes need a river (RIV) "
+                         "package of their own")
+    if drains is not None and lakes.lower() == drains.lower():
+        raise ValueError(f"[exchange] lakes: {lakes!r} is the drains' package; lakes need a river (RIV) package of "
+                         "their own")
+    if package_type(mf6, lakes) != "riv":
+        raise ValueError(f"[exchange] lakes: {lakes!r} is {package_type(mf6, lakes).upper()}; lakes at a fixed stage "
+                         "are a river (RIV) package")
+
+
+def lake_map(spec: str, folder: Path, mf6: Modflow6, package: str, swat_channels: list[str],
+             coupled: list[str]) -> ChannelMap:
+    """The lakes' map, onto the exchange's coupled channels and in their order: a lake couples through its outlet
+    channel, which must be one of them. A lake may map to some of them only."""
+    if spec.startswith("all:") and spec[4:] in swat_channels and spec[4:] not in coupled:
+        extra = [spec[4:]]
+    else:
+        lmap = ChannelMap.from_spec(spec, folder, mf6, package, swat_channels, channels=coupled)
+        extra = lmap.channels[len(coupled):]
+    if extra:
+        raise ValueError(f"[exchange] lakes: {', '.join(extra)} isn't a channel the exchange couples ({coupled}); a "
+                         "lake couples through its outlet channel, which must be one of the rivers' or drains'")
+    return lmap
+
+
 class StreamExchange:
     """The river (RIV) or streamflow routing (SFR) package's exchange, plus any drains coupled to the same channels
-    (``drains``: package, map). Drains only take water from the aquifer (seepage at land surface) and give it to
-    their channel the next day, as the rivers' gains do."""
+    (``drains``: package, map) and any lakes at a fixed stage (``lakes``: a RIV package, map). Drains only take
+    water from the aquifer (seepage at land surface) and give it to their channel the next day, as the rivers'
+    gains do. Lakes gain or lose, and their net exchange joins their outlet channel's the next day."""
 
     def __init__(self, mf6: Modflow6, package: str, cmap: ChannelMap, drains: tuple[str, ChannelMap] | None = None,
-                 sfr: str = "route", others: dict[tuple[str, str], ChannelMap] | None = None):
+                 *, sfr: str = "route", others: dict[tuple[str, str], ChannelMap] | None = None,
+                 lakes: tuple[str, ChannelMap] | None = None):
         self.mf6, self.package, self.map = mf6, package, cmap
         self.drains = drains
+        self.lakes = lakes
         if drains is not None and drains[1].channels != cmap.channels:
             raise ValueError("the drains' channels must be the rivers' channels, in the same order")
+        if lakes is not None:
+            lp, lmap = lakes
+            check_lake_package(mf6, lp, package, drains[0] if drains is not None else None)
+            if lmap.channels != cmap.channels:
+                raise ValueError("the lakes' channels must be the rivers' channels, in the same order")
+            L = lp.upper()
+            self._lake_cond = mf6.get("COND", mf6.model, L).astype(float)
+            self._lake_rbot = mf6.get("RBOT", mf6.model, L).astype(float)
         P = package.upper()
         self.kind = package_type(mf6, package)
         self.modes: dict[str, tuple[str, list[str]]] = {}  # SFR: channel -> ("route" or "stage", why)
@@ -468,19 +516,33 @@ class StreamExchange:
 
     def limit(self, available: dict[str, float]):
         """The supply limit for today's solve, as a callback for ``Modflow6.solve_day``: after each converged outer
-        iteration it lowers, from the day's own stages, the stages of any channel whose net exchange (rivers and
-        drains together, at the heads as they are then) takes more than ``available``, and says whether anything
+        iteration it lowers, from the day's own stages, the stages of any channel whose net exchange (rivers, drains
+        and lakes together, at the heads as they are then) takes more than ``available``, and says whether anything
         changed, so the solve goes on until heads and stages agree. ``available`` (m3 for the day) is the channel's
         flow without today's exchange: the exchange is taken tomorrow, when today's won't be there. Counting it let
-        a channel lose on alternate days what it gained the day before (on a study basin). ``end_day`` puts the day's
+        a channel lose on alternate days what it gained the day before (on a study basin). A channel's river and lake
+        stages are lowered by the same depth. With an SFR exchange only the lakes' stages are limited here (SFR
+        limits its own reaches), and SFR's losses from the same channel aren't counted. ``end_day`` puts the day's
         stages back after the solve."""
-        P = self.package.upper()
-        n = self.mf6.nbound(self.package)
-        self._stage0 = self.mf6.get("STAGE", self.mf6.model, P).astype(float)
-        nodes = self.mf6.package_nodes(self.package)
-        e = self.map.entry_channel[:n]
         have = np.array([available[c] for c in self.map.channels])
+        parts = []  # (package, rbot, cond, map): the rivers' (RIV only), then the lakes'
+        if self.kind == "riv":
+            parts.append((self.package, self._rbot, self._cond, self.map))
+        if self.lakes is not None:
+            parts.append((self.lakes[0], self._lake_rbot, self._lake_cond, self.lakes[1]))
+        self._stage0 = {}
+        day = []  # (package, entries, nodes, rbot, cond, entry_channel), each package's entries in turn
+        for pkg, rbot, cond, cmap in parts:
+            n = self.mf6.nbound(pkg)
+            self._stage0[pkg] = self.mf6.get("STAGE", self.mf6.model, pkg.upper()).astype(float)
+            day.append((pkg, n, self.mf6.package_nodes(pkg), rbot[:n], cond[:n], cmap.entry_channel[:n]))
+        # the packages' entries together, so a channel's rivers and lakes are lowered by one depth
+        stage0 = np.concatenate([self._stage0[p][:n] for p, n, *_ in day])
+        nodes, rbot, cond, e = (np.concatenate([x[i] for x in day]) for i in (2, 3, 4, 5))
+        lake_channels = (np.isin(np.arange(len(have)), self.lakes[1].entry_channel) if self.lakes is not None
+                         else np.zeros(len(have), bool))
         self.lowered = dict.fromkeys(self.map.channels, 0.0)
+        self.lake_lowered = dict.fromkeys(self.map.channels, 0.0)
 
         drains = None
         if self.drains is not None:
@@ -491,32 +553,38 @@ class StreamExchange:
                       self.mf6.get("COND", self.mf6.model, D).astype(float)[:nd], dmap.entry_channel[:nd])
 
         def callback() -> bool:
-            stage = self.mf6.get("STAGE", self.mf6.model, P).astype(float)
+            stages = [self.mf6.get("STAGE", self.mf6.model, p.upper()).astype(float) for p, *_ in day]
             h = self.mf6.head()
             extra = have.copy()
             if drains is not None:  # the channel's seepage at these heads
                 dn, elev, dc, de = drains
                 q = dc * np.clip(h[dn] - elev, 0.0, None)
                 extra += np.bincount(de[de >= 0], weights=q[de >= 0], minlength=len(have))
-            new, d = limit_to_supply(self._stage0[:n], self._rbot[:n], self._cond[:n], h[nodes], e, extra)
-            self.lowered = dict(zip(self.map.channels, d.tolist()))
-            if np.max(np.abs(new - stage[:n]), initial=0.0) <= STAGE_TOLERANCE_M:
+            new, d = limit_to_supply(stage0, rbot, cond, h[nodes], e, extra)
+            if self.kind == "riv":
+                self.lowered = dict(zip(self.map.channels, d.tolist()))
+            self.lake_lowered = dict(zip(self.map.channels, np.where(lake_channels, d, 0.0).tolist()))
+            now = np.concatenate([st[:n] for st, (_, n, *_) in zip(stages, day)])
+            if np.max(np.abs(new - now), initial=0.0) <= STAGE_TOLERANCE_M:
                 return False
-            stage[:n] = new
-            self.mf6.set_stage(self.package, stage)
+            at = 0
+            for st, (pkg, n, *_) in zip(stages, day):
+                st[:n] = new[at: at + n]
+                at += n
+                self.mf6.set_stage(pkg, st)
             return True
 
         return callback
 
     def end_day(self):
         """The day's own stages back, so tomorrow starts from them (a fixed stage would otherwise stay lowered)."""
-        if getattr(self, "_stage0", None) is not None:
-            self.mf6.set_stage(self.package, self._stage0)
-            self._stage0 = None
+        for pkg, stage in (getattr(self, "_stage0", None) or {}).items():
+            self.mf6.set_stage(pkg, stage)
+        self._stage0 = None
 
     def after_solve(self) -> dict[str, float]:
         """Today's exchange per channel (m3, positive to the stream), due in SWAT+ tomorrow: the rivers' net
-        exchange plus the drains' seepage."""
+        exchange plus the drains' seepage and the lakes' net exchange."""
         q = self.mf6.simvals(self.package)  # m3 d-1, positive into the aquifer
         e = self.map.entry_channel[: len(q)]
         out = {ch: -float(q[e == i].sum()) for i, ch in enumerate(self.map.channels)}
@@ -528,6 +596,14 @@ class StreamExchange:
             for i, ch in enumerate(dmap.channels):
                 self.seepage[ch] = -float(qd[ed == i].sum())
                 out[ch] += self.seepage[ch]
+        self.lake_flow = {ch: 0.0 for ch in out}
+        if self.lakes is not None:
+            pkg, lmap = self.lakes
+            ql = self.mf6.simvals(pkg)
+            el = lmap.entry_channel[: len(ql)]
+            for i, ch in enumerate(lmap.channels):
+                self.lake_flow[ch] = -float(ql[el == i].sum())
+                out[ch] += self.lake_flow[ch]
         return out
 
 

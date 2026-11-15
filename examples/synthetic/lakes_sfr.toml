@@ -1,0 +1,37 @@
+name = "synthetic-lakes-sfr"
+description = """lakes.toml with the river as MODFLOW 6's streamflow routing (SFR) package, as sfr.toml: the lake's
+stage has a supply limit of its own against the channel's water, since SFR limits its reaches itself. For the
+engine's tests only."""
+
+[run]
+folder = "../../runs/synthetic-lakes-sfr"
+
+[swatplus]
+project = "{swatplus_refdata}/Osu_1hru"
+
+[modflow6]
+builder = "model:build_small_sfr"
+builder_args = {lake_stage = 88.5}
+
+[recharge]
+map = "all:aqu001"
+area_rtol = 1e-6          # the grid is exactly Osu_1hru's 10 ha aquifer
+
+[exchange]
+package = "sfr"
+map = "all:cha01"         # every reach to the one channel
+lakes = {package = "lakes", map = "maps/lakes.csv"}   # object, layer, row, col: each lake cell to its outlet channel
+
+[[wells]]
+name = "pw1"
+cell = [0, 5, 6]
+
+[[users]]
+name = "plant"
+component = "basinledger.testing:SyntheticUser"
+config = "small_user.toml"
+withdrawal = "well:pw1"
+return = "outfall:offsite"
+
+[outputs]
+heads = [{name = "pw1", cell = [0, 5, 6]}, {name = "lake", cell = [0, 5, 8]}]

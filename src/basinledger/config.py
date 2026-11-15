@@ -87,6 +87,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
                                         #   doesn't line up is refused), "route_or_stage" (A where a channel lines up,
                                         #   a fixed stage from SWAT+'s depth where it doesn't, B) or "stage" (B for all)
     drains = {package = "drn", map = "maps/drains.csv"}   # optional: seepage cells, to their channels the next day
+    lakes = {package = "lakes", map = "maps/lakes.csv"}   # optional: lake cells at a fixed stage (a RIV package of
+                                        #   their own), each to its outlet channel, one of the rivers' or drains'
 
     [transport.chloride]                # optional: a MODFLOW 6 transport model per species (coupling/transport.py),
     recharge = 0.02                     #   built by the example's builder (add_transport); kg m-3 of recharge [A]
@@ -388,6 +390,9 @@ def load(path: str | Path) -> ExampleConfig:
                 raise ValueError(f"{path}: [[lakes]] {lk['reservoir']}: form is one of {', '.join(FORMS)}")
             lakes.append(LakeConfig(lk["reservoir"], lk["package"], int(lk.get("lake", 1)), lk.get("form", "active"),
                                     lk.get("model")))
+    ex_lakes = c.get("exchange", {}).get("lakes")
+    if ex_lakes is not None and (not isinstance(ex_lakes, dict) or set(ex_lakes) != {"package", "map"}):
+        raise ValueError(f"{path}: [exchange] lakes is {{package = \"<a RIV package>\", map = \"<a map>\"}}")
     for h in c.get("outputs", {}).get("heads", []):
         _cell(path, f"[outputs] heads {h.get('name')!r}", h.get("cell"))
     for r in c.get("rules", []):

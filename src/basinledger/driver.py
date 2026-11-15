@@ -53,7 +53,14 @@ from .coupling import irrigation as IR
 from .coupling import lakes as LK
 from .coupling import recharge as RC
 from .coupling import swatplus as S
-from .coupling.exchange import ChannelMap, StreamExchange, StreamExchanges, package_type
+from .coupling.exchange import (
+    ChannelMap,
+    StreamExchange,
+    StreamExchanges,
+    check_lake_package,
+    lake_map,
+    package_type,
+)
 from .coupling.exchange import requests as exchange_requests
 from .coupling.gwsoil import GroundwaterToSoil
 from .coupling.modflow6 import Models, Modflow6, remaining_simulation
@@ -443,7 +450,10 @@ class Basin:
             if aquifers:  # SWAT+'s own aquifer recharge, the same percolation summed by aquifer (recharge.py)
                 a = S.aquifer_areas(swat_dir)
                 self.aquifer_check = np.array([a[x] for x in aquifers])
-                L.pair("recharge:made", "recharge:swat_aquifers", rtol=RC.AQUIFER_RTOL)
+                # the files' precision bounds the pair on days a few small HRUs carry the recharge (Nov 13, 2026)
+                prec = S.hru_area_precision(swat_dir)
+                self.aquifer_bound = np.array([prec[h] for h in self.sw.names(RC.PERCOLATION)])
+                L.pair("recharge:made", "recharge:swat_aquifers", rtol=RC.AQUIFER_RTOL, bound="recharge:precision")
         self.recharge = RechargeLink(self.swat, self.mf6, self.map, cfg.recharge_package, source, var)
         # groundwater up into the soil: SWAT+'s side now, MODFLOW 6's on the first day (coupling/gwsoil.py)
         if cfg.groundwater_to_soil:
@@ -682,6 +692,9 @@ class Basin:
         if self.exchange is not None and self.exchange.kind == "sfr":
             raise NotImplementedError("transport with an SFR exchange needs MODFLOW 6's SFT package for the "
                                       "streams' concentrations; not built")
+        if self.exchange is not None and self.exchange.lakes is not None:
+            raise NotImplementedError("transport with [exchange] lakes needs the lakes' own concentrations for what "
+                                      "they lose to the aquifer; not built")
         for sp, t in self.transport.items():
             if not t.takes_inflow(rp):
                 raise ValueError(f"{t.model.lower()}: the recharge package {rp!r} isn't an AUX source in SSM "
@@ -885,6 +898,7 @@ class Basin:
         L.enter("recharge:by_the_map", sent - self.recharge.made)
         if self.aquifer_check is not None:
             L.enter("recharge:swat_aquifers", float(np.sum(self.sw.get(RC.RECHARGE) * DAY * self.aquifer_check)))
+            L.enter("recharge:precision", float(np.sum(np.abs(self.sw.get(RC.PERCOLATION)) * DAY * self.aquifer_bound)))
         rt.apply_wells()
         if self.lakes is not None:
             self.lakes.before_solve()
@@ -911,7 +925,7 @@ class Basin:
                 self.exchange.set_inflow(available, depth)
                 for c, v in available.items():
                     L.enter(f"exchange:{c}:sfr_inflow", v)
-            else:
+            if not sfr or self.exchange.lakes is not None:  # SFR's lakes have a limit of their own
                 limit = self.exchange.limit(available)
         if self.gw_soil is not None:
             if self.gw_soil.mf6 is None:
@@ -919,8 +933,12 @@ class Basin:
             self.gw_soil.before_solve()
         self.mf6.solve_day(limit)
         if limit is not None:
-            for c, d in self.exchange.lowered.items():
-                L.enter(f"exchange:{c}:stage_lowered_m", d)
+            if not sfr:
+                for c, d in self.exchange.lowered.items():
+                    L.enter(f"exchange:{c}:stage_lowered_m", d)
+            if self.exchange.lakes is not None:
+                for c, d in self.exchange.lake_lowered.items():
+                    L.enter(f"exchange:{c}:lake_stage_lowered_m", d)
             self.exchange.end_day()
         L.enter("recharge:received", self.recharge.received())
         if isinstance(self.mf6, Models):  # each coupled model's share
@@ -964,7 +982,16 @@ class Basin:
         if "sfr" in ex and package_type(mf, ex.get("package", "riv")) != "sfr":
             raise ValueError("[exchange] sfr chooses how an SFR package's channels run; this exchange is on a "
                              f"{package_type(mf, ex.get('package', 'riv')).upper()} package")
-        self.exchange = StreamExchange(mf, ex.get("package", "riv"), cmap, drains, sfr=ex.get("sfr", "route"))
+        lakes = None
+        if ex.get("lakes"):
+            lp = ex["lakes"]["package"]
+            if self.cfg.rivers and self.cfg.rivers.get("package", "riv").lower() == lp.lower():
+                raise ValueError(f"[exchange] lakes: [rivers] sets the stages of {lp!r}; a lake's stage is fixed in "
+                                 "the package's input")
+            check_lake_package(mf, lp, ex.get("package", "riv"), drains[0] if drains else None)
+            lakes = (lp, lake_map(ex["lakes"]["map"], self.cfg.folder, mf, lp, names, list(self.due)))
+        self.exchange = StreamExchange(mf, ex.get("package", "riv"), cmap, drains, sfr=ex.get("sfr", "route"),
+                                       lakes=lakes)
         if any(m == "stage" for m, _ in self.exchange.modes.values()) and not self.sw.has(S.DEPTH):
             raise ValueError("SFR channels at a fixed stage take SWAT+'s channel depth (swatplus-bmi 0.2.0)")
         if self.exchange.kind == "sfr" and ex.get("limit") is False:
@@ -992,6 +1019,8 @@ class Basin:
         ex = self.cfg.exchange
         if ex.get("drains"):
             raise ValueError("[exchange] drains with streams in several groundwater models isn't built")
+        if ex.get("lakes"):
+            raise ValueError("[exchange] lakes with streams in several groundwater models isn't built")
         pkg, names = ex.get("package", "riv"), self.sw.names(S.QOUT)
         views = [self.mf6.view_of(m) for m in self._exchange_models()]
         maps = [ChannelMap.from_spec(ex["map"], self.cfg.folder, v, pkg, names, channels=list(self.due),
@@ -1039,6 +1068,8 @@ class Basin:
                     take(part.map.entry_channel[:n] >= 0, "stream exchange with SWAT+'s channels" + how)
                 if part.mf6 is mf and part.drains and p == part.drains[0].upper():
                     take(part.drains[1].entry_channel[:n] >= 0, "seepage to SWAT+'s channels")
+                if part.mf6 is mf and getattr(part, "lakes", None) and p == part.lakes[0].upper():
+                    take(part.lakes[1].entry_channel[:n] >= 0, "lakes at a fixed stage, through SWAT+'s channels")
             if self.gw_soil is not None and p == self.gw_soil.package.upper():
                 take(np.ones(n, bool), "groundwater up into SWAT+'s soil")
             for lk, s, v in zip(self.cfg.lakes, self.lakes.conn if self.lakes is not None else [],
@@ -1183,6 +1214,8 @@ class Basin:
             L.enter(f"exchange:{c}:to_stream", net)
             if self.exchange.drains is not None:
                 L.enter(f"exchange:{c}:seepage", self.exchange.seepage[c])  # the drains' part of to_stream
+            if self.exchange.lakes is not None:
+                L.enter(f"exchange:{c}:lakes", self.exchange.lake_flow[c])  # the lakes' part of to_stream
 
     def run(self, days: int | None = None):
         n = self.days - self.day if days is None else days
@@ -1260,7 +1293,8 @@ class Basin:
         self.swat.finalize()
 
     @classmethod
-    def check(cls, cfg: C.ExampleConfig, users: bool = True, run: str = "check",
+    def check(cls, cfg: C.ExampleConfig, users: bool = True, run: str = "check", prepare=None,
+              heads: np.ndarray | None = None, wrap_surface=None, parameters: list | None = None,
               takeover: list | None = None, units: list | None = None) -> tuple[list[str], list[str]]:
         """Every problem the example's start-up can find, without running a day: (problems, notes). The models start
         as for a run, MODFLOW 6 reads its first day (the packages have their entries then) and the links are built:
@@ -1268,6 +1302,8 @@ class Basin:
         cells, the routes, users and rules, the exchange and its maps (SFR's checks included), the rivers,
         groundwater into the soil and transport. A part with a problem is listed and left out, and the rest go on;
         a problem that leaves a model unable to start ends the check there. Notes are the start-up's warnings.
+        ``prepare``, ``heads``, ``wrap_surface`` and ``parameters`` are the run's start-up hooks (``Basin``), so a
+        study checks what it runs: a prepare hook that rewrites a model's files is checked on the files it writes.
         ``takeover``, if given, gets what Basin Ledger takes over in MODFLOW 6 and what it leaves, one
         ``existing.PackageRole`` per package (coupling/existing.py); ``units``, if given, MODFLOW 6's units and
         the factors converting them at every link (``Modflow6.units_summary``)."""
@@ -1275,7 +1311,8 @@ class Basin:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             try:
-                b = cls(cfg, run=run, users=users, days=1, _problems=problems)
+                b = cls(cfg, run=run, users=users, days=1, prepare=prepare, heads=heads, wrap_surface=wrap_surface,
+                        parameters=parameters, _problems=problems)
             except Exception as e:  # noqa: BLE001
                 problems.append(f"the start-up stopped: {e}")
                 b = None

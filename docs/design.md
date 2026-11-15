@@ -580,14 +580,14 @@ through a river (RIV) or a streamflow routing (SFR) package, and that exchange r
   - Before 0.2.0, the exchange went through one point source and one water allocation place of use per channel.
   - A negative point source would not work: SWAT+ 62.0.1 records it in full even when the channel can't supply it.
 - **Limited by supply (built Nov 6, 2026; `[exchange] limit`, on by default).** A channel's net exchange (its
-  river cells' gains and losses and its drains' seepage) can't take more than the channel has without today's
-  exchange, which won't be there tomorrow when this one is taken. The limit works inside MODFLOW 6's solve: after
-  each outer iteration, a channel taking more than that at the heads as they are has its stages lowered by one
-  depth, no entry below its bottom (`limit_to_supply`), and the day is done when the solve has converged and no
-  stage moves more than 1 mm. The ledger records the depth (`exchange:<channel>:stage_lowered_m`). Two earlier
-  forms failed on a study basin: a limit set before the solve, at the day's starting heads (wells and drains beside a
-  river pull its heads down during the day), and a limit that counted the channel's own gain from the day before,
-  so it lost on alternate days what it had gained.
+  river cells' gains and losses, its drains' seepage and its lakes' exchange) can't take more than the channel has
+  without today's exchange, which won't be there tomorrow when this one is taken. The limit works inside MODFLOW 6's
+  solve: after each outer iteration, a channel taking more than that at the heads as they are has its stages
+  lowered by one depth, no entry below its bottom (`limit_to_supply`), and the day is done when the solve has
+  converged and no stage moves more than 1 mm. The ledger records the depth (`exchange:<channel>:stage_lowered_m`).
+  Two earlier forms failed on a study basin: a limit set before the solve, at the day's starting heads (wells and
+  drains beside a river pull its heads down during the day), and a limit that counted the channel's own gain from
+  the day before, so it lost on alternate days what it had gained.
 - **Shortfalls.** What the channel still can't supply is entered in the ledger: water MODFLOW 6 took from a stream
   that, in SWAT+, wasn't there. Most of what remains is the one-day lag. Over 120 days on a 600 km2 glacial-drift
   basin the shortfall is
@@ -628,6 +628,43 @@ through a river (RIV) or a streamflow routing (SFR) package, and that exchange r
   - In the synthetic example (`sfr.toml`: `two_way.toml` with the river as ten SFR reaches of the RIV entries' bed
     conductance), the reach gains on 1,074 days and loses on 22 in three years, never more than its inflow; the
     shortfall from the one-day lag is 6 m3 of about 62,000 m3 exchanged.
+- **Lakes at a fixed stage (built Nov 13, 2026; `[exchange] lakes`, `examples/synthetic/lakes.toml` and
+  `lakes_sfr.toml`).** On a glacial-drift study basin the lakes are SWAT+
+  reservoirs, each between a flowpath's channel and the next channel down, but MODFLOW 6 had none: the aquifer was
+  asked to supply the lakes' water, and lake cells drained only through seepage drains. swatplus-bmi had no reservoir
+  exchange variable then, so a lake couples through a channel, as the drains do. (swatplus-bmi 0.11.0 has one: a
+  MODFLOW 6 LAK lake coupled to its SWAT+ reservoir is `[[lakes]]`, below.)
+
+  ```toml
+  [exchange]
+  lakes = {package = "lakes", map = "maps/lakes.csv"}   # a RIV package; object, layer, row, col (or layer, icell2d)
+  ```
+
+  - The package is a RIV package of the lakes' own. Its entries are lake cells at a fixed stage, the lake's surface,
+    set by the study in the package's input [A], with the lakebed's bottom and conductance [A]. Basin Ledger changes a
+    stage only through the supply limit below, and puts it back after the day, as for the rivers.
+  - The map gives each lake cell its outlet channel (the channel the reservoir flows into), which must be one of the
+    exchange's coupled channels (the rivers' or the drains'); the lakes may use only some of them.
+  - The lakes' net exchange per channel (positive to the stream) joins that channel's exchange the next day, as the
+    drains' seepage does, and is booked as `exchange:<channel>:lakes`, the lakes' part of `to_stream`. It is in
+    `due`, `applied` and `shortfall` with the rest. The package's coupled entries are a link, not a boundary flow.
+  - **Supply.** A lake can't take more from its channel than the channel has (the `available` of the limit and of
+    SFR's inflow). With a RIV exchange the limit works on the river and lake entries together: a channel taking more
+    than it has has its river and lake stages lowered by one depth (the drains' seepage still adds to what is
+    available). With SFR, which has no limit of its own here, the lakes get one: only their stages are lowered,
+    against `available`. It doesn't count SFR's own reach losses from the same channel, so where both take water
+    from one channel the excess over `available` is a shortfall, booked in the ledger. That should be rare: a lake's
+    outlet channel carries the lake's outflow. The ledger records the depth as
+    `exchange:<channel>:lake_stage_lowered_m` (with RIV, the same as `stage_lowered_m`).
+  - Refused at start-up: a package that isn't RIV, the exchange's own package or the drains', `[rivers]` setting its
+    stages, a mapped channel the exchange doesn't couple, and transport with lakes (their losses would need their own
+    concentrations; not built).
+  - In the synthetic example (`two_way.toml` with a four-cell lake east of the well at 88.5 m, lakebed 2 m deep, 10
+    m2 d-1 per cell [A]), over three years the lake gains on 741 days and loses on 355 with RIV (4,900 m3 to the
+    stream, 3,000 m3 from it), and 570 and 526 with SFR. The limit lowers the lake on 87 days with RIV and 224 with
+    SFR. The shortfall, the one-day lag, is 518 m3 with RIV and 248 m3 with SFR, of about 65,000 m3 exchanged; no
+    day's lake and reaches together took more than the channel had under SFR. A lake of zero conductance gives the
+    run without lakes bit for bit, and restarts match the unbroken run bit for bit.
 - **Stage.** With `[rivers] stage = "surface_depth"`, MODFLOW 6's river stage on day *d* is the river bottom plus
   the bed thickness plus SWAT+'s channel depth for day *d* (`channel_water__depth`, on SWAT+'s rating curve,
   swatplus-bmi 0.2.0). Otherwise it is fixed in the input. Under a NextGen replay the same setting uses t-route's
@@ -708,7 +745,9 @@ Rules, each to be built and tested:
    be small (see The MODFLOW 6 coupling).
 5. **Seepage reaches the streams (built Nov 6, 2026).** Drains (seepage at land surface) are coupled to channels
    like the rivers' gains (`[exchange] drains`): their discharge joins the channel's exchange the next day and is
-   booked as `exchange:<channel>:seepage`. Without it a drain is a boundary flow, water leaving the basin.
+   booked as `exchange:<channel>:seepage`. Without it a drain is a boundary flow, water leaving the basin. Lakes at
+   a fixed stage are coupled the same way, through their outlet channels (`[exchange] lakes`, Nov 13, 2026), and
+   booked as `exchange:<channel>:lakes`.
 6. **The start is consistent with the coupling (built Nov 6, 2026).** `Basin.spin_up` runs the first year again and
    again, SWAT+ from its own start and MODFLOW 6 from the heads the last cycle ended with, until the year's net
    release from storage is within a tolerance of its recharge; `Basin(..., heads=...)` starts the run there. The
@@ -760,7 +799,10 @@ head outputs' and rules' cells, the routes, users and rules, the exchange and it
 rivers, groundwater into the soil and transport. A part with a problem is listed and left out, and what depends on it
 isn't listed again (a user on a well whose cell is wrong); a problem that leaves a model unable to start ends the
 check there. The start-up's warnings come back as notes. A study runs it after each change to a model or a map,
-before a calibration's runs. The checks are the run's own code, so a check and a run can't disagree.
+before a calibration's runs. The checks are the run's own code, so a check and a run can't disagree. Since Nov 13,
+2026 `check` takes the run's start-up hooks (`prepare`, `parameters`, `wrap_surface`, `heads`; the builder's
+arguments are in the config), so a study checks what it runs. Before, a study whose prepare hook rewrites SWAT+'s
+`calibration.cal` was told that the project's stored file turned `flo_min` back on.
 
 ## Water quality across links (Andrew, Nov 6, 2026; written before the build)
 

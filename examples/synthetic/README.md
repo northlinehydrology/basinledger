@@ -36,6 +36,11 @@ Two more configs use the same SWAT+ project:
   - The user (`intake_user.toml`) takes in the aquifer's chloride at its well, a day late, and returns all of it.
 - **`sfr.toml`:** `two_way.toml` with the river as MODFLOW 6's streamflow routing package (SFR): the channel's
   water in at the top reach, SFR's stages and leakage back to the channel the next day.
+- **`lakes.toml`** and **`lakes_sfr.toml`:** `two_way.toml` and `sfr.toml` with a small lake east of the well.
+  - Four cells at a fixed surface of 88.5 m, the lakebed 2 m below it, 10 m²/d of conductance per cell [A], in a RIV
+    package of their own ("lakes", `build_small`'s `lake_stage`).
+  - The lake's cells map to the channel it flows into (`maps/lakes.csv`; Osu_1hru has one). Its net exchange joins
+    the channel's the next day, and the channel's water limits what it takes.
 - **`disv.toml`:** `two_way.toml` on a vertex grid (DISV), with transport's chloride and a drawdown rule.
   - The same 10 ha aquifer as 4 × 4 cells of 79 m, the 2 × 2 block east of center refined to 40 m (`model.py`,
     `build_small_disv`), 28 cells. Each large cell beside the block lists the vertex mid-edge, so MODFLOW 6 connects

@@ -33,7 +33,8 @@ RECHARGE = "soil_water_table__recharge_rate"
 PERCOLATION = "soil_water__percolation_rate"  # per HRU, swatplus-bmi 0.6.0
 SOURCES = {"aquifer": RECHARGE, "hru": PERCOLATION}
 # HRU path: the percolation sent against SWAT+'s own aquifer recharge, each read as float32 and each area rounded to
-# 1e-5 ha in the project's files [A]
+# 1e-5 ha in the project's files [A]; on days a few small HRUs carry the recharge, the files' precision
+# (swatplus.hru_area_precision) is added as the day's bound
 AQUIFER_RTOL = 1e-5
 
 
