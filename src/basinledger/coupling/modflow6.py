@@ -339,6 +339,27 @@ class Modflow6:
         """The simulation's end, days."""
         return self.api.get_end_time() * self.days
 
+    def exchanges(self) -> list[tuple[str, str, int]]:
+        """The GWF-GWF exchanges joining the coupled model to another groundwater model of the simulation, from
+        mfsim.nam: (libmf6's name for it, such as "GWF-GWF_1"; the other model, lower case; +1 where the coupled model
+        is its first model, -1 where it is its second). libmf6 names an exchange by its type and its place in the
+        exchanges block."""
+        from .mover import _blocks
+        out = []
+        for name, _, lines in _blocks(self.ws / "mfsim.nam", self.ws):
+            if name == "EXCHANGES":
+                for n, words in enumerate(lines, start=1):
+                    kind = words[0].upper().replace("6", "")
+                    a, b = words[2].upper(), words[3].upper()
+                    if kind == "GWF-GWF" and self.model in (a, b):
+                        out.append((f"{kind}_{n}", (b if a == self.model else a).lower(), 1 if a == self.model else -1))
+        return out
+
+    def exchange_flow(self, name: str, sign: int) -> np.ndarray:
+        """A GWF-GWF exchange's flow for the last day across each of its connections, m3 d-1, positive into the
+        coupled model (libmf6's SIMVALS are positive into the exchange's first model)."""
+        return sign * self.api.get_value(f"{name}/SIMVALS").astype(float) * self.factor(Q)
+
     @property
     def period(self) -> int:
         """The stress period of the day prepared (1-based)."""

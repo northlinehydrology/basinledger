@@ -824,6 +824,11 @@ class Basin:
         self._gw_packages = {p: m for p, (m, _) in coupled.items()}
         self.takeover = EX.roles(self.mf6, coupled)
         bad, notes = EX.problems(self.takeover, self.gw_soil is not None)
+        # another groundwater model of the simulation, not coupled: what crosses to it is water from or to outside
+        self._gw_exchanges = self.mf6.exchanges()
+        for name, other, _ in self._gw_exchanges:
+            notes.append(f"{name.lower()}: groundwater to and from {other}, another model of the simulation that "
+                         "Basin Ledger doesn't couple, booked as from or to outside")
         if self.exchange is not None and any(m == "stage" for m, _ in self.exchange.modes.values()):
             routed = [c for c, (m, _) in self.exchange.modes.items() if m == "route"]
             notes.append(f"{self.exchange.package}: channels routed by SFR (A): {', '.join(routed) or 'none'}")
@@ -842,7 +847,8 @@ class Basin:
     def _groundwater_accounts(self, L):
         """Every flow in or out of the groundwater model that no link carries, by package (water from or to outside
         the coupled models: fixed or general heads, drains and rivers not coupled, recharge packages Basin Ledger
-        doesn't set), the release from storage, and the model's closure, all in m3 for the day. Positive is into
+        doesn't set, and what crosses to another groundwater model of the simulation, by its GWF-GWF exchange), the
+        release from storage, and the model's closure, all in m3 for the day. Positive is into
         the aquifer. The closure is checked every day, against the day's gross flow."""
         mf = self.mf6
         if not getattr(self, "_closure_declared", False):
@@ -852,6 +858,11 @@ class Basin:
         for p, m in self._gw_packages.items():
             q = mf.simvals(p)
             L.enter(f"groundwater:boundary:{p.lower()}", float(q[~m[: len(q)]].sum()))
+            net += float(q.sum())
+            gross += float(np.abs(q).sum())
+        for name, _, sign in getattr(self, "_gw_exchanges", []):
+            q = mf.exchange_flow(name, sign)
+            L.enter(f"groundwater:boundary:{name.lower()}", float(q.sum()))
             net += float(q.sum())
             gross += float(np.abs(q).sum())
         sto = 0.0
