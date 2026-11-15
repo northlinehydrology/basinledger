@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 11, 2026, release 0.7.0). Built and tested on synthetic examples:
+Status (Nov 15, 2026, release 0.8.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -28,6 +28,10 @@ Status (Nov 11, 2026, release 0.7.0). Built and tested on synthetic examples:
   (`[weather]`, swatplus-bmi 0.7.0);
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site), with maps,
   wells, head outputs and rules naming cells in the grid's own form;
+- an existing MODFLOW 6 model taken as given (Extending an existing MODFLOW 6 model), also tested on two published
+  USGS models (Pleasant Lake, Wisconsin; the Kalamazoo River basin, Michigan);
+- lakes: at a fixed stage through their outlet channels, or a MODFLOW 6 LAK lake on its SWAT+ reservoir
+  (swatplus-bmi 0.11.0); and irrigation pumped from MODFLOW 6's wells (swatplus-bmi 0.11.0);
 - the ledger, the command line (with `basinledger check`, every problem the start-up finds), and calibration:
   records, statistics, the forward model, parameters written into SWAT+'s `calibration.cal` and MODFLOW 6's
   packages, and PEST++ IES files (Calibration).
@@ -1734,6 +1738,13 @@ calibration parameters written into SWAT+'s and MODFLOW 6's files, and PEST++ IE
 
 Done for 0.7.0 (Nov 11, 2026): SFR reaches built from SWAT+'s channel lines (Through SFR), and
 `basinledger check` (Conservation across links, checked at start-up).
+
+Done for 0.8.0 (Nov 15, 2026): extending an existing MODFLOW 6 model (the second way in, next item 7 below): the
+start-up's takeover, maps onto a grid Basin Ledger didn't write, a model's own units and stress periods, the SFR
+line-up rule and the mover, restarts of a model with several stress periods, wells and recharge and storage added
+to the run's copy, MAW wells, several models coupled together, LAK lakes on SWAT+'s reservoirs and irrigation from
+wells (swatplus-bmi 0.11.0); and lakes at a fixed stage through their outlet channels, check's start-up hooks and the
+recharge precision bound, what the Clam basin study ran on.
 
 Next:
 

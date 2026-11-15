@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-11-15)
+
+Needs swatplus-bmi 0.11.0 (reservoirs and HRU irrigation).
+
 
 - Groundwater up into the soil splits each day's water among HRUs and layers for all map rows at once (`gwsoil.to_layers`, vectorized; the row-by-row version stays as `to_layers_loop`, the reference it is tested against to 1e-12). On a study basin (2,371 HRUs, 11,400 rows) the loop was half of a coupled day; a year went from 103 s to 68 s with the same results.
 
