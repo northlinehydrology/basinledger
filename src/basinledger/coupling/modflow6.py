@@ -526,6 +526,14 @@ class Models:
     def aux_multiplier(self, package: str) -> bool:
         return any(v.aux_multiplier(package) for v, _ in self._parts(package))
 
+    def set(self, var: str, package: str, values: np.ndarray, model: str | None = None):
+        """A variable of one model's package. Without ``model``, a package in more than one coupled model is refused:
+        the first model's alone would be set (``set_entries`` splits values across the models)."""
+        if model is None and len(self._parts(package)) > 1:
+            raise ValueError(f"{package}: in {len(self._parts(package))} coupled models; name the model, or set its "
+                             "entries in all of them (set_entries)")
+        self.first.set(var, package, values, model=model)
+
     def node_values(self, var: str, package: str) -> np.ndarray:
         """A per-node variable of each model's own package, the models' nodes in their one sequence."""
         return np.concatenate([v.node_values(var, package) for v in self.views])
