@@ -210,6 +210,32 @@ def test_swat_settings_that_would_fight_are_refused(tmp_path, swatplus):
     assert S.coupling_problems(d, two_way=False) == []
 
 
+def test_irrigation_from_swats_aquifer_is_refused_two_way(tmp_path, swatplus):
+    """In two-way mode SWAT+'s aquifer only holds what it passed to MODFLOW 6: irrigating from it, or allocating
+    water from it, would pump that water twice. Ames_sub1 irrigates from outside (an irrigate action on the HRU);
+    Osu_1hru's lum.dtl has a table that irrigates from its aquifer, but no schedule uses it."""
+    import shutil
+    osu = tmp_path / "osu"
+    shutil.copytree(swatplus / "Osu_1hru", osu)
+    assert "irrigate                   aqu" in (osu / "lum.dtl").read_text() and S.aquifer_withdrawals(osu) == []
+    d = tmp_path / "p"
+    shutil.copytree(swatplus / "Ames_sub1", d)
+    assert S.aquifer_withdrawals(d) == []
+    dtl = d / "lum.dtl"
+    text = dtl.read_text()
+    assert "irrigate                   hru        0" in text
+    dtl.write_text(text.replace("irrigate                   hru        0", "irrigate                   aqu        1"))
+    found = S.aquifer_withdrawals(d)
+    assert len(found) == 1 and found[0].startswith("lum.dtl: decision table irr_year_irr irrigates from SWAT+'s "
+                                                   "aquifer 1")
+    S.add_places_of_use(osu, [("intake", "cha01")])  # Basin Ledger's own place of use: from a channel
+    assert S.aquifer_withdrawals(osu) == []
+    pod = osu / "point_of_diver.wro"
+    pod.write_text(pod.read_text().replace(f" cha 1 ", " aqu 1 ", 1))
+    assert any(f.startswith("point_of_diver.wro: water allocation draws from a SWAT+ aquifer")
+               for f in S.aquifer_withdrawals(osu))
+
+
 def test_empty_soils_are_a_warning_not_a_stop(tmp_path, swatplus):
     """Soils that start empty (sw_frac 0) are warned of at start-up, and the run still starts; wetter ones aren't."""
     import shutil
