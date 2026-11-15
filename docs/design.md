@@ -1542,7 +1542,7 @@ would have stopped on its closure. The start-up check notes each exchange and th
 on the synthetic foreign model with a neighbor east of it (`neighbor=True`), coupled 75 days: the ledger closes
 every day and the exchange brings the regional water in (`tests/test_existing.py`).
 
-**Built (Nov 15, 2026), on the config recommended and still Andrew's to confirm: several groundwater models coupled
+**Built (Nov 15, 2026), on the config recommended and chosen by Andrew: several groundwater models coupled
 together** (Pleasant Lake's need 3). libmf6 already solves every model of a simulation together; Basin Ledger now
 couples more than one of them.
 
@@ -1550,8 +1550,7 @@ couples more than one of them.
   and `models` together are refused). Maps stay one file each, with a `model` column naming each row's model (a row
   without one is the first model's); a well takes `model` beside its `cell`, as do a lake, the exchange
   (`[exchange] model`) and a head output. The other way, a `[modflow6.<model>]` table per model with its own maps,
-  repeats more and checks less (the area check needs every model's cells at once); if Andrew prefers it, it is a
-  layer over the same internals.
+  repeats more and checks less (the area check needs every model's cells at once); Andrew kept the list (Nov 15).
 - **The cells in one sequence** (`modflow6.Models`): each model has a view through the one libmf6 (`Modflow6.view`:
   its own grid and packages, the simulation's time and units), and their cells are numbered one model after the
   other. A map, the recharge link and the wells take a cell of any of them without knowing there are several: a

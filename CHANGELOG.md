@@ -86,8 +86,8 @@ MODFLOW 6 model").
 - Multi-aquifer wells as users' wells: `[[wells]] well = <n>` names a MAW well by its number in place of a cell;
   its rate is set each day and what it pumped delivered, booked from the aquifer (its connections) and from the
   wellbore (`QSTO`).
-- Several groundwater models coupled together (`[modflow6] models`, `modflow6.Models`; the config recommended in the
-  design, to be confirmed): each model a view through the one libmf6, their cells in one sequence, so one recharge
+- Several groundwater models coupled together (`[modflow6] models`, `modflow6.Models`; the config chosen by Andrew,
+  Nov 15): each model a view through the one libmf6, their cells in one sequence, so one recharge
   map (with a `model` column) and the wells take cells of any; each model's accounts, storage and closure in the
   ledger, and a GWF-GWF exchange between coupled models booked inside the groundwater. The stream exchange, a lake
   and head outputs name their model; transport, rivers, the soil link and an added recharge package are refused
