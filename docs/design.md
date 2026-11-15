@@ -1291,9 +1291,28 @@ chosen per study and applied per lake:
 - **Checked through the API** (MODFLOW 6.8.2, `tests/test_existing_api.py`): both work. A lake at constant status
   takes the stage given and leaks at it, and an active lake restarted from a given stage each day takes its
   inflows and leaks within the day from there.
-- **Not built.** It needs swatplus-bmi to expose a reservoir's stage and volume and to take its groundwater exchange
-  (docs/requests.md, request 6). Pleasant Lake, a seepage lake with no outlets, is the first test. Because SWAT+
-  represents such a lake as a reservoir or a wetland, the study's SWAT+ build decides which object it is.
+- **Built** (`coupling/lakes.py`, `[[lakes]]`: reservoir, package, lake, form; swatplus-bmi 0.11.0, request 6).
+  SWAT+ 62.0.1 keeps a reservoir's volume and area, not its level, so the stage is LAK's own at SWAT+'s volume:
+  from the lake's table if it has one, else from its connections as MODFLOW 6 computes a lake's volume
+  (`lak_calculate_vol` in 6.8.2: each connection's surface area, smoothed at its top, times the depth over its
+  bottom, from `TELEV`, `BELEV` and `SAREA` in memory), inverted by bisection. Over a day the change in that volume
+  is MODFLOW 6's own lake storage (`QSTO`) to 1e-9. Each day: yesterday's leakage is set on the reservoir before
+  SWAT+'s day; after it, the reservoir's day is read (volume, inflow, outflow, precipitation, evaporation, its own
+  seepage, and the exchange as SWAT+ took it); the lake's own rainfall, evaporation, runoff, inflow and withdrawal
+  are set to 0, then A sets it active from the stage of the day's starting volume with the day's inflow and
+  precipitation as `RUNOFF` and its outflow, evaporation and seepage as `WITHDRAWAL` (m3, so no area enters), and B
+  sets it constant at the stage of the day's ending volume. After the solve the lake's leakage (its connections'
+  `SIMVALS`, positive into the aquifer) is the reservoir's exchange the next day. The ledger books
+  `lake:<reservoir>:due` against `applied` (what SWAT+ took) plus `shortfall` (a loss the reservoir couldn't
+  supply), and `to_aquifer`, `stage_m`, `volume` and, for A, LAK's own `mf6_end_stage_m`, which isn't kept. The
+  start-up check lists the lake's connections as Basin Ledger's, and refuses a lake with outlets (cutting them isn't
+  built), a reservoir whose own seepage (`k` in hydrology.res) isn't 0, which would leak twice, and a package that
+  isn't LAK or a lake it doesn't have. A restart carries the leakage due. Tested on the synthetic model with a pond
+  in its top layer's inactive ring (its bed on the bottom layer) and Osu_1hru with a reservoir below its channel,
+  both forms, 75 days: the pond, below the aquifer's heads, gains 130 m3 a day falling to 79 as it fills, each
+  day's gain reaches the reservoir the next day, and the ledger closes. Pleasant Lake, a seepage lake with no
+  outlets, is the first study test; it needs its two models coupled together first. Because SWAT+ represents such
+  a lake as a reservoir or a wetland, the study's SWAT+ build decides which object it is; a wetland isn't built.
 
 **Large users and irrigation, MODFLOW first (Andrew, Nov 14, 2026).** Basin Ledger exists to answer what a large
 water user does to a basin. On the second way in, groundwater is the model's, so pumping is too: every groundwater
