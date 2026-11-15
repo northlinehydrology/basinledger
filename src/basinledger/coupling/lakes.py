@@ -17,8 +17,9 @@ has one, else from its connections as MODFLOW 6 computes a lake's volume (``lak_
 connection's surface area, smoothed at its top, times the depth over its bottom), inverted by bisection. The lake's
 own rainfall, evaporation, runoff, inflow and withdrawal from its files are replaced each day (SWAT+ owns that water),
 and its leakage is SWAT+'s reservoir's exchange: positive into the reservoir, a loss limited by SWAT+ to what the
-reservoir holds (the rest booked as a shortfall). Refused: a lake with outlets (water between water bodies, which
-SWAT+ routes; cutting them isn't built), and a reservoir whose own seepage (``k`` in hydrology.res) isn't 0.
+reservoir holds (the rest booked as a shortfall). A coupled lake's outlets are cut each day (SWAT+ routes the
+reservoir's release; the ledger checks nothing left through them). Refused: an outlet bringing a lake's water into a
+coupled lake from one that isn't coupled, and a reservoir whose own seepage (``k`` in hydrology.res) isn't 0.
 """
 
 from __future__ import annotations
@@ -154,6 +155,37 @@ def connections(mf6, package: str, lake: int) -> slice:
     return slice(idx[lake - 1] - 1, idx[lake] - 1)
 
 
+def outlets(mf6, package: str) -> list[tuple[int, int]]:
+    """Each outlet of a LAK package: (the lake it leaves, the lake it goes to or 0 for out of the package), 1-based."""
+    if int(mf6.get_model_units("NOUTLETS", mf6.model, package.upper())[0]) == 0:
+        return []
+    lin = mf6.get_model_units("LAKEIN", mf6.model, package.upper()).astype(int)
+    lout = mf6.get_model_units("LAKEOUT", mf6.model, package.upper()).astype(int)
+    return list(zip(lin.tolist(), lout.tolist()))
+
+
+def cut_outlets(mf6, package: str, lake: int):
+    """A coupled lake's outlets cut for the day prepared: a specified outlet's rate 0, a weir's or Manning's width
+    0, so nothing leaves through them (SWAT+ routes the reservoir's release)."""
+    mine = [o for o, (src, _) in enumerate(outlets(mf6, package)) if src == lake]
+    if not mine:
+        return
+    P = package.upper()
+    for var in ("OUTRATE", "OUTWIDTH"):
+        a = mf6.address(var, mf6.model, P)
+        x = mf6.api.get_value(a).copy()
+        x[mine] = 0.0
+        mf6.api.set_value(a, x)
+
+
+def outlet_flow(mf6, package: str, lake: int) -> float:
+    """What left a lake through its outlets on the day solved, in the model's units (0 once they're cut)."""
+    mine = [o for o, (src, _) in enumerate(outlets(mf6, package)) if src == lake]
+    if not mine:
+        return 0.0
+    return float(np.abs(mf6.get_model_units("SIMOUTRATE", mf6.model, package.upper())[mine]).sum())
+
+
 def own_seepage(project: str | Path) -> dict[str, float]:
     """Each reservoir's bottom conductivity ``k`` (mm/hr, SWAT+'s own seepage), by its name in reservoir.con."""
     project = Path(project)
@@ -206,9 +238,11 @@ def problems(mf6, lakes: list[LakeConfig], reservoirs: list[str], project) -> li
         if not 1 <= lk.lake <= n:
             bad.append(f"{where}: {lk.package} has lakes 1 to {n}; lake {lk.lake} isn't one")
             continue
-        if int(mf6.get_model_units("NOUTLETS", mf6.model, lk.package.upper())[0]) > 0:
-            bad.append(f"{where}: {lk.package} has outlets, water between water bodies, which SWAT+ routes; cutting "
-                       "a coupled lake's outlets isn't built")
+        coupled = {x.lake for x in lakes if x.package.lower() == lk.package.lower() and x.model == lk.model}
+        for o, (src, dst) in enumerate(outlets(mf6, lk.package)):
+            if dst == lk.lake and src not in coupled:
+                bad.append(f"{where}: {lk.package}'s outlet {o + 1} brings lake {src}'s water into lake {lk.lake}, "
+                           f"water SWAT+'s reservoir doesn't see; couple lake {src} too")
         mf6 = mf6_all
     return bad
 
@@ -251,6 +285,7 @@ class LakeLink:
         """Each lake set from its reservoir's day, after MODFLOW 6 prepares the day."""
         for lk, c, mf in zip(self.lakes, self.curves, self.views):
             d, p, j = self.day[lk.reservoir], lk.package, lk.lake - 1
+            cut_outlets(mf, p, lk.lake)  # SWAT+ routes the reservoir's release
             for var in ("RAINFALL", "EVAPORATION", "RUNOFF", "INFLOW", "WITHDRAWAL"):  # SWAT+ owns the lake's water
                 x = mf.get(var, mf.model, p.upper())
                 x[j] = 0.0
@@ -282,6 +317,7 @@ class LakeLink:
         for lk, s, mf in zip(self.lakes, self.conn, self.views):
             d = self.day[lk.reservoir]
             d["to_aquifer"] = float(mf.simvals(lk.package)[s].sum())
+            d["outlet_flow"] = outlet_flow(mf, lk.package, lk.lake)
             d["mf6_end_stage"] = float(mf.get("XNEWPAK", mf.model, lk.package.upper())[lk.lake - 1])
             d["due"] = self.due[lk.reservoir]
             self.due[lk.reservoir] = -d["to_aquifer"]

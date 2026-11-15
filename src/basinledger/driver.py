@@ -495,6 +495,7 @@ class Basin:
         for lk in cfg.lakes:
             k = f"lake:{lk.reservoir}:"
             self.ledger.pair(k + "due", [k + "applied", k + "shortfall"], rtol=FLOAT32)
+            self.ledger.zero(k + "outlet_flow")  # cut: SWAT+ routes the reservoir's release
 
     def _lakes_day(self, L):
         """Each lake's day: yesterday's leakage as SWAT+'s reservoir took it, and today's leakage, due tomorrow."""
@@ -506,6 +507,7 @@ class Basin:
             L.enter(k + "applied", d["applied"])
             L.enter(k + "shortfall", short)
             L.enter(k + "to_aquifer", d["to_aquifer"])       # today's, out of the lake into MODFLOW 6
+            L.enter(k + "outlet_flow", d["outlet_flow"])
             L.enter(k + "stage_m", d["stage"])
             L.enter(k + "volume", d["volume"])
             if form[res] == "active":  # where LAK's stage ended the day; not kept, tomorrow starts from SWAT+'s
