@@ -311,3 +311,44 @@ def test_river_stages_in_both_models(swatplus, tmp_path):
         finally:
             b.finalize()
     assert np.abs(t["groundwater:closure_share"]).max() < 1e-6
+
+
+def test_groundwater_up_into_the_soil_from_both_models(swatplus, tmp_path):
+    """``[groundwater_to_soil]`` with several models coupled: Osu_1hru's HRU on 64 of kzoo's top cells and 36 of its
+    neighbor's, land surface 1 m above the regional stage so the water table rises into the soil profile, and a
+    ``soil`` drain on every mapped cell of both models (the riparian EVT left out, as the link requires). The soil
+    link sets both models' drains each day and splits what both give among the HRU's layers; each model gives some,
+    and every closure holds."""
+    from basinledger.driver import Basin
+    cfg = both(config(neighbor=True, neighbor_recharge=True, soil=True, riparian=False, land=89.0))
+    path = tmp_path / "hru.csv"
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["object", "model", "layer", "row", "col", "area_m2"])
+        w.writerows(["hru0001", "kzoo", 0, r, c, 1000.0] for r in range(1, 9) for c in range(1, 9))
+        w.writerows(["hru0001", "kzoo_east", 0, r, c, 1000.0] for r in range(12) for c in range(3))
+    cfg.recharge_source, cfg.recharge_map = "hru", str(path)
+    cfg.groundwater_to_soil = {"rule": "drain", "cap": "room", "package": "soil"}
+    rows = []
+    found, _ = Basin.check(cfg, run="models-check-soil", takeover=rows)
+    assert found == []
+    roles = {r.package: r.role for r in rows}
+    assert roles["kzoo/soil"] == roles["kzoo_east/soil"] == "Basin Ledger's"
+    given = {"KZOO": 0.0, "KZOO_EAST": 0.0}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        b = Basin(cfg, run="models-soil", days=75)
+        try:
+            for _ in range(75):
+                b.step()
+                for v in b.mf6.views:
+                    given[v.model] += float(np.clip(-v.simvals("soil"), 0.0, None).sum())
+            t = b.ledger.table()
+        finally:
+            b.finalize()
+    sent = np.nansum(t["gw_soil:sent"])
+    assert given["KZOO"] > 0 and given["KZOO_EAST"] > 0
+    assert sent == pytest.approx(given["KZOO"] + given["KZOO_EAST"], rel=1e-9)
+    for m in ("kzoo", "kzoo_east"):
+        assert np.abs(t[f"groundwater:{m}:closure_share"]).max() < 1e-6
+    assert np.abs(t["groundwater:closure_share"]).max() < 1e-6

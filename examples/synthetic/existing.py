@@ -87,7 +87,8 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
           time_units: str = "days", state_units: bool = True, complexity: str = "moderate",
           neighbor: bool = False, lake: bool = False, neighbor_recharge: bool = False,
           neighbor_river: bool | str = False, maw: bool = False, steady: str | None = None,
-          neighbor_drains: bool = False, neighbor_lake: bool = False) -> Path:
+          neighbor_drains: bool = False, neighbor_lake: bool = False, soil: bool = False,
+          riparian: bool = True, land: float | None = None) -> Path:
     if grid not in ("dis", "disv"):
         raise ValueError("grid is dis or disv")
     if neighbor and grid != "dis":
@@ -110,7 +111,8 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
     idomain[0, :, [0, -1]] = 0
     c = lambda x: cellid(x, grid)  # noqa: E731
     lu = length_units if state_units else None
-    cell, top, botm, (x0, y0) = u(CELL), u(TOP), [u(MIDDLE), u(BOTTOM)], (u(ORIGIN[0]), u(ORIGIN[1]))
+    land = TOP if land is None else land  # land surface, m: the top layer's top, in both models
+    cell, top, botm, (x0, y0) = u(CELL), u(land), [u(MIDDLE), u(BOTTOM)], (u(ORIGIN[0]), u(ORIGIN[1]))
     if grid == "dis":
         flopy.mf6.ModflowGwfdis(gwf, length_units=lu, nlay=2, nrow=N, ncol=N, delr=cell, delc=cell, top=top,
                                 botm=botm, idomain=idomain, xorigin=x0, yorigin=y0, angrot=ANGLE, pname="dis_kzoo")
@@ -156,9 +158,14 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
     flopy.mf6.ModflowGwfwel(gwf, stress_period_data={i: [(c(CITY_WELLS[0]), u(-40.0, *Q)),
                                                          (c(CITY_WELLS[1]), u(-25.0, *Q))] for i in range(nper)},
                             pname="wel_city", filename="kzoo.wel_city.wel")
-    flopy.mf6.ModflowGwfevt(gwf, stress_period_data={0: [(c(x), u(TOP - 11.0), u(0.002, *LT), u(2.0))
-                                                         for x in RIPARIAN]},
-                            pname="evt_riparian", filename="kzoo.evt_riparian.evt")
+    if riparian:  # left out for groundwater up into the soil, which SWAT+'s plants take ET from
+        flopy.mf6.ModflowGwfevt(gwf, stress_period_data={0: [(c(x), u(TOP - 11.0), u(0.002, *LT), u(2.0))
+                                                             for x in RIPARIAN]},
+                                pname="evt_riparian", filename="kzoo.evt_riparian.evt")
+    if soil:  # groundwater up into SWAT+'s soil: a drain at land surface on each cell of the two-model map
+        flopy.mf6.ModflowGwfdrn(gwf, stress_period_data={0: [(c((0, r, k)), u(land), u(10.0, *COND))
+                                                             for r in range(1, 9) for k in range(1, 9)]},
+                                pname="soil", filename="kzoo.soil.drn")
     flopy.mf6.ModflowGwfoc(gwf, budget_filerecord="kzoo.cbc", head_filerecord="kzoo.hds",
                            saverecord=[("HEAD", "LAST"), ("BUDGET", "LAST")], printrecord=[("BUDGET", "LAST")])
     if maw:  # a farm's multi-aquifer well, screened through both layers, idle in its own files
@@ -175,7 +182,7 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
                                 perioddata={0: [(0, "rainfall", u(0.002, *LT)), (0, "evaporation", u(0.003, *LT))]},
                                 filename="kzoo.lak_pond.lak")
     if neighbor:
-        _neighbor(sim, ims, u, lu, neighbor_recharge, neighbor_river, neighbor_drains, neighbor_lake)
+        _neighbor(sim, ims, u, lu, neighbor_recharge, neighbor_river, neighbor_drains, neighbor_lake, soil, land)
     sim.write_simulation(silent=True)
     return ws
 
@@ -225,7 +232,7 @@ def reservoir_project(dest: str | Path, refdata: str | Path) -> Path:
 EAST_COLS = 4
 
 
-def _neighbor(sim, ims, u, lu, recharge=False, river=False, drains=False, lake=False):
+def _neighbor(sim, ims, u, lu, recharge=False, river=False, drains=False, lake=False, soil=False, land=TOP):
     """``kzoo_east``: the aquifer east of the grid, its far column at the regional head, joined to kzoo's east
     column (bottom layer, where kzoo's top layer is inactive) by a GWF-GWF exchange. With ``recharge``, its own
     recharge package, ``rch_swb`` as kzoo's, for coupling both models together; with ``river``, a river above the
@@ -235,7 +242,7 @@ def _neighbor(sim, ims, u, lu, recharge=False, river=False, drains=False, lake=F
     LT = (1, -1)
     east = flopy.mf6.ModflowGwf(sim, modelname="kzoo_east", save_flows=True)
     cell = u(CELL)
-    flopy.mf6.ModflowGwfdis(east, length_units=lu, nlay=2, nrow=N, ncol=EAST_COLS, delr=cell, delc=cell, top=u(TOP),
+    flopy.mf6.ModflowGwfdis(east, length_units=lu, nlay=2, nrow=N, ncol=EAST_COLS, delr=cell, delc=cell, top=u(land),
                             botm=[u(MIDDLE), u(BOTTOM)], pname="dis_east")
     flopy.mf6.ModflowGwfnpf(east, icelltype=[1, 0], k=[u(8.0, *LT), u(2.0, *LT)], k33=[u(0.8, *LT), u(0.2, *LT)])
     flopy.mf6.ModflowGwfsto(east, iconvert=[1, 0], sy=0.2, ss=[u(1e-5, -1), u(5e-6, -1)], transient={0: True})
@@ -253,6 +260,10 @@ def _neighbor(sim, ims, u, lu, recharge=False, river=False, drains=False, lake=F
         flopy.mf6.ModflowGwfdrn(east, stress_period_data={0: [((0, r, 2), u(STAGE + 0.3), u(4.0, 2, -1))
                                                                 for r in range(2, 10)]},
                                 pname="drn_tile", filename="kzoo_east.drn_tile.drn")
+    if soil:  # a drain at land surface on each top cell off the regional head, as kzoo's ``soil``
+        flopy.mf6.ModflowGwfdrn(east, stress_period_data={0: [((0, r, k), u(land), u(10.0, 2, -1)) for r in range(N)
+                                                                for k in range(EAST_COLS - 1)]},
+                                pname="soil", filename="kzoo_east.soil.drn")
     if lake:
         flopy.mf6.ModflowGwfriv(east, stress_period_data={0: [((0, 10, c), u(STAGE + 1.5), u(10.0, 2, -1),
                                                                 u(STAGE - 1.0)) for c in (1, 2)]},
