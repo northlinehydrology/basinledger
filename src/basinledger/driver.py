@@ -52,7 +52,7 @@ from .coupling import irrigation as IR
 from .coupling import lakes as LK
 from .coupling import recharge as RC
 from .coupling import swatplus as S
-from .coupling.exchange import ChannelMap, StreamExchange, package_type
+from .coupling.exchange import ChannelMap, StreamExchange, StreamExchanges, package_type
 from .coupling.exchange import requests as exchange_requests
 from .coupling.gwsoil import GroundwaterToSoil
 from .coupling.modflow6 import Models, Modflow6, remaining_simulation
@@ -894,6 +894,8 @@ class Basin:
     def _build_exchange(self):
         """The stream-aquifer exchange, once MODFLOW 6 has read its first day (the packages have their entries)."""
         ex = self.cfg.exchange
+        if self._exchange_models():
+            return self._build_exchanges()
         mf = self._view(ex.get("model"))  # the model whose package the channels exchange through
         names = self.sw.names(S.QOUT)
         cmap = ChannelMap.from_spec(ex.get("map", ""), self.cfg.folder, mf, ex.get("package", "riv"),
@@ -914,6 +916,45 @@ class Basin:
         if self.exchange.kind == "sfr" and ex.get("limit") is False:
             raise ValueError("[exchange] limit = false: SFR limits a reach's loss to what it carries itself; the "
                              "limit is for a river (RIV) package")
+
+    def _exchange_models(self) -> list[str]:
+        """With several groundwater models coupled, the models the exchange map's rows name (a row without one is the
+        first model's), if more than one: the streams then run through each model's package (``StreamExchanges``)."""
+        import csv
+        ex = self.cfg.exchange
+        spec = ex.get("map", "")
+        if not isinstance(self.mf6, Models) or not spec or spec.startswith("all:"):
+            return []
+        with open(self.cfg.folder / spec, newline="") as f:
+            named = {((r.get("model") or "").strip() or self.mf6.model).upper() for r in csv.DictReader(f)}
+        models = [m for m in self.mf6.names if m in named]
+        if named - set(models):
+            raise ValueError(f"exchange map: models {sorted(m.lower() for m in named - set(models))} aren't coupled")
+        return models if len(models) > 1 else []
+
+    def _build_exchanges(self):
+        """The stream exchange through each coupled model's package, its channels mapped there; the mover between
+        the models lined up and cut as a connection between channels is (exchange.sfr_problems, ``others``)."""
+        ex = self.cfg.exchange
+        if ex.get("drains"):
+            raise ValueError("[exchange] drains with streams in several groundwater models isn't built")
+        pkg, names = ex.get("package", "riv"), self.sw.names(S.QOUT)
+        views = [self.mf6.view_of(m) for m in self._exchange_models()]
+        maps = [ChannelMap.from_spec(ex["map"], self.cfg.folder, v, pkg, names, channels=list(self.due),
+                                     first_model=self.mf6.model) for v in views]
+        mapped = [c for m in maps for c in m.channels]
+        if sorted(mapped) != sorted(self.due) or len(set(mapped)) != len(mapped):
+            twice = sorted({c for c in mapped if mapped.count(c) > 1})
+            raise ValueError(f"exchange map: channels {twice} have reaches in more than one model; a channel's "
+                             "reaches are in one model" if twice else
+                             f"exchange map channels {mapped} differ from {list(self.due)}")
+        parts = []
+        for v, cmap in zip(views, maps):
+            others = {(w.model.lower(), pkg.lower()): m for w, m in zip(views, maps) if w is not v}
+            parts.append(StreamExchange(v, pkg, cmap, None, sfr=ex.get("sfr", "route"), others=others))
+        self.exchange = StreamExchanges(parts)
+        if any(m == "stage" for m, _ in self.exchange.modes.values()) and not self.sw.has(S.DEPTH):
+            raise ValueError("SFR channels at a fixed stage take SWAT+'s channel depth (swatplus-bmi 0.2.0)")
 
     def _coupled_entries(self, mf) -> dict[str, tuple[np.ndarray, list[str]]]:
         """Each package with flows (SIMVALS) of one coupled groundwater model (``mf``, its view), by upper-case name,
@@ -936,13 +977,14 @@ class Basin:
 
             if p == self.cfg.recharge_package.upper() and self.recharge is not None:
                 take(np.ones(n, bool), "recharge from SWAT+")
-            if ex is not None and ex.mf6 is mf and p == ex.package.upper():
-                modes = [m for m, _ in ex.modes.values()]
-                how = (f" (routed: {modes.count('route')} channels, at SWAT+'s stage: {modes.count('stage')})"
-                       if "stage" in modes else "")
-                take(ex.map.entry_channel[:n] >= 0, "stream exchange with SWAT+'s channels" + how)
-            if ex is not None and ex.mf6 is mf and ex.drains and p == ex.drains[0].upper():
-                take(ex.drains[1].entry_channel[:n] >= 0, "seepage to SWAT+'s channels")
+            for part in (getattr(ex, "parts", [ex]) if ex is not None else []):
+                if part.mf6 is mf and p == part.package.upper():
+                    modes = [m for m, _ in part.modes.values()]
+                    how = (f" (routed: {modes.count('route')} channels, at SWAT+'s stage: {modes.count('stage')})"
+                           if "stage" in modes else "")
+                    take(part.map.entry_channel[:n] >= 0, "stream exchange with SWAT+'s channels" + how)
+                if part.mf6 is mf and part.drains and p == part.drains[0].upper():
+                    take(part.drains[1].entry_channel[:n] >= 0, "seepage to SWAT+'s channels")
             if self.gw_soil is not None and p == self.gw_soil.package.upper():
                 take(np.ones(n, bool), "groundwater up into SWAT+'s soil")
             for lk, s, v in zip(self.cfg.lakes, self.lakes.conn if self.lakes is not None else [],
