@@ -48,11 +48,13 @@ from . import config as C
 from . import rules as R
 from .chain import UtilityChain
 from .coupling import existing as EX
+from .coupling import irrigation as IR
+from .coupling import recharge as RC
 from .coupling import swatplus as S
-from .coupling.exchange import ChannelMap, StreamExchange, package_type, requests as exchange_requests
+from .coupling.exchange import ChannelMap, StreamExchange, package_type
+from .coupling.exchange import requests as exchange_requests
 from .coupling.gwsoil import GroundwaterToSoil
 from .coupling.modflow6 import Modflow6, remaining_simulation
-from .coupling import recharge as RC
 from .coupling.recharge import RechargeLink
 from .coupling.timesteps import daily_steps, start_date
 from .ledger import FLOAT32, Ledger
@@ -259,6 +261,11 @@ class Basin:
                 self._wells_left_out.add(w.name)
         self.router = Router(self.sw, self.mf6, wells, L)
 
+        # irrigation pumped from MODFLOW 6's wells (coupling/irrigation.py): the HRUs mapped and their wells
+        self.irrigation = None
+        if cfg.irrigation:
+            self._part("[irrigation]", lambda: self._irrigation(cfg, swat_dir, wells))
+
         # stream-aquifer exchange (built on the first day, once MODFLOW 6's river package has its entries)
         self.exchange = None
         self.due = {c: 0.0 for c in ex_channels}  # yesterday's exchange, m3 per channel, applied in SWAT+ today
@@ -417,6 +424,38 @@ class Basin:
         if "cell" in settings and self.mf6 is not None:
             self.mf6.node(*settings["cell"])  # the cell is checked now, not on the first day it's read
         self.rules.append(R.Rule(r.get("name", r["kind"]), fn, settings))
+
+    def _irrigation(self, cfg, swat_dir, wells):
+        if not self.sw.has(IR.IRRIGATION):
+            raise ValueError("[irrigation] reads each HRU's irrigation (land_irrigation_water__volume_flow_rate, "
+                             "swatplus-bmi 0.11.0)")
+        bad, notes = IR.problems(swat_dir, cfg.irrigation, set(wells))
+        if bad:
+            raise ValueError("\n- ".join(["irrigation can't be pumped as mapped:"] + bad))
+        for n in notes:
+            warnings.warn(n, EX.TakeoverNote, stacklevel=3)
+        for ws in cfg.irrigation.values():
+            for w, _ in ws:
+                self.router.check(f"well:{w}")
+        used = sorted({w for ws in cfg.irrigation.values() for w, _ in ws})
+        self.ledger.pair("irrigation:pumped", [f"irrigation:well:{w}" for w in used])
+        names = list(self.sw.names(IR.IRRIGATION))
+        self.irrigation = [(names.index(h), ws) for h, ws in cfg.irrigation.items()]
+        self._irrigation_rest = np.ones(len(names), bool)
+        for i, _ in self.irrigation:
+            self._irrigation_rest[i] = False
+
+    def _irrigate(self, L, rt):
+        """The day's irrigation on the mapped HRUs, requested from their wells; the rest stays water from outside."""
+        v = self.sw.get(IR.IRRIGATION) * DAY
+        pumped = 0.0
+        for i, ws in self.irrigation:
+            for w, share in ws:
+                rt.request(f"well:{w}", float(v[i]) * share)
+                L.enter(f"irrigation:well:{w}", float(v[i]) * share)
+            pumped += float(v[i])
+        L.enter("irrigation:pumped", pumped)
+        L.enter("irrigation:from_outside", float(v[self._irrigation_rest].sum()))
 
     def _exchange_channels(self, ex) -> list[str]:
         """The channels the exchange's rivers and drains couple, in order; needed before SWAT+ starts."""
@@ -684,6 +723,8 @@ class Basin:
             self.sw.set(S.GW_EXCHANGE, np.array([self.due.get(c, 0.0) / DAY for c in names]))
         self.swat.update()
         rt.read_swat()
+        if self.irrigation is not None:  # the day's irrigation, pumped from MODFLOW 6's wells today
+            self._irrigate(L, rt)
         if gw_soil is not None:
             L.enter("gw_soil:received", gw_soil.received())
         if self.direct_exchange:

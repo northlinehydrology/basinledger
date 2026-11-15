@@ -55,6 +55,12 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     # add = true                        # a well the model doesn't have (a new user's): Basin Ledger adds a WEL
                                         #   package of its own, named by package, to the run's copy (existing.py)
 
+    [irrigation]                        # optional: SWAT+'s irrigation pumped from MODFLOW 6's wells (coupling/
+    wells = [{hru = "hru0001", well = "irr1", share = 1.0}]  # irrigation.py; swatplus-bmi 0.11.0): each day, the
+                                        #   water irrigation put on each HRU, from the [[wells]] named, in their
+                                        #   shares; or a CSV with columns hru, well, share. The HRU must irrigate
+                                        #   from an outside source in SWAT+
+
     [exchange]                          # optional: two-way stream-aquifer exchange (MODFLOW 6 RIV or SFR <-> SWAT+)
     package = "riv"                     #   a river (RIV) or streamflow routing (SFR) package
     map = "all:cha01"                   # every RIV entry to one channel, or a CSV: object, layer, row, col (or
@@ -217,6 +223,7 @@ class ExampleConfig:
     groundwater_to_soil: dict | None = None  # rule, cap, package (coupling/gwsoil.py)
     mf6_length_units: str | None = None  # the model's, where its DIS leaves them undefined (coupling/modflow6.py)
     mf6_time_units: str | None = None
+    irrigation: dict[str, list[tuple[str, float]]] | None = None  # HRU -> its wells and shares (coupling/irrigation.py)
 
     @property
     def surface(self) -> str:
@@ -258,7 +265,7 @@ def load(path: str | Path) -> ExampleConfig:
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
              "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather",
-             "groundwater_to_soil"}
+             "groundwater_to_soil", "irrigation"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -312,6 +319,20 @@ def load(path: str | Path) -> ExampleConfig:
             raise ValueError(f"{path}: [transport.{sp}] stream needs the two-way [exchange]")
         if "exchange" in c and "stream" not in t:
             raise ValueError(f"{path}: [transport.{sp}] needs stream (kg m-3): the coupled rivers' losses carry it")
+    irrigation = None
+    if "irrigation" in c:
+        from .coupling.irrigation import read_map
+        ir = c["irrigation"]
+        if set(ir) != {"wells"}:
+            raise ValueError(f"{path}: [irrigation] takes wells (a list of {{hru, well, share}}, or a CSV file "
+                             "with those columns)")
+        if "swatplus" not in c or "modflow6" not in c:
+            raise ValueError(f"{path}: [irrigation] pumps SWAT+'s irrigation from MODFLOW 6's wells; it needs both")
+        irrigation = read_map(base, ir["wells"])
+        named = {w["name"] for w in c.get("wells", [])}
+        missing = sorted({w for ws in irrigation.values() for w, _ in ws} - named)
+        if missing:
+            raise ValueError(f"{path}: [irrigation] wells {missing} aren't in [[wells]]")
     for h in c.get("outputs", {}).get("heads", []):
         _cell(path, f"[outputs] heads {h.get('name')!r}", h.get("cell"))
     for r in c.get("rules", []):
@@ -360,4 +381,5 @@ def load(path: str | Path) -> ExampleConfig:
         recharge_source=rch.get("source", "aquifer"),
         weather=weather,
         groundwater_to_soil=dict(gs) if gs is not None else None,
+        irrigation=irrigation,
     )
