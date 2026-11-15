@@ -80,6 +80,12 @@ MODFLOW 6 model").
   and two added wells at one cell are refused.
 - A recharge package for a model without one: `[recharge] add = true` adds an RCH package of Basin Ledger's own on
   the recharge map's cells to the run's copy (`existing.add_recharge`).
+- Several groundwater models coupled together (`[modflow6] models`, `modflow6.Models`; the config recommended in the
+  design, to be confirmed): each model a view through the one libmf6, their cells in one sequence, so one recharge
+  map (with a `model` column) and the wells take cells of any; each model's accounts, storage and closure in the
+  ledger, and a GWF-GWF exchange between coupled models booked inside the groundwater. The stream exchange, a lake
+  and head outputs name their model; transport, rivers, the soil link and an added recharge package are refused
+  with several models.
 - Lakes (`coupling/lakes.py`, `[[lakes]]`; needs swatplus-bmi 0.11.0): a SWAT+ reservoir holds a MODFLOW 6 lake's
   water and LAK is its face to the aquifer, as SFR is a stream's. Each day the lake is set from the reservoir, A
   active within the day from the reservoir's starting volume with its day's water in and out, or B at a fixed stage,

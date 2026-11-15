@@ -1525,32 +1525,40 @@ would have stopped on its closure. The start-up check notes each exchange and th
 on the synthetic foreign model with a neighbor east of it (`neighbor=True`), coupled 75 days: the ledger closes
 every day and the exchange brings the regional water in (`tests/test_existing.py`).
 
-**Proposed, for Andrew to decide: several groundwater models coupled together** (Pleasant Lake's need 3). Not built.
+**Built (Nov 15, 2026), on the config recommended and still Andrew's to confirm: several groundwater models coupled
+together** (Pleasant Lake's need 3). libmf6 already solves every model of a simulation together; Basin Ledger now
+couples more than one of them.
 
-- **What changes.** libmf6 already solves every model of the simulation together; what is one model in Basin Ledger
-  today (`Modflow6.model`, every link's cells, the groundwater accounts, saved heads) becomes a list. Each link
-  carries the model its cells are in.
-- **The config** (the decision). Recommended: `[modflow6] models = ["plsnt_lgr_parent", "plsnt_lgr_inset"]`, and
-  the maps stay one file each with a `model` column, which gridmaps writes from each model's grid; a well's `cell`
-  gets a `model` beside it. The other way, a `[modflow6.<model>]` table per model with its own maps, repeats more and
-  checks less (the area check needs all models' cells at once).
-- **Recharge.** Each HRU's or aquifer's recharge goes to the top active cells of every model under it, by area. In
-  an LGR simulation the parent's cells under the inset are inactive, so nothing is counted twice; the map's area
-  check (each HRU's cells add to its area) catches an overlap where they aren't.
-- **Streams.** SWAT+'s channels map to reaches of either model's SFR. Where a stream crosses from the inset to the
-  parent, the exchange's mover joins them: with SWAT+'s outlet at the model boundary (one channel ends at the
-  inset's last reach, the next starts at the parent's top reach) it lines up and is cut, as built above; a channel
-  spanning both models is a move within a channel, refused until a study needs it.
-- **The ledger.** Groundwater accounts per model, and each GWF-GWF exchange between coupled models booked inside
-  the groundwater (`groundwater:exchange:<model>-><model>`, equal and opposite on each side), so the sum over models
-  closes as one aquifer and each model's closure is checked as today. An exchange to a model not coupled stays a
-  boundary, as built.
-- **Also per model:** heads outputs, the soil link, rivers, the units (all coupled models must share them, or the
-  conversion runs per model), restarts (each model's heads saved and set), transport (a GWT model per GWF model,
-  joined by GWT-GWT exchanges), and the start-up check's table.
-- **Size.** Several days: the driver's links each take a model, the maps a column, and the tests the synthetic
-  neighbor coupled both sides (it must give one model's ledger when the neighbor is the same aquifer's continuation)
-  and Pleasant Lake's two models with its lake refused until LAK is coupled (need 4).
+- **The config.** `[modflow6] models = ["kzoo", "kzoo_east"]` (the first is the one libmf6 is started for; `model`
+  and `models` together are refused). Maps stay one file each, with a `model` column naming each row's model (a row
+  without one is the first model's); a well takes `model` beside its `cell`, as do a lake, the exchange
+  (`[exchange] model`) and a head output. The other way, a `[modflow6.<model>]` table per model with its own maps,
+  repeats more and checks less (the area check needs every model's cells at once); if Andrew prefers it, it is a
+  layer over the same internals.
+- **The cells in one sequence** (`modflow6.Models`): each model has a view through the one libmf6 (`Modflow6.view`:
+  its own grid and packages, the simulation's time and units), and their cells are numbered one model after the
+  other. A map, the recharge link and the wells take a cell of any of them without knowing there are several: a
+  package named in several models (the recharge package, `rch_swb` in each) is one package whose entries are each
+  model's in turn. Models in different length units are refused (the conversion is one per run).
+- **Recharge.** One map over every model; each HRU's or aquifer's area is checked against all its cells at once, so an
+  overlap where an inset's parent cells aren't inactive is caught. The ledger adds each model's share
+  (`recharge:received:<model>`).
+- **The ledger.** Each model's own accounts under `<model>/` (`groundwater:boundary:kzoo_east/chd_regional`), its
+  storage and its closure (`groundwater:<model>:closure_share`), checked every day with the whole's. A GWF-GWF
+  exchange between two coupled models is booked once, inside the groundwater (`groundwater:exchange:gwf-gwf_<n>`,
+  positive into its first model), and cancels in the whole's closure; one to a model not coupled stays a boundary,
+  as before. The start-up check lists each model's packages as `<model>/<package>` and notes each exchange.
+- **One model's links.** The stream exchange, a lake and the head outputs each name their model; streams in two
+  models at once (an inset's channels and its parent's) are not built yet: the exchange is one package of one model.
+  Transport, `[rivers]`, `[groundwater_to_soil]` and `[recharge] add` are refused with several models.
+- **Restarts** save every model's heads and set them back.
+- **Tested** (`tests/test_models.py`) on the synthetic foreign model and its neighbor, both coupled: Osu_1hru's
+  10 ha aquifer recharging 64 of kzoo's top cells and 36 of its neighbor's through one map (each model's share as the
+  map's, 36:64, every day), a second plant on a well added in the neighbor, the exchange between them inside the
+  groundwater, each model's closure and the whole's holding over 75 days; a restart continuing the unbroken run to
+  the last digit; the models' cells in one sequence; the settings read and refused.
+- **Next for Pleasant Lake:** streams in both models (one exchange per model, or one across them), then the study's
+  SWAT+ build.
 
 **Built (Nov 14, 2026): wells the model doesn't have** (a new large user's, the question Basin Ledger exists for).
 A `[[wells]]` entry with `add = true` is a well the model lacks: Basin Ledger writes a WEL package of its own, named
