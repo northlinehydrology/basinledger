@@ -140,6 +140,18 @@ class ChannelMap:
         return cls(chans, entry)
 
 
+def part_map(spec: str, folder: Path, mf6: Modflow6, package: str, swat_channels: list[str], channels: list[str],
+             first_model: str) -> tuple[ChannelMap, list[str]]:
+    """With several groundwater models coupled, a drains' or lakes' map in one model (``mf6``, a view): its rows
+    only, onto that model's coupled channels (``channels``, in their order). Returns the map and the channels its
+    rows name that aren't among them (a drain or lake whose channel's reaches are in another model)."""
+    m = ChannelMap.from_spec(spec, folder, mf6, package, swat_channels, first_model=first_model)
+    extra = [c for c in m.channels if c not in channels]
+    idx = np.array([channels.index(m.channels[i]) if i >= 0 and m.channels[i] in channels else -1
+                    for i in m.entry_channel], dtype=int)
+    return ChannelMap(list(channels), idx), extra
+
+
 def package_type(mf6: Modflow6, package: str) -> str:
     """A MODFLOW 6 package's type, lower case: "riv", "drn", "sfr", ..."""
     return str(mf6.get("PACKAGE_TYPE", mf6.model, package.upper())[0]).strip().lower()
@@ -408,11 +420,14 @@ def check_lake_package(mf6: Modflow6, lakes: str, package: str, drains: str | No
 
 
 def lake_map(spec: str, folder: Path, mf6: Modflow6, package: str, swat_channels: list[str],
-             coupled: list[str]) -> ChannelMap:
+             coupled: list[str], first_model: str | None = None) -> ChannelMap:
     """The lakes' map, onto the exchange's coupled channels and in their order: a lake couples through its outlet
-    channel, which must be one of them. A lake may map to some of them only."""
+    channel, which must be one of them. A lake may map to some of them only. ``first_model``: with several
+    groundwater models coupled, the rows of ``mf6``'s model only, onto its own channels (``coupled``)."""
     if spec.startswith("all:") and spec[4:] in swat_channels and spec[4:] not in coupled:
         extra = [spec[4:]]
+    elif first_model is not None:
+        lmap, extra = part_map(spec, folder, mf6, package, swat_channels, coupled, first_model)
     else:
         lmap = ChannelMap.from_spec(spec, folder, mf6, package, swat_channels, channels=coupled)
         extra = lmap.channels[len(coupled):]
@@ -619,7 +634,10 @@ class StreamExchanges:
         self.parts = parts
         self.kind = parts[0].kind
         self.package = parts[0].package
-        self.drains = None
+        # drains and lakes at a fixed stage: each model's own, on its own channels (any part's, for the driver's
+        # questions whether there are any; the values are put together from every part's)
+        self.drains = next((p.drains for p in parts if p.drains is not None), None)
+        self.lakes = next((p.lakes for p in parts if p.lakes is not None), None)
         self.modes = {c: m for p in parts for c, m in p.modes.items()}
         self._stage = {c: x for p in parts for c, x in getattr(p, "_stage", {}).items()}
         self.channels = [c for p in parts for c in p.map.channels]
@@ -641,13 +659,18 @@ class StreamExchanges:
     def lowered(self) -> dict[str, float]:
         return {c: d for p in self.parts for c, d in p.lowered.items()}
 
+    @property
+    def lake_lowered(self) -> dict[str, float]:
+        return {c: getattr(p, "lake_lowered", {}).get(c, 0.0) for p in self.parts for c in p.map.channels}
+
     def end_day(self):
         for p in self.parts:
             p.end_day()
 
     def after_solve(self) -> dict[str, float]:
-        out = {}
+        out, self.seepage, self.lake_flow = {}, {}, {}
         for p in self.parts:
             out.update(p.after_solve())
-        self.seepage = dict.fromkeys(out, 0.0)
+            self.seepage.update(getattr(p, "seepage", None) or dict.fromkeys(p.map.channels, 0.0))
+            self.lake_flow.update(getattr(p, "lake_flow", None) or dict.fromkeys(p.map.channels, 0.0))
         return out

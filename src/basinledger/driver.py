@@ -60,6 +60,7 @@ from .coupling.exchange import (
     check_lake_package,
     lake_map,
     package_type,
+    part_map,
 )
 from .coupling.exchange import requests as exchange_requests
 from .coupling.gwsoil import GroundwaterToSoil
@@ -1017,10 +1018,6 @@ class Basin:
         """The stream exchange through each coupled model's package, its channels mapped there; the mover between
         the models lined up and cut as a connection between channels is (exchange.sfr_problems, ``others``)."""
         ex = self.cfg.exchange
-        if ex.get("drains"):
-            raise ValueError("[exchange] drains with streams in several groundwater models isn't built")
-        if ex.get("lakes"):
-            raise ValueError("[exchange] lakes with streams in several groundwater models isn't built")
         pkg, names = ex.get("package", "riv"), self.sw.names(S.QOUT)
         views = [self.mf6.view_of(m) for m in self._exchange_models()]
         maps = [ChannelMap.from_spec(ex["map"], self.cfg.folder, v, pkg, names, channels=list(self.due),
@@ -1034,7 +1031,32 @@ class Basin:
         parts = []
         for v, cmap in zip(views, maps):
             others = {(w.model.lower(), pkg.lower()): m for w, m in zip(views, maps) if w is not v}
-            parts.append(StreamExchange(v, pkg, cmap, None, sfr=ex.get("sfr", "route"), others=others))
+            drains = lakes = None
+            if ex.get("drains"):  # each model's drains, onto its own channels
+                dp = ex["drains"].get("package", "drn")
+                if v.has_package(dp):
+                    dmap, extra = part_map(ex["drains"]["map"], self.cfg.folder, v, dp, names, cmap.channels,
+                                           self.mf6.model)
+                    if extra:
+                        raise ValueError(f"[exchange] drains: {v.model.lower()}'s drains seep to {', '.join(extra)}, "
+                                         f"whose reaches are in another model; a drain seeps to a channel of its own "
+                                         "model")
+                    drains = (dp, dmap)
+            if ex.get("lakes"):  # each model's lakes at a fixed stage, onto its own channels
+                lp = ex["lakes"]["package"]
+                if v.has_package(lp):
+                    if self.cfg.rivers and self.cfg.rivers.get("package", "riv").lower() == lp.lower():
+                        raise ValueError(f"[exchange] lakes: [rivers] sets the stages of {lp!r}; a lake's stage is "
+                                         "fixed in the package's input")
+                    check_lake_package(v, lp, pkg, drains[0] if drains else None)
+                    lakes = (lp, lake_map(ex["lakes"]["map"], self.cfg.folder, v, lp, names, cmap.channels,
+                                          first_model=self.mf6.model))
+            parts.append(StreamExchange(v, pkg, cmap, drains, sfr=ex.get("sfr", "route"), others=others,
+                                        lakes=lakes))
+        if ex.get("drains") and all(p.drains is None for p in parts):
+            raise ValueError(f"[exchange] drains: no coupled model has a package {ex['drains'].get('package', 'drn')!r}")
+        if ex.get("lakes") and all(p.lakes is None for p in parts):
+            raise ValueError(f"[exchange] lakes: no coupled model has a package {ex['lakes']['package']!r}")
         self.exchange = StreamExchanges(parts)
         if any(m == "stage" for m, _ in self.exchange.modes.values()) and not self.sw.has(S.DEPTH):
             raise ValueError("SFR channels at a fixed stage take SWAT+'s channel depth (swatplus-bmi 0.2.0)")
