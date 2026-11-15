@@ -276,3 +276,38 @@ def test_a_recharge_package_added_in_both_models(swatplus):
     np.testing.assert_allclose(re, rk * 36 / 64, rtol=1e-9)
     assert np.nansum(t["recharge:received"]) == pytest.approx(np.nansum(t["recharge:made"]), rel=1e-9)
     assert np.abs(t["groundwater:closure_share"]).max() < 1e-6
+
+
+def test_river_stages_in_both_models(swatplus, tmp_path):
+    """``[rivers]`` with several models coupled: the stage of each model's river package (named alike, the
+    neighbor's river ``riv_creek`` as kzoo's) set every day from SWAT+'s channel depth, on the cells the map's rows
+    give in each model, kzoo's creek also exchanging with SWAT+."""
+    from basinledger.coupling import swatplus as S
+    from basinledger.driver import Basin
+    cfg = both()
+    cfg.mf6_builder_args = dict(cfg.mf6_builder_args, neighbor_river="riv_creek")
+    path = tmp_path / "rivers.csv"
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["object", "model", "layer", "row", "col"])
+        w.writerows(["cha01", "kzoo", 0, r, 1] for r in range(1, 11))
+        w.writerows(["cha01", "kzoo_east", 0, r, 1] for r in range(2, 10))
+    cfg.rivers = {"package": "riv_creek", "map": str(path), "stage": "surface_depth", "bed_thickness": 1.0}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        b = Basin(cfg, run="models-rivers", days=30)
+        try:
+            for _ in range(30):
+                b.step()
+                depth = float(b.sw.get(S.DEPTH)[0])  # the day's, which set the day's stages
+                assert [mf.model for mf, *_ in b.rivers] == ["KZOO", "KZOO_EAST"]
+                for mf, pkg, cmap, rbot, stage0 in b.rivers:
+                    on = cmap.entry_channel >= 0
+                    stage = mf.get("STAGE", mf.model, pkg.upper())
+                    assert on.sum() == (10 if mf.model == "KZOO" else 8)
+                    np.testing.assert_allclose(stage[on], rbot[on] + 1.0 + depth, atol=1e-5)
+                    np.testing.assert_array_equal(stage[~on], stage0[~on])  # the tributary's, the model's own
+            t = b.ledger.table()
+        finally:
+            b.finalize()
+    assert np.abs(t["groundwater:closure_share"]).max() < 1e-6
