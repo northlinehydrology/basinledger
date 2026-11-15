@@ -28,6 +28,8 @@ import math
 import re
 from pathlib import Path
 
+import numpy as np
+
 from .modflow6 import DAYS
 
 KNOWN = ", ".join(repr(k) for k in DAYS)
@@ -157,3 +159,152 @@ def start_date(ws: str | Path) -> dt.date | None:
         return dt.date.fromisoformat(m.group(0)) if m else None
     except ValueError:
         return None
+
+
+# ---------- restarts: the days left ----------
+
+def _input_files(ws: Path) -> dict[Path, str]:
+    """The simulation's input files that can hold stress period blocks or times, each once, with what it is
+    ("TS6", "TAS6", or "" for a package, an exchange, a mover or observations): every model's packages, every
+    exchange, and what their options read."""
+    from .mover import _blocks
+
+    out: dict[Path, str] = {}
+
+    def add(f: Path, kind: str = ""):
+        if f in out or not f.exists():
+            return
+        out[f] = kind
+        for name, _, lines in _blocks(f, ws):
+            if name == "OPTIONS":
+                for words in lines:
+                    up = [w.upper() for w in words]
+                    if "FILEIN" in up and up[0] in ("TS6", "TAS6", "MVR6", "MVE6", "OBS6"):
+                        add(ws / words[up.index("FILEIN") + 1].strip("'\""), up[0] if up[0] in ("TS6", "TAS6")
+                            else "")
+
+    for name, _, lines in _blocks(ws / "mfsim.nam", ws):
+        if name == "MODELS":
+            for words in lines:
+                for b, _, plines in _blocks(ws / words[1].strip("'\""), ws):
+                    if b == "PACKAGES":
+                        for p in plines:
+                            add(ws / p[1].strip("'\""))
+        elif name == "EXCHANGES":
+            for words in lines:
+                add(ws / words[1].strip("'\""))
+    return out
+
+
+_BEGIN = re.compile(r"^(\s*BEGIN\s+PERIOD\s+)(\d+)(.*)$", re.IGNORECASE)
+_END = re.compile(r"^(\s*END\s+PERIOD)(\s+\d+)?(.*)$", re.IGNORECASE)
+_DIGITS = re.compile(r"\d+")
+
+
+def _rekey(path: Path, first: int) -> bool:
+    """A file's PERIOD blocks renumbered for a simulation starting at period ``first`` (1-based): blocks from
+    ``first`` on move down by ``first - 1``; of the blocks before it, the last becomes period 1 where ``first`` has
+    no block of its own (its data are in effect then), and the others are left out. Returns whether it changed."""
+    lines = path.read_text().splitlines()
+    spans, k = [], None  # (period, begin line, end line)
+    for i, line in enumerate(lines):
+        m = _BEGIN.match(line)
+        if m:
+            k = (int(m.group(2)), i)
+        elif k is not None and _END.match(line):
+            spans.append((k[0], k[1], i))
+            k = None
+    if not spans or first == 1:
+        return False
+    before = [s for s in spans if s[0] < first]
+    carried = before[-1] if before and not any(s[0] == first for s in spans) else None
+    drop, renumber = set(), {}
+    for s in spans:
+        if s[0] >= first:
+            renumber[s] = s[0] - first + 1
+        elif s is carried:
+            renumber[s] = 1
+        else:
+            drop.update(range(s[1], s[2] + 1))
+    for s, n in renumber.items():
+        b, e = _BEGIN.match(lines[s[1]]), _END.match(lines[s[2]])
+        lines[s[1]] = f"{b.group(1)}{n}{b.group(3)}"
+        number = _DIGITS.sub(str(n), e.group(2) or "")
+        lines[s[2]] = f"{e.group(1)}{number}{e.group(3)}"
+    path.write_text("\n".join(x for i, x in enumerate(lines) if i not in drop) + "\n")
+    return True
+
+
+def _shift_times(path: Path, t0: float) -> bool:
+    """A time series' times (its TIMESERIES block's first column) or a time-array series' (each TIME block's
+    header) moved back by ``t0``, in the model's time units, for a simulation starting ``t0`` later."""
+    lines = path.read_text().splitlines()
+    block, changed = None, False
+    for i, line in enumerate(lines):
+        words = line.split()
+        if not words or words[0].startswith(("#", "!", "//")):
+            continue
+        key = words[0].upper()
+        if key == "BEGIN":
+            block = words[1].upper() if len(words) > 1 else None
+            if block == "TIME" and len(words) > 2:  # a time-array series' array at a time
+                lines[i] = line.replace(words[2], repr(float(words[2].replace("d", "e").replace("D", "e")) - t0), 1)
+                changed = True
+        elif key == "END":
+            block = None
+        elif block == "TIMESERIES":
+            lead = line[: len(line) - len(line.lstrip())]
+            t = float(words[0].replace("d", "e").replace("D", "e")) - t0
+            lines[i] = lead + " ".join([repr(t)] + words[1:])
+            changed = True
+    if changed:
+        path.write_text("\n".join(lines) + "\n")
+    return changed
+
+
+def remaining_days(ws: str | Path, day: int, time_units: str | None = None) -> list[str]:
+    """The simulation in ``ws`` (a run's copy: changed in place) cut to the days from ``day`` on, for a restart:
+    TDIS keeps the periods not yet over, the one ``day`` falls in shortened to its days left; every input file's
+    PERIOD blocks are renumbered to match, the block in effect on ``day`` becoming period 1; and time series and
+    time-array series move back by the days run, so each value falls on the same day as before. The steps must be
+    one day each already (``daily_steps``). Returns the files changed, by name."""
+    ws = Path(ws)
+    path = tdis_file(ws)
+    lines, options, rows = _read(path)
+    unit = _unit(path, options, time_units)
+    per_day = 1.0 / DAYS[unit]
+    days = [p / per_day for _, p, _, _ in rows]
+    if any(abs(d - round(d)) > 1e-9 or n != round(d) for d, (_, _, n, _) in zip(days, rows)):
+        raise ValueError(f"restart at day {day}: the model's steps aren't one day each; a run rewrites them first "
+                         f"(timesteps.daily_steps)")
+    ends = np.cumsum([round(d) for d in days])
+    if not 0 < day < ends[-1]:
+        raise ValueError(f"restart at day {day}: the simulation is {int(ends[-1])} days")
+    k = int(np.searchsorted(ends, day, side="right"))  # 0-based period the day falls in
+    left = int(ends[k]) - day
+    out = list(lines)
+    first_row = rows[k][0]
+    out[first_row] = f"  {left * per_day!r} {left} 1.0"
+    drop = {r[0] for r in rows[:k]}
+    text = []
+    block = None
+    for i, line in enumerate(out):
+        if i in drop:
+            continue
+        words = line.split()
+        if words and words[0].upper() == "BEGIN":
+            block = words[1].upper() if len(words) > 1 else None
+        elif words and words[0].upper() == "END":
+            block = None
+        elif block == "DIMENSIONS" and words and words[0].upper() == "NPER":
+            line = f"  NPER  {len(rows) - k}"
+        text.append(line)
+    path.write_text("\n".join(text) + "\n")
+    changed = [path.name]
+    t0 = day * per_day
+    for f, kind in _input_files(ws).items():
+        if f == path:
+            continue
+        if (_shift_times(f, t0) if kind else _rekey(f, k + 1)):
+            changed.append(f.name)
+    return changed

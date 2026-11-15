@@ -34,11 +34,11 @@ copy first (``timesteps.daily_steps``), each stress period kept. libmf6 holds on
 another in a process (finalize, then a new Modflow6), but not overlap.
 
 **Restarts.** MODFLOW 6's state, for the packages used so far, is its heads. A scenario restarts from a saved day with
-a simulation covering only the days left (``remaining_simulation``) and the saved heads put straight into memory
-(``set_heads``) after initialize and before the first step. MODFLOW 6 takes the start of a step's heads as its old
-heads, so the restarted run continues exactly. Writing the heads to the IC file would round them. SFR without its
-storage option keeps no water from day to day; advanced packages with their own state (MAW, UZF, SFR with storage)
-will need their state saved too.
+a simulation covering only the days left (``remaining_simulation``: the periods over left out, the rest renumbered)
+and the saved heads put straight into memory (``set_heads``) after initialize and before the first step. MODFLOW 6
+takes the start of a step's heads as its old heads, so the restarted run continues exactly. Writing the heads to the
+IC file would round them. SFR without its storage option keeps no water from day to day; advanced packages with their
+own state (MAW, UZF, LAK, SFR with storage) will need their state saved too.
 """
 
 from __future__ import annotations
@@ -355,30 +355,19 @@ class Modflow6:
 
 def remaining_simulation(src: Path, dst: Path, day: int, time_units: str | None = None):
     """A copy of a MODFLOW 6 simulation covering only the days from ``day`` on, for a restart (``src`` and ``dst``
-    the same folder: changed in place). Supports one stress period of daily steps (what the driver's builders write,
-    or any one-period model once ``timesteps.daily_steps`` has rewritten it); models with several stress periods
-    need their period data re-keyed, which isn't built yet. ``time_units``: the model's, where its TDIS leaves them
-    undefined."""
+    the same folder: changed in place). Its steps must be one day each (what the driver's builders write, or any
+    model once ``timesteps.daily_steps`` has rewritten it). The periods already over are left out, the one ``day``
+    falls in is shortened, every input file's period blocks are renumbered to match and time series moved back
+    (``timesteps.remaining_days``); the files are changed as text, so nothing else in them is rewritten.
+    ``time_units``: the model's, where its TDIS leaves them undefined."""
     import shutil
 
-    import flopy
+    from .timesteps import remaining_days
 
-    if Path(src).resolve() != Path(dst).resolve():  # or in place, in a run's copy
+    src, dst = Path(src), Path(dst)
+    if src.resolve() != dst.resolve():  # or in place, in a run's copy
         if dst.exists():
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
-    sim = flopy.mf6.MFSimulation.load(sim_ws=str(dst), verbosity_level=0)
-    pd = sim.tdis.perioddata.get_data()
-    if len(pd) != 1:
-        raise NotImplementedError("restarts of MODFLOW 6 models with several stress periods aren't built yet")
-    own = str(sim.tdis.time_units.get_data() or "unknown").lower()
-    unit = own if own in DAYS else time_units
-    if unit not in DAYS:
-        raise ValueError(f"restart: the model's time units are {own}; state them in [modflow6] time_units")
-    per_day = 1.0 / DAYS[unit]  # the model's time units in a day
-    perlen, nstp, tsmult = float(pd[0][0]), int(pd[0][1]), float(pd[0][2])
-    if abs(perlen / per_day - nstp) > 1e-9 or tsmult != 1.0 or not 0 < day < nstp:
-        raise ValueError(f"restart at day {day}: needs one period of daily steps longer than that")
-    sim.tdis.perioddata = [(perlen - day * per_day, nstp - day, 1.0)]
-    sim.write_simulation(silent=True)
+    remaining_days(dst, day, time_units)
     return dst

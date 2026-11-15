@@ -209,6 +209,14 @@ class Basin:
                 warnings.warn(f"MODFLOW 6 in {self.mf6.units_summary()}", EX.TakeoverNote, stacklevel=2)
             if saved:
                 self.mf6.set_heads(np.load(Path(restart) / "heads.npy"))
+                # what a restart doesn't carry: packages holding water from day to day start from their files
+                held = {"maw": "its wells' water", "uzf": "the unsaturated zone's water", "lak": "the lakes' stages",
+                        "csub": "compaction"}
+                for p in EX.flow_packages(self.mf6, self.mf6.model):
+                    t = str(self.mf6.get("PACKAGE_TYPE", self.mf6.model, p)[0]).strip().lower()
+                    if t in held:
+                        warnings.warn(f"{p.lower()}: a restart carries MODFLOW 6's heads but not {held[t]} ({t.upper()}"
+                                      "), which start from the model's files", EX.TakeoverNote, stacklevel=2)
             elif heads is not None:
                 self.mf6.set_heads(np.asarray(heads, float))
             if self.mf6.end < self.days - self.day - 1e-9:
