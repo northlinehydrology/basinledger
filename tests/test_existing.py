@@ -354,6 +354,17 @@ def test_another_groundwater_model_in_the_simulation_is_outside(swatplus):
     assert t["recharge:received"] == pytest.approx(t["recharge:made"], rel=1e-9)
 
 
+def test_the_add_settings_read(tmp_path):
+    base = CONFIG.read_text().replace('[recharge]\n', '[recharge]\nadd = true\n')
+    base = base.replace('cell = [1, 5, 6]', 'cell = [1, 5, 6]\nadd = true')
+    (tmp_path / "x.toml").write_text(base.replace('"maps/', f'"{SYNTHETIC}/maps/'))
+    cfg = C.load(tmp_path / "x.toml")
+    assert cfg.recharge_add and cfg.wells[0].add
+    (tmp_path / "x.toml").write_text(base.replace("add = true", 'add = "yes"', 1))
+    with pytest.raises(ValueError, match="\\[recharge\\] add must be true or false"):
+        C.load(tmp_path / "x.toml")
+
+
 def with_a_new_well(cfg, cell=(1, 3, 3), package="wel_users"):
     """A second plant drawing from a well the model doesn't have, which Basin Ledger adds."""
     cfg.wells.append(C.WellConfig("new1", package, cell, add=True))
@@ -392,6 +403,42 @@ def test_an_added_well_refused(swatplus):
     assert len(found) == 1 and "the model has a package 'wel_city'" in found[0]
     found, _ = Basin.check(with_a_new_well(config(), cell=(1, 3)), run="existing-check-new-well-bad")
     assert len(found) == 1 and "cell [1, 3] isn't a DIS cell" in found[0]
+
+
+def test_a_recharge_package_for_a_model_without_one(swatplus):
+    """The model handed over without its recharge (rch_swb out of its name file): ``[recharge] add = true`` puts a
+    package of Basin Ledger's own on the map's cells, and SWAT+'s recharge reaches the aquifer through it."""
+    from basinledger.driver import Basin
+    ws = RUNS / "existing-no-recharge"
+    if ws.exists():
+        shutil.rmtree(ws)
+    E.build(ws, 75, START)
+    nam = ws / "kzoo.nam"
+    nam.write_text("\n".join(x for x in nam.read_text().splitlines() if "rch_swb" not in x) + "\n")
+    cfg = config()
+    cfg.mf6_builder, cfg.mf6_workspace = None, ws
+    cfg.recharge_package, cfg.recharge_add = "rch_swat", True
+    rows = []
+    found, notes = Basin.check(cfg, run="existing-check-no-recharge", takeover=rows)
+    assert found == []
+    assert ("rch_swat: a recharge package Basin Ledger adds to the run's copy, the model having none: 100 cells of the "
+            "recharge map") in notes
+    assert {r.package: r.role for r in rows}["rch_swat"] == "Basin Ledger's"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        b = Basin(cfg, run="existing-run-no-recharge", days=75)
+        try:
+            b.run()
+            t = b.ledger.totals()
+        finally:
+            b.finalize()
+    assert t["recharge:received"] > 0.0
+    assert t["recharge:received"] == pytest.approx(t["recharge:made"], rel=1e-9)
+    assert abs(t["groundwater:closure_share"]) < 1e-6 * 75
+    cfg = config()  # the model with its own recharge: adding one would count it twice
+    cfg.recharge_package, cfg.recharge_add = "rch_swat", True
+    found, _ = Basin.check(cfg, run="existing-check-no-recharge-bad")
+    assert len(found) == 1 and "rch_swb: a recharge package left as the model's" in found[0]
 
 
 def test_the_models_own_boundaries_are_booked_as_from_or_to_outside(runs):
