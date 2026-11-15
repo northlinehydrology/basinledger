@@ -4,7 +4,8 @@ hand, behind ScienceBase's captcha; ``uv run python examples/kalamazoo/fetch.py`
 
 What these check is what Basin Ledger would meet in it, read from the converted files' headers, not by loading its
 7.2 million cells: feet, a steady single period with no storage, its own boundaries, its multi-node wells as MAW, and
-SFR with a Manning's constant for feet and days. Tier 0: no model runs.
+SFR with a Manning's constant for feet and days, which the exchange's check takes once the config states feet
+(Basin Ledger converts at each link; coupling/modflow6.py, Units). Tier 0: no model runs.
 """
 
 from __future__ import annotations
@@ -41,8 +42,12 @@ def test_feet_and_days():
     assert "length_units feet" in (F.nwt_folder() / "usgs.model.reference").read_text()
     assert "TIME_UNITS DAYS" in head("kala.tdis")
     assert "NPER 1" in head("kala.tdis")
-    # Manning's constant for feet and days: 1.486 x 86,400
-    assert float(re.search(r"UNIT_CONVERSION\s+([\d.]+)", head("kala.sfr")).group(1)) == pytest.approx(1.486 * 86400)
+    # Manning's constant for feet and days: 1.486 x 86,400, which the exchange's check takes for feet (1.4859 to five
+    # figures; a thousandth allowed), once [modflow6] length_units = "feet" states what the DIS leaves undefined
+    unitconv = float(re.search(r"UNIT_CONVERSION\s+([\d.]+)", head("kala.sfr")).group(1))
+    assert unitconv == pytest.approx(1.486 * 86400)
+    from basinledger.coupling.modflow6 import DAYS, METERS
+    assert abs(unitconv / (86400.0 * DAYS["days"] / METERS["feet"] ** (1 / 3)) - 1.0) < 1e-3
 
 
 def test_its_size_and_its_boundaries():
