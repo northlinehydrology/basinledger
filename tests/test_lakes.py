@@ -144,3 +144,39 @@ def test_a_lake_coupled(swatplus, form):
         assert (t[k + "mf6_end_stage_m"] >= E.MIDDLE - 1e-9).all()
     assert abs(t["groundwater:closure_share"]).max() < 1e-6
     assert np.nansum(t["groundwater:boundary:lak_pond"]) == 0.0  # none of it the model's
+
+
+def test_a_restart_carries_the_lake_and_the_irrigation(swatplus):
+    """The pond (A) and the paddy's irrigation from wells together, saved on the paddy's third irrigated day and
+    carried on: the lake's leakage due and the reservoir's water come back with the state, and the run is the unbroken
+    run's, to the last digit."""
+    from test_irrigation import FIRST, irrigated
+
+    from basinledger.driver import Basin
+    days, cut = FIRST + 10, FIRST + 3
+
+    def cfg():
+        return irrigated(with_the_pond("active", swatplus))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        a = Basin(cfg(), run="existing-restart-lake-unbroken", days=days)
+        if a.lakes is None:
+            a.finalize()
+            pytest.skip("swatplus-bmi before 0.11.0: no reservoirs")
+        a.run()
+        ta, ha = a.ledger.table(), a.mf6.head()
+        a.finalize()
+        w = Basin(cfg(), run="existing-restart-lake-warm", days=days)
+        w.run(cut)
+        w.save(RUNS / "existing-restart-lake-state")
+        w.finalize()
+        b = Basin(cfg(), run="existing-restart-lake-restarted", days=days, restart=RUNS / "existing-restart-lake-state")
+        b.run()
+        tb, hb = b.ledger.table(), b.mf6.head()
+        b.finalize()
+    assert ta["irrigation:pumped"][cut:].sum() > 0 and np.nanmax(np.abs(ta["lake:res01:due"][cut:])) > 0
+    assert np.array_equal(ha, hb)
+    assert set(ta) == set(tb)
+    for key in ta:
+        assert np.array_equal(ta[key], tb[key], equal_nan=True), key
