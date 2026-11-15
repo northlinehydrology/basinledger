@@ -50,6 +50,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     package = "wel"
     cell = [0, 20, 30]                  # layer, row, col (0-based) on a structured grid (DIS); layer, icell2d on a
                                         #   vertex grid (DISV), e.g. [0, 412]
+    # add = true                        # a well the model doesn't have (a new user's): Basin Ledger adds a WEL
+                                        #   package of its own, named by package, to the run's copy (existing.py)
 
     [exchange]                          # optional: two-way stream-aquifer exchange (MODFLOW 6 RIV or SFR <-> SWAT+)
     package = "riv"                     #   a river (RIV) or streamflow routing (SFR) package
@@ -159,6 +161,13 @@ class WellConfig:
     name: str
     package: str
     cell: tuple[int, ...]   # (layer, row, col) on a DIS grid, (layer, icell2d) on a DISV grid
+    add: bool = False       # a well the model doesn't have, in a WEL package Basin Ledger adds (existing.add_wells)
+
+
+def _flag(path: Path, where: str, v) -> bool:
+    if not isinstance(v, bool):
+        raise ValueError(f"{path}: {where} must be true or false; got {v!r}")
+    return v
 
 
 def _cell(path: Path, where: str, cell) -> tuple[int, ...]:
@@ -324,7 +333,8 @@ def load(path: str | Path) -> ExampleConfig:
         recharge_package=rch.get("package", "rch"),
         recharge_map=rch.get("map", ""),
         area_rtol=None if rch.get("area_check", True) is False else float(rch.get("area_rtol", 1e-6)),
-        wells=[WellConfig(w["name"], w.get("package", "wel"), _cell(path, f"well {w['name']!r}", w.get("cell")))
+        wells=[WellConfig(w["name"], w.get("package", "wel"), _cell(path, f"well {w['name']!r}", w.get("cell")),
+                          _flag(path, f"well {w['name']!r} add", w.get("add", False)))
                for w in c.get("wells", [])],
         users=users,
         calibration_record=_path(base, c["calibration"]["record"]) if c.get("calibration", {}).get("record") else None,

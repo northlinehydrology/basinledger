@@ -125,3 +125,57 @@ def table(rows: list[PackageRole]) -> str:
     for r in rows:
         lines.append(f"{r.package:<{w}}  {r.type:<4}  {r.entries:>7}  {r.describe()}")
     return "\n".join(lines)
+
+
+def add_wells(ws, model: str, wells: list[tuple[str, str, tuple[int, ...]]]) -> list[str]:
+    """Wells a model doesn't have, added to a run's copy (``[[wells]] add = true``): for each package named, a WEL
+    package of Basin Ledger's own, one entry per well at its cell (0-based, in the grid's form), its rate 0 in the
+    file and set every day by the users' routes, and its line in the model's name file. ``wells``: (name, package,
+    cell). A package name the model already has, a cell in the wrong form for the grid and two wells at one cell in
+    a package are refused. Returns the start-up's notes."""
+    from pathlib import Path
+
+    from .mover import _blocks
+    ws = Path(ws)
+    nam = None
+    for name, _, lines in _blocks(ws / "mfsim.nam", ws):
+        if name == "MODELS":
+            for words in lines:
+                if words[2].lower() == model.lower():
+                    nam = ws / words[1].strip("'\"")
+    if nam is None:
+        raise ValueError(f"[modflow6] model {model!r} isn't in mfsim.nam")
+    have, grid = set(), None
+    for name, _, lines in _blocks(nam, ws):
+        if name == "PACKAGES":
+            for words in lines:
+                if len(words) > 2:
+                    have.add(words[2].lower())
+                if words[0].upper() in ("DIS6", "DISV6", "DISU6"):
+                    grid = words[0].upper()[:-1].lower()
+    size = {"dis": 3, "disv": 2, "disu": 1}[grid]
+    by_package: dict[str, list[tuple[str, tuple[int, ...]]]] = {}
+    for well, package, cell in wells:
+        if package.lower() in have:
+            raise ValueError(f"well {well!r}: the model has a package {package!r}; a well Basin Ledger adds goes in a "
+                             "package of its own (another name)")
+        if len(cell) != size:
+            raise ValueError(f"well {well!r}: cell {list(cell)} isn't a {grid.upper()} cell")
+        by_package.setdefault(package.lower(), []).append((well, tuple(cell)))
+    notes, lines = [], []
+    for package, ws_wells in by_package.items():
+        cells = [c for _, c in ws_wells]
+        if len(set(cells)) != len(cells):
+            raise ValueError(f"{package}: two wells Basin Ledger adds share a cell; give them one well")
+        f = f"{model.lower()}.{package}.wel"
+        rows = "\n".join("  " + " ".join(str(i + 1) for i in c) + "  0.0" for c in cells)
+        (ws / f).write_text("# Basin Ledger: wells the model doesn't have (coupling/existing.py, add_wells); each rate "
+                            "set every day\nBEGIN options\nEND options\n\nBEGIN dimensions\n"
+                            f"  MAXBOUND  {len(cells)}\nEND dimensions\n\nBEGIN period  1\n{rows}\nEND period  1\n")
+        lines.append(f"  WEL6  {f}  {package}")
+        notes.append(f"{package}: a well package Basin Ledger adds to the run's copy for wells the model doesn't have: "
+                     + ", ".join(f"{w} at {list(c)}" for w, c in ws_wells))
+    text = nam.read_text().splitlines()
+    end = next(i for i, x in enumerate(text) if [w.upper() for w in x.split()[:2]] == ["END", "PACKAGES"])
+    nam.write_text("\n".join(text[:end] + lines + text[end:]) + "\n")
+    return notes

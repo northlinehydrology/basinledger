@@ -192,6 +192,9 @@ class Basin:
             # every step one day, each stress period kept (coupling/timesteps.py), then a restart's days cut off
             for note in daily_steps(ws, cfg.mf6_time_units):
                 warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            added = [(w.name, w.package, w.cell) for w in cfg.wells if w.add]  # new users' wells, a package of its own
+            for note in EX.add_wells(ws, cfg.mf6_model, added) if added else []:
+                warnings.warn(note, EX.TakeoverNote, stacklevel=2)
             if saved and not cfg.mf6_builder:
                 remaining_simulation(ws, ws, self.day, cfg.mf6_time_units)
             elif not saved:
