@@ -1561,8 +1561,9 @@ aquifer.
 - **Refused by name**, with the mover and the period block's move: a move within a channel (not built); from a
   coupled reach to a reach no channel has, to another package or to another model (SWAT+ routes the channel's
   water); and into a channel from a lake's outlet or a well (water SWAT+'s channel doesn't see: a lake's outlet
-  water isn't groundwater, so it would come into SWAT+'s channel from outside both models; how to book it is
-  Andrew's call). Moves among the model's own entries stay the model's: a drain's water moved into the model's own
+  water isn't groundwater, so it would come into SWAT+'s channel from outside both models; kept refused, Nov 15,
+  2026: no model in hand needs it. A lake SWAT+ has a reservoir for is coupled with `[lakes]`, its outlets cut;
+  otherwise the move is left out of the run's copy, the outlet's water leaving the model). Moves among the model's own entries stay the model's: a drain's water moved into the model's own
   reaches is the model's boundary flow, as before.
 - **A drain's move into a coupled channel** (built Nov 15, 2026) is cut each day and the drain's water is that
   channel's the next day, as the exchange's drains' seepage is (`exchange:<channel>:drains_moved`, part of
