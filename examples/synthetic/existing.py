@@ -55,6 +55,7 @@ EAST = [(1, r, N - 1) for r in range(1, N - 1)]
 SOUTH = [(1, N - 1, c) for c in range(2, 6)]
 CITY_WELLS = [(1, 5, 6), (1, 3, 8)]             # the first is the coupled user's
 RIPARIAN = [(0, r, 2) for r in (2, 3, 7, 8)]
+POND = [(1, 0, 5), (1, 0, 6)]  # a lake where the top layer is inactive, its bed on the bottom layer (lake=True)
 STAGE = 88.0
 
 
@@ -84,7 +85,7 @@ def cellid(cell, grid: str):
 def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", daily: bool = True,
           steps: int = 1, tsmult: float = 1.0, septic: bool = False, length_units: str = "meters",
           time_units: str = "days", state_units: bool = True, complexity: str = "moderate",
-          neighbor: bool = False) -> Path:
+          neighbor: bool = False, lake: bool = False) -> Path:
     if grid not in ("dis", "disv"):
         raise ValueError("grid is dis or disv")
     if neighbor and grid != "dis":
@@ -151,10 +152,58 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
                             pname="evt_riparian", filename="kzoo.evt_riparian.evt")
     flopy.mf6.ModflowGwfoc(gwf, budget_filerecord="kzoo.cbc", head_filerecord="kzoo.hds",
                            saverecord=[("HEAD", "LAST"), ("BUDGET", "LAST")], printrecord=[("BUDGET", "LAST")])
+    if lake:  # a pond in the top layer's inactive ring, as a lake's cells are, its bed connected down to the cells below
+        conn = [(0, k, c(x), "vertical", u(0.01, 0, -1), 0.0, 0.0, 0.0, 0.0) for k, x in enumerate(POND)]
+        flopy.mf6.ModflowGwflak(gwf, pname="lak_pond", nlakes=1, packagedata=[(0, u(MIDDLE + 0.5), len(conn), "pond")],
+                                connectiondata=conn, boundnames=True, noutlets=0,
+                                perioddata={0: [(0, "rainfall", u(0.002, *LT)), (0, "evaporation", u(0.003, *LT))]},
+                                filename="kzoo.lak_pond.lak")
     if neighbor:
         _neighbor(sim, ims, u, lu)
     sim.write_simulation(silent=True)
     return ws
+
+
+def reservoir_project(dest: str | Path, refdata: str | Path) -> Path:
+    """Osu_1hru with a reservoir, res01, below its channel (cha01 flows into it, and it out of the watershed), for
+    the lake (``lake=True``): built from the start, its own seepage off (k = 0), a principal spillway at 1 ha and
+    1 ha-m, an emergency one at 1.5 ha and 2 ha-m, released by res_rel.dtl's drawdown_days. The formats follow SWAT+
+    62.0.1's readers, as swatplus-bmi's tests/reservoir.py does."""
+    import shutil
+    dest = Path(dest)
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(Path(refdata) / "Osu_1hru", dest)
+    lines = (dest / "object.cnt").read_text().splitlines()
+    f = lines[2].split()
+    f[3], f[10] = str(int(f[3]) + 1), "1"                      # obj, res
+    lines[2] = "  ".join(f)
+    (dest / "object.cnt").write_text("\n".join(lines) + "\n")
+    lines = (dest / "chandeg.con").read_text().splitlines()
+    f = lines[2].split()
+    f[12] = "1"                                                # out_tot: all of it to res 1
+    lines[2] = "  ".join(f + ["res", "1", "tot", "1.00000"])
+    (dest / "chandeg.con").write_text("\n".join(lines) + "\n")
+    (dest / "reservoir.con").write_text("reservoir.con: a reservoir below cha01 (existing.py)\n"
+                                        "id name gis_id area lat lon elev res wst cst ovfl rule out_tot\n"
+                                        "1 res01 1 10.0 35.52 127.33 0.0 1 s35610n127290e 0 0 0 0\n")
+    (dest / "reservoir.res").write_text("reservoir.res: existing.py\nid name init hyd rel sed nut\n"
+                                        "1 res01 initwet1 hydres01 drawdown_days sedwet1 nutwet1\n")
+    (dest / "hydrology.res").write_text("hydrology.res: existing.py\n"
+                                        "name yr_op mon_op area_ps vol_ps area_es vol_es k evap_co shp_co1 shp_co2\n"
+                                        "hydres01 0 1 1.0 1.0 1.5 2.0 0.0 0.6 0.0 0.0\n")
+    lines = (dest / "file.cio").read_text().splitlines()
+    for i, line in enumerate(lines):
+        f = line.split()
+        if f and f[0] == "connect":
+            f[8] = "reservoir.con"
+        elif f and f[0] == "reservoir":
+            f[2], f[3] = "reservoir.res", "hydrology.res"
+        else:
+            continue
+        lines[i] = "  ".join(f)
+    (dest / "file.cio").write_text("\n".join(lines) + "\n")
+    return dest
 
 
 EAST_COLS = 4
