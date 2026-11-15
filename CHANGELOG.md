@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 (2026-11-15)
 
 - Several coupled models, more links: drains and lakes at a fixed stage with streams in several models, each model's
   on its own channels (`exchange.part_map`); `[recharge] add` in each model the map has cells in; `[rivers]` setting
