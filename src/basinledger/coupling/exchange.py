@@ -182,6 +182,7 @@ class SfrLayout:
     cut: list[int]                         # reaches whose upstream fraction is set to 0 each day
     moves_cut: list = field(default_factory=list)  # the mover's moves set to move nothing each day (coupling/mover.py)
     movers: list = field(default_factory=list)     # the simulation's movers, read from their files
+    drains_in: list = field(default_factory=list)  # (a drain entry, the channel its move fed): seepage to that channel
 
 
 def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap,
@@ -222,6 +223,7 @@ def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap,
     name = lambda i: cmap.channels[e[i]] if e[i] >= 0 else "no channel"  # noqa: E731
     links = sfr_reach_links(mf6, package)
     movers, moved, moves_cut = [], [], []  # moved: (up, down, move) between this package's reaches, cut each day
+    drains_in = []  # (drain entry, channel): a drain's move into a coupled reach, cut, its water the channel's
     leaving = []  # (up, move): from a coupled reach into another coupled model's channel
     if int(g("IMOVER")[0]):
         movers = MV.movers(mf6.ws)
@@ -261,6 +263,9 @@ def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap,
                 kind = _type_of(mf6, m.provider)
                 if kind == "sfr":  # another model's reaches, or another SFR package's, as the model's own reaches
                     moved.append((None, d, m))
+                elif kind == "drn":  # seepage at land surface: cut, and the drain's water the channel's next day
+                    moves_cut.append(m)
+                    drains_in.append((m.provider, name(d)))
                 else:
                     out.append(f"{package}: {m.provider} ({kind.upper() or 'a package'}) gives water to reach {d} "
                                f"({name(d)}) {via}: water SWAT+'s channel doesn't see; not built")
@@ -319,7 +324,7 @@ def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap,
         top.pop(ch, None)
         last.pop(ch, None)
     return SfrLayout(out, bad, top, last, sorted(cut), sorted(moves_cut, key=lambda m: (m.mover, m.period, m.index)),
-                     movers)
+                     movers, drains_in)
 
 
 def _type_of(mf6: Modflow6, entry) -> str:
@@ -473,6 +478,7 @@ class StreamExchange:
                 raise ValueError("the SFR package can't be coupled:\n- " + "\n- ".join(problems))
             self._cut = lay.cut
             self._movers, self._moves_cut = lay.movers, lay.moves_cut
+            self._drains_in = self._drains_by_mover(lay.drains_in)
             for ch in cmap.channels:
                 if sfr == "stage" or ch in lay.channel_problems:
                     why = lay.channel_problems.get(ch, ["[exchange] sfr = \"stage\""])
@@ -491,6 +497,22 @@ class StreamExchange:
         else:
             raise ValueError(f"[exchange] package {package!r} is {self.kind.upper()}; the exchange takes a river (RIV) "
                              "or a streamflow routing (SFR) package")
+
+    def _drains_by_mover(self, drains_in) -> dict[str, list]:
+        """Each channel's drain entries whose moves into its reaches are cut: (model, package, entry), upper case.
+        An entry the exchange's drains already map to the same channel is counted there; to another, refused."""
+        out: dict[str, list] = {}
+        for entry, ch in drains_in:
+            key = (entry.model.upper(), entry.package.upper(), int(entry.id))
+            if self.drains is not None and key[:2] == (self.mf6.model.upper(), self.drains[0].upper()):
+                mapped = int(self.drains[1].entry_channel[key[2]])
+                if mapped >= 0 and self.drains[1].channels[mapped] == ch:
+                    continue
+                if mapped >= 0:
+                    raise ValueError(f"{entry} seeps to channel {self.drains[1].channels[mapped]} by the drains' map "
+                                     f"and gives water to channel {ch} through the mover; one channel takes it")
+            out.setdefault(ch, []).append(key)
+        return out
 
     def set_inflow(self, available: dict[str, float], depth: dict[str, float] | None = None):
         """SFR: each channel's water for the day (m3) into its top reach, for today's solve; the channel's other
@@ -619,6 +641,12 @@ class StreamExchange:
             for i, ch in enumerate(lmap.channels):
                 self.lake_flow[ch] = -float(ql[el == i].sum())
                 out[ch] += self.lake_flow[ch]
+        self.drains_moved = {ch: 0.0 for ch in out}  # drains whose moves into the channel's reaches are cut
+        for ch, entries in getattr(self, "_drains_in", {}).items():
+            for model, package, i in entries:
+                q = -float(self.mf6.get("SIMVALS", model, package)[i])  # out of the aquifer, positive
+                self.drains_moved[ch] += q
+            out[ch] += self.drains_moved[ch]
         return out
 
 
@@ -668,9 +696,10 @@ class StreamExchanges:
             p.end_day()
 
     def after_solve(self) -> dict[str, float]:
-        out, self.seepage, self.lake_flow = {}, {}, {}
+        out, self.seepage, self.lake_flow, self.drains_moved = {}, {}, {}, {}
         for p in self.parts:
             out.update(p.after_solve())
             self.seepage.update(getattr(p, "seepage", None) or dict.fromkeys(p.map.channels, 0.0))
             self.lake_flow.update(getattr(p, "lake_flow", None) or dict.fromkeys(p.map.channels, 0.0))
+            self.drains_moved.update(getattr(p, "drains_moved", None) or dict.fromkeys(p.map.channels, 0.0))
         return out

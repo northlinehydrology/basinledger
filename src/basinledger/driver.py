@@ -1022,6 +1022,12 @@ class Basin:
             raise ValueError("[exchange] limit = false: SFR limits a reach's loss to what it carries itself; the "
                              "limit is for a river (RIV) package")
 
+    def _drains_moved(self) -> bool:
+        """Whether the exchange has drains whose moves into a coupled channel's reaches are cut, their water the
+        channel's (exchange.sfr_problems)."""
+        ex = self.exchange
+        return ex is not None and any(getattr(p, "_drains_in", {}) for p in getattr(ex, "parts", [ex]))
+
     def _exchange_models(self) -> list[str]:
         """With several groundwater models coupled, the models the exchange map's rows name (a row without one is the
         first model's), if more than one: the streams then run through each model's package (``StreamExchanges``)."""
@@ -1113,6 +1119,12 @@ class Basin:
                     take(part.map.entry_channel[:n] >= 0, "stream exchange with SWAT+'s channels" + how)
                 if part.mf6 is mf and part.drains and p == part.drains[0].upper():
                     take(part.drains[1].entry_channel[:n] >= 0, "seepage to SWAT+'s channels")
+                for entries in getattr(part, "_drains_in", {}).values():
+                    for model, package, i in entries:
+                        if model == mf.model.upper() and package == p:
+                            sel = np.zeros(n, bool)
+                            sel[i] = True
+                            take(sel, "seepage to SWAT+'s channels through the mover (cut)")
                 if part.mf6 is mf and getattr(part, "lakes", None) and p == part.lakes[0].upper():
                     take(part.lakes[1].entry_channel[:n] >= 0, "lakes at a fixed stage, through SWAT+'s channels")
             if self.gw_soil is not None and p == self.gw_soil.package.upper():
@@ -1274,6 +1286,8 @@ class Basin:
                 L.enter(f"exchange:{c}:seepage", self.exchange.seepage[c])  # the drains' part of to_stream
             if self.exchange.lakes is not None:
                 L.enter(f"exchange:{c}:lakes", self.exchange.lake_flow[c])  # the lakes' part of to_stream
+            if self._drains_moved():
+                L.enter(f"exchange:{c}:drains_moved", self.exchange.drains_moved[c])  # drains moved in, cut
 
     def run(self, days: int | None = None):
         n = self.days - self.day if days is None else days
