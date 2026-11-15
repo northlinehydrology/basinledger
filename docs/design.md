@@ -1012,7 +1012,8 @@ source). All of them start from one warm-up:
   At the end of the warm-up the driver saves heads (`X`). Each scenario starts a new MODFLOW 6 simulation covering
   only the days left: the example's builder is called for them, or a copied model's single stress period is
   shortened. The saved heads are then put straight into memory after initialize, not into the IC file, which would
-  round them. Restarted runs match the unbroken run bit for bit (built and tested). Models with several stress periods
+  round them. Restarted runs match the unbroken run bit for bit (built and tested). A copied model of one stress
+  period restarts once its steps are rewritten to days (`timesteps.daily_steps`); models with several stress periods
   need their period data re-keyed, which isn't built yet. Advanced packages will need their own state saved.
 - **Water users:** a component's state, if any, is saved through `get_state`/`set_state` where the component offers
   them (CSDMS bmi PR #112). `CoolingWaterBmi` keeps no state between hours.
@@ -1062,8 +1063,8 @@ studies' own builders wrote (one daily stress period, our package names).
 - **Stress periods.** Consultant models often have monthly, seasonal or steady periods. Two modes, chosen per study:
   rewrite the model's time discretization to daily steps (the coupling as built), or keep its periods and pass SWAT+'s
   fluxes summed over each period. The ledger checks either. Restarts across several stress periods (What's next, 4)
-  become required. *Daily: Basin Ledger rewrites the model's time discretization to daily steps. Keeping the model's
-  own periods stays an idea to think about, not built.*
+  become required. *Daily: Basin Ledger rewrites the model's time discretization to daily steps (built Nov 14,
+  2026, below). Keeping the model's own periods stays an idea to think about, not built.*
 - **MODFLOW 6 only.** Models in MODFLOW-2005 or NWT come in through USGS's converter (mf5to6) first; Basin Ledger
   doesn't read them. *MODFLOW 6 only, for now.*
 - **Their calibration stands.** Groundwater parameters stay fixed by default; calibration covers SWAT+ and the coupling
@@ -1233,8 +1234,7 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
    (1,167 and 2,493 m3 d-1 on the first day) instead of into the parent, as a cut upstream fraction does.
 
    What it needs before a coupled run, in order:
-   1. Daily steps (the time discretization rewritten, the next build step), keeping its steady first day or starting
-      from its heads.
+   1. Daily steps (built, below): its 85 periods become 2,558 days, its steady first day still a steady day.
    2. The mover allowed where it only joins coupled reaches, cut each day like the line-up rule's connections.
    3. Several groundwater models in one simulation: each with its own maps, recharge and exchange, and the
       GWF-GWF exchange's flow inside the ledger's groundwater, not a boundary.
@@ -1339,8 +1339,9 @@ aquifer.
   Osu_1hru's aquifer), monthly stress periods of daily steps, its own recharge, a creek with a tributary no channel
   reaches, tile drains, a general-head and a fixed-head boundary, two city wells and riparian ET. Basin Ledger takes
   over the recharge, 10 of the creek's 12 entries and one city well. Coupled both ways for 75 days, the ledger closes
-  every day across three stress periods, and DISV gives DIS's heads to 1e-6 m. A month of one step is refused, as
-  before, until the time discretization is rewritten (the next step).
+  every day across three stress periods, and DISV gives DIS's heads to 1e-6 m. With a month of one step, or of
+  five growing, the run rewrites the time discretization to daily steps first and gives the same run (below,
+  "daily steps").
 - **The SFR line-up rule** (`sfr_problems`, the same in both paths): connections between channels are allowed from
   one channel's last reach into another's top reach, or from the model's own reaches into a top reach, and are cut
   each day by setting that top reach's upstream fraction to 0. Nothing new enters the ledger: the cut water leaves
@@ -1395,6 +1396,38 @@ aquifer.
   tenth as tight in seconds: the solver can't reach 1e-8 m3 d-1 when it is 4e-12 ft3 s-1.
 - **Waiting until a study needs them** (Kalamazoo's points 2 to 4): storage for daily steps, an inset of a model
   too large to run, and MAW wells as users' wells.
+
+**Built (Nov 14, 2026): daily steps, each stress period kept** (Andrew: yes to building it next).
+
+- **Only TDIS changes, in the run's copy** (`coupling/timesteps.py`, `daily_steps`). Each stress period keeps its
+  place and length and is cut into one-day steps, its growth factor 1. The number and order of periods are
+  unchanged, so every package's period blocks, time series, observations and output control apply to the same
+  periods as before. Each rewritten row keeps the original after it (`was ...`), which MODFLOW 6 reads past, and
+  the folder a study handed over is never touched. A model in daily steps already is left as it is; Basin Ledger's
+  own builders write daily steps, so its own models are unchanged.
+- **Periods that aren't whole days** (30.4375-day months, 36 hours) end on the nearest day, each end measured from
+  the simulation's start so nothing builds up: no end moves more than 12 hours, and the start-up says how many moved
+  and how far. A period too short to keep a whole day of its own is refused. Time units are the model's, or stated
+  in `[modflow6] time_units` where TDIS leaves them undefined, as for the conversion.
+- **Adaptive time stepping** (ATS6) is commented out: every step is a day.
+- **Steady periods** are cut into days like the others: each day is solved without storage, with that day's
+  recharge and exchange. A long steady period becomes many steady days; a study that wants it as a start instead
+  runs it apart and starts from its heads.
+- **Output control** keeps its words: `ALL`, `FIRST` and `LAST` mean what they did, `STEPS` and `FREQUENCY` count
+  the new daily steps, and a model that saved every step now writes every day (Pleasant Lake: 2,558 days of heads
+  and budgets instead of 421 steps).
+- **The calendar.** MODFLOW 6's first day is the run's first day. Where TDIS has a `START_DATE_TIME` that differs
+  from SWAT+'s start, the start-up says so and by how many days, since monthly periods carry their dates' inputs.
+- **The start-up reports it.** `basinledger check`, and a run's first warnings, say what was rewritten: the periods,
+  the days, the steps they had and whether they grew. Restarts of a one-period model work once it is rewritten;
+  several periods still wait (What's next, 4).
+- **Tested** (`tests/test_timesteps.py`, `tests/test_existing.py`): on TDIS files alone, monthly periods of one
+  step and of five growing by 1.2, daily steps left untouched, 365.25-day years in equal months, a model in hours,
+  undefined, stated and years' units, ATS, the start date, a one-period restart, and Pleasant Lake's 85 periods (its
+  2,558 days, each period its own length). With libmf6, the synthetic foreign model in five growing steps a month,
+  rewritten, gives its daily twin's heads to the last digit for 59 days. Coupled to Osu_1hru for 75 days, the same
+  model gives the daily model's ledger to 1e-12; handed over as a folder dated two years after the run, the check
+  rewrites its steps, notes the 730 days, and leaves the folder as it was.
 
 **Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
 on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a

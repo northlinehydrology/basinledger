@@ -56,6 +56,13 @@ MODFLOW 6 model").
   nothing. Maps on a grid in feet come out in square meters and meters. SFR's Manning's constant is checked for the
   model's units. `basinledger check` prints the units and their factors (`Basin.check(..., units=[])`). Twins in
   feet, seconds and centimeters give their meters twin's values and, coupled to SWAT+, its ledger.
+- A model's own stress periods in daily steps: a run rewrites the TDIS of its copy so every step is one day and
+  every period is kept (`coupling/timesteps.py`, `daily_steps`): monthly or seasonal periods of one step, or of
+  steps growing by a factor, run day by day with each period's input as given. Periods that aren't whole days end
+  on the nearest day (at most 12 hours off, reported); a period shorter than that is refused; adaptive time stepping
+  is left out. The start-up says what was rewritten, and notes a TDIS start date that isn't the run's. A one-period
+  model of longer steps now restarts. The synthetic foreign model in five growing steps a month gives its daily
+  twin's run.
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS
