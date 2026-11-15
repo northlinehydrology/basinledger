@@ -158,10 +158,13 @@ def sfr_problems(mf6: Modflow6, package: str, cmap: ChannelMap) -> SfrLayout:
     P = package.upper()
     g = lambda v: mf6.get(v, mf6.model, P)  # noqa: E731
     out = []
-    unitconv = float(g("UNITCONV")[0])
-    if abs(unitconv / DAY_S - 1.0) > 1e-9:
-        out.append(f"{package}: Manning's constant is {unitconv:g}, which isn't for meters and days; set "
-                   f"UNIT_CONVERSION {DAY_S:g} (or TIME_CONVERSION {DAY_S:g}) in its options")
+    # Manning's constant in the model's own units: 86400 for meters and days, 1.486 x 86400 for feet and days (the
+    # 1.486 written for feet is 1.4859 to five figures, so a thousandth is allowed)
+    unitconv = float(mf6.get_model_units("UNITCONV", mf6.model, P)[0])
+    want = DAY_S * mf6.days / mf6.meters ** (1.0 / 3.0)
+    if abs(unitconv / want - 1.0) > 1e-3:
+        out.append(f"{package}: Manning's constant is {unitconv:g}, which isn't for {mf6.length_units} and "
+                   f"{mf6.time_units}; set UNIT_CONVERSION {want:g} in its options")
     if int(g("ISTORAGE")[0]):
         out.append(f"{package}: STORAGE (kinematic-wave routing) keeps water in the reaches from day to day, which a "
                    "restart would need saved; not built")

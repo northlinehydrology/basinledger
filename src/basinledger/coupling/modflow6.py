@@ -14,12 +14,22 @@ BOUND, as in older API examples, is overwritten before the solve.
 After a solve, ``simvals(package)`` gives each entry's simulated flow (m3 d-1, positive into the aquifer), which is what
 the ledger checks against what was sent.
 
+**Units.** The model stays in its own units; everything this class gives or takes is in the ledger's: meters, cubic
+meters and days (kilograms for a transport model's mass). The model's units are DIS's LENGTH_UNITS (feet, meters or
+centimeters) and TDIS's TIME_UNITS (seconds, minutes, hours or days). Where either is undefined, as in a model
+converted by mf5to6, the study states it (``[modflow6] length_units``, ``time_units``); a stated unit that differs
+from the model's own is refused, and so are years (a day isn't a whole step of them). ``get`` and ``set`` convert
+each variable by its dimension (``DIMENSION``): a head or stage by meters per unit, a conductance by its square over
+days per unit, a flow by its cube over days per unit, a concentration by its inverse cube. In a model not in meters
+and days, a real-valued variable whose dimension isn't listed is refused rather than passed through unconverted.
+Integer variables (counts, node numbers, status) are never converted. In meters and days nothing is converted.
+
 **Cells.** A structured grid (DIS) names a cell by ``(layer, row, col)``, a vertex grid (DISV, such as a quadtree
 refined around a site) by ``(layer, icell2d)``, all 0-based as flopy numbers them; ``node`` turns either into the
 reduced node, and a cell in the other grid's form is refused. An unstructured grid (DISU) has no layers in its cell
 numbers, so maps on it give reduced nodes (the ``node`` column) and its wells and heads aren't supported yet.
 
-The model must use meters and days, with one-day time steps. libmf6 holds one model per process; runs can follow one
+Time steps must be one day long. libmf6 holds one model per process; runs can follow one
 another in a process (finalize, then a new Modflow6), but not overlap.
 
 **Restarts.** MODFLOW 6's state, for the packages used so far, is its heads. A scenario restarts from a saved day with
@@ -43,6 +53,31 @@ LIBNAME = {"darwin": "libmf6.dylib", "win32": "libmf6.dll"}.get(sys.platform, "l
 GRIDS = {3: "dis", 2: "disv", 1: "disu"}  # by the length of the discretization's shape (MSHAPE)
 CELL_FORM = {"dis": "layer, row, col", "disv": "layer, icell2d", "disu": "reduced nodes (give node)"}
 
+LENUNI = {1: "feet", 2: "meters", 3: "centimeters"}                 # DIS LENGTH_UNITS, 0 undefined
+ITMUNI = {1: "seconds", 2: "minutes", 3: "hours", 4: "days", 5: "years"}  # TDIS TIME_UNITS, 0 undefined
+METERS = {"feet": 0.3048, "meters": 1.0, "centimeters": 0.01}       # per unit (the international foot)
+DAYS = {"seconds": 1.0 / 86400.0, "minutes": 1.0 / 1440.0, "hours": 1.0 / 24.0, "days": 1.0}  # per unit
+
+L, A, V, Q, LT, C, MT, ONE = (1, 0), (2, 0), (3, 0), (3, -1), (1, -1), (-3, 0), (0, -1), (0, 0)
+# (length, time) exponents of each variable Basin Ledger reads or sets, by name; (package type, name) where a name
+# means different things in different packages, and ("gwt", name) in a transport model (mass taken as kg)
+DIMENSION = {
+    "X": L, "TOP": L, "BOT": L, "AREA": A, "K": LT, "K22": LT, "K33": LT, "SY": ONE, "SS": (-1, 0),
+    "STRGSS": Q, "STRGSY": Q, "SIMVALS": Q, "Q": Q, "COND": (2, -1), "RECHARGE": LT,
+    "STAGE": L, "RBOT": L, "ELEV": L, "BHEAD": L, "HEAD": L, "SURFACE": L, "DEPTH": L,
+    "INFLOW": Q, "RUNOFF": Q, "QOUTFLOW": Q, "QEXTOUTFLOW": Q, "QEXTINFLOW": Q, "QFROMMVR": Q, "QTOMVR": Q,
+    "RAIN": LT, "EVAP": LT, "STRTOP": L, "SSTAGE": L, "LENGTH": L, "WIDTH": L, "USTRF": ONE, "SLOPE": ONE,
+    "RAINFALL": LT, "EVAPORATION": LT, "WITHDRAWAL": Q, "XNEWPAK": L, "XOLDPAK": L,
+    "RATESIM": Q, ("maw", "RATE"): Q, ("evt", "RATE"): LT,
+    ("gwt", "X"): C, ("gwt", "SIMVALS"): MT, ("gwt", "FLOW"): Q, ("gwt", "AUXVAR"): C,
+    ("gwt", "RATESTO"): MT, ("gwt", "RATESRB"): MT,
+}
+
+
+def units_factor(dimension: tuple[int, int], meters: float, days: float) -> float:
+    """What a value of this (length, time) dimension in the model's units is multiplied by to be in meters and days."""
+    return meters ** dimension[0] * days ** dimension[1]
+
 
 def find_library(path: str | None = None) -> Path:
     """libmf6: the given path, $LIBMF6, or where flopy's get-modflow puts it (``get-modflow :flopy --repo modflow6``)."""
@@ -54,16 +89,28 @@ def find_library(path: str | None = None) -> Path:
 
 
 class Modflow6:
-    def __init__(self, workspace: str | Path, model: str = "gwf", library: str | None = None):
+    def __init__(self, workspace: str | Path, model: str = "gwf", library: str | None = None,
+                 length_units: str | None = None, time_units: str | None = None):
+        """``length_units``, ``time_units``: the model's, where its DIS or TDIS leaves them undefined (``[modflow6]``
+        in the config); a unit stated that differs from the model's own is refused."""
         self.ws = Path(workspace).resolve()
         self.model = model.upper()
         self.api = ModflowApi(str(find_library(library)), working_directory=str(self.ws))
         self.api.initialize()
         self.day = 0
-        if int(self.get("ITMUNI", "", "TDIS")[0]) != 4:
-            raise ValueError("MODFLOW 6 model must use days (TDIS TIME_UNITS days)")
-        if int(self.get("LENUNI", self.model, "DIS")[0]) != 2:
-            raise ValueError("MODFLOW 6 model must use meters (DIS LENGTH_UNITS meters)")
+        self.meters = self.days = 1.0  # nothing converted while the units are read
+        self._types: dict[tuple[str, str], str] = {}
+        try:
+            self.length_units, self.length_stated = self._units(
+                "length", LENUNI, int(self.get("LENUNI", self.model, "DIS")[0]), length_units, METERS,
+                "DIS LENGTH_UNITS", "length_units")
+            self.time_units, self.time_stated = self._units(
+                "time", ITMUNI, int(self.get("ITMUNI", "", "TDIS")[0]), time_units, DAYS,
+                "TDIS TIME_UNITS", "time_units")
+        except ValueError:
+            self.api.finalize()
+            raise
+        self.meters, self.days = METERS[self.length_units], DAYS[self.time_units]
         self.cell_area = self.get("AREA", self.model, "DIS").astype(float)
         self.nodes = len(self.cell_area)
         shape = self.get("MSHAPE", self.model, "DIS")
@@ -75,11 +122,92 @@ class Modflow6:
         self._reduced = reduced.astype(int) if reduced is not None and len(reduced) == nuser else None
         self._rows: dict[str, np.ndarray] = {}
 
+    # ---------- units ----------
+    @staticmethod
+    def _units(what, codes, code, stated, known, where, key):
+        own = codes.get(code)
+        if stated is not None and stated not in known:
+            raise ValueError(f"[modflow6] {key} = {stated!r}: Basin Ledger converts {', '.join(known)}")
+        if own is None:
+            if stated is None:
+                raise ValueError(f"MODFLOW 6 model's {what} units are undefined ({where}): state them in the config, "
+                                 f"[modflow6] {key} = one of {', '.join(repr(k) for k in known)}")
+            return stated, True
+        if own not in known:
+            raise ValueError(f"MODFLOW 6 model in {own} ({where}): a one-day step isn't a whole number of them; "
+                             f"Basin Ledger converts {', '.join(known)}")
+        if stated is not None and stated != own:
+            raise ValueError(f"[modflow6] {key} = {stated!r}, but the model's {where} is {own}")
+        return own, False
+
+    @property
+    def si(self) -> bool:
+        """Whether the model is in meters and days, the ledger's units (nothing converted)."""
+        return self.meters == 1.0 and self.days == 1.0
+
+    def factor(self, dimension: tuple[int, int]) -> float:
+        """Model units to meters and days, for a (length, time) dimension."""
+        return units_factor(dimension, self.meters, self.days)
+
+    def units_summary(self) -> str:
+        """The model's units and the factors applied at every link, for the start-up check."""
+        stated = [w for w, s in (("length", self.length_stated), ("time", self.time_stated)) if s]
+        where = f" ({' and '.join(stated)} stated in [modflow6], undefined in the model)" if stated else ""
+        head = f"{self.length_units} and {self.time_units}{where}"
+        if self.si:
+            return f"{head}, the ledger's units: nothing converted"
+        f = lambda d: f"{self.factor(d):.6g}"  # noqa: E731
+        return (f"{head}; converted at every link to meters and days: lengths and heads x {f(L)}, areas x {f(A)}, "
+                f"flows x {f(Q)} (to m3 d-1), depth rates x {f(LT)} (to m d-1), conductances x {f((2, -1))} "
+                f"(to m2 d-1), concentrations x {f(C)} (to kg m-3)")
+
+    def _ptype(self, model: str, package: str) -> str:
+        key = (model, package)
+        if key not in self._types:
+            if model != self.model and self._has(model, "MST"):
+                self._types[key] = "gwt"
+            elif package:
+                try:
+                    self._types[key] = str(self.api.get_value(self.api.get_var_address(
+                        "PACKAGE_TYPE", model, package))[0]).strip().lower()
+                except Exception:
+                    self._types[key] = ""
+            else:
+                self._types[key] = ""
+        return self._types[key]
+
+    def _has(self, model: str, package: str) -> bool:
+        prefix = f"{model}/{package}/"
+        return any(n.startswith(prefix) for n in self.api.get_input_var_names()) or \
+            any(n.startswith(prefix) for n in self.api.get_output_var_names())
+
+    def _dimension(self, var: str, model: str, package: str) -> tuple[int, int]:
+        t = self._ptype(model, package) if model else ""
+        d = DIMENSION.get((t, var)) or (DIMENSION.get(var) if t != "gwt" else None)
+        if d is None:
+            raise ValueError(f"{model}/{package}/{var}: Basin Ledger doesn't know its dimension, so it can't convert "
+                             f"it from {self.length_units} and {self.time_units} (coupling/modflow6.py, DIMENSION)")
+        return d
+
+    def _scale(self, values: np.ndarray, var: str, model: str, package: str, inverse: bool = False):
+        if self.si or not np.issubdtype(np.asarray(values).dtype, np.floating):
+            return values
+        f = self.factor(self._dimension(var, model, package))
+        return values / f if inverse else values * f
+
     # ---------- memory access ----------
     def address(self, var: str, model: str, package: str) -> str:
-        return self.api.get_var_address(var, model, package) if model else self.api.get_var_address(var, package)
+        if not model:
+            return self.api.get_var_address(var, package)
+        return self.api.get_var_address(var, model, package) if package else self.api.get_var_address(var, model)
 
     def get(self, var: str, model: str, package: str) -> np.ndarray:
+        """A variable from MODFLOW 6's memory, in meters and days (``package`` "" for one of the model's own)."""
+        v = self.api.get_value(self.address(var, model, package)).copy()
+        return self._scale(v, var, model.upper(), package.upper())
+
+    def get_model_units(self, var: str, model: str, package: str) -> np.ndarray:
+        """A variable as MODFLOW 6 holds it, in the model's units."""
         return self.api.get_value(self.address(var, model, package)).copy()
 
     def _try(self, var, model, package):
@@ -88,8 +216,11 @@ class Modflow6:
         except Exception:
             return None
 
-    def set(self, var: str, package: str, values: np.ndarray):
-        self.api.set_value(self.address(var, self.model, package.upper()), values)
+    def set(self, var: str, package: str, values: np.ndarray, model: str | None = None):
+        """A variable of the coupled model's package (or ``model``'s), given in meters and days."""
+        m = (model or self.model).upper()
+        values = np.asarray(values)
+        self.api.set_value(self.address(var, m, package.upper()), self._scale(values, var, m, package.upper(), True))
 
     # ---------- cells ----------
     def node(self, *cell: int) -> int:
@@ -126,7 +257,7 @@ class Modflow6:
     def prepare_day(self):
         # MODFLOW 6 takes its step length from TDIS (known only once the step is prepared), so it is checked after
         self.api.prepare_time_step(1.0)
-        dt = self.api.get_time_step()
+        dt = self.api.get_time_step() * self.days
         if abs(dt - 1.0) > 1e-12:
             raise ValueError(f"MODFLOW 6 time step is {dt} days; Basin Ledger steps one day at a time")
 
@@ -193,31 +324,32 @@ class Modflow6:
 
     def set_heads(self, heads: np.ndarray):
         """Heads, m, per reduced node: call after initialize and before the first prepare_day."""
-        addr = self.api.get_var_address("X", self.model)
-        if self.api.get_value(addr).shape != np.shape(heads):
+        if self.api.get_value(self.address("X", self.model, "")).shape != np.shape(heads):
             raise ValueError("saved heads don't match this model's nodes")
-        self.api.set_value(addr, np.asarray(heads, dtype=np.float64))
+        self.set("X", "", np.asarray(heads, dtype=np.float64))
 
     def head(self) -> np.ndarray:
         """Heads, m, per reduced node."""
-        return self.api.get_value(self.api.get_var_address("X", self.model)).copy()
+        return self.get("X", self.model, "")
 
     @property
     def end(self) -> float:
-        return self.api.get_end_time()
+        """The simulation's end, days."""
+        return self.api.get_end_time() * self.days
 
     @property
     def time(self) -> float:
-        return self.api.get_current_time()
+        """The simulation's time, days."""
+        return self.api.get_current_time() * self.days
 
     def finalize(self):
         self.api.finalize()
 
 
-def remaining_simulation(src: Path, dst: Path, day: int):
+def remaining_simulation(src: Path, dst: Path, day: int, time_units: str | None = None):
     """A copy of a MODFLOW 6 simulation covering only the days from ``day`` on, for a restart. Supports one stress
     period of daily steps (what the driver's builders write); models with several stress periods need their period
-    data re-keyed, which isn't built yet."""
+    data re-keyed, which isn't built yet. ``time_units``: the model's, where its TDIS leaves them undefined."""
     import shutil
 
     import flopy
@@ -229,9 +361,14 @@ def remaining_simulation(src: Path, dst: Path, day: int):
     pd = sim.tdis.perioddata.get_data()
     if len(pd) != 1:
         raise NotImplementedError("restarts of MODFLOW 6 models with several stress periods aren't built yet")
+    own = str(sim.tdis.time_units.get_data() or "unknown").lower()
+    unit = own if own in DAYS else time_units
+    if unit not in DAYS:
+        raise ValueError(f"restart: the model's time units are {own}; state them in [modflow6] time_units")
+    per_day = 1.0 / DAYS[unit]  # the model's time units in a day
     perlen, nstp, tsmult = float(pd[0][0]), int(pd[0][1]), float(pd[0][2])
-    if abs(perlen - nstp) > 1e-9 or tsmult != 1.0 or not 0 < day < nstp:
+    if abs(perlen / per_day - nstp) > 1e-9 or tsmult != 1.0 or not 0 < day < nstp:
         raise ValueError(f"restart at day {day}: needs one period of daily steps longer than that")
-    sim.tdis.perioddata = [(perlen - day, nstp - day, 1.0)]
+    sim.tdis.perioddata = [(perlen - day * per_day, nstp - day, 1.0)]
     sim.write_simulation(silent=True)
     return dst

@@ -187,11 +187,14 @@ class Basin:
                                                                  self.start + dt.timedelta(days=self.day),
                                                                  **cfg.mf6_builder_args)
             elif saved:
-                remaining_simulation(cfg.mf6_workspace, ws, self.day)
+                remaining_simulation(cfg.mf6_workspace, ws, self.day, cfg.mf6_time_units)
             else:
                 shutil.copytree(cfg.mf6_workspace, ws)
             prepare("modflow6", ws)
-            self.mf6 = Modflow6(ws, cfg.mf6_model)
+            self.mf6 = Modflow6(ws, cfg.mf6_model, length_units=cfg.mf6_length_units,
+                                time_units=cfg.mf6_time_units)
+            if not self.mf6.si:
+                warnings.warn(f"MODFLOW 6 in {self.mf6.units_summary()}", EX.TakeoverNote, stacklevel=2)
             if saved:
                 self.mf6.set_heads(np.load(Path(restart) / "heads.npy"))
             elif heads is not None:
@@ -938,7 +941,7 @@ class Basin:
 
     @classmethod
     def check(cls, cfg: C.ExampleConfig, users: bool = True, run: str = "check",
-              takeover: list | None = None) -> tuple[list[str], list[str]]:
+              takeover: list | None = None, units: list | None = None) -> tuple[list[str], list[str]]:
         """Every problem the example's start-up can find, without running a day: (problems, notes). The models start
         as for a run, MODFLOW 6 reads its first day (the packages have their entries then) and the links are built:
         the SWAT+ settings, the parameters, the recharge map and its areas, the wells', head outputs' and rules'
@@ -946,7 +949,8 @@ class Basin:
         groundwater into the soil and transport. A part with a problem is listed and left out, and the rest go on;
         a problem that leaves a model unable to start ends the check there. Notes are the start-up's warnings.
         ``takeover``, if given, gets what Basin Ledger takes over in MODFLOW 6 and what it leaves, one
-        ``existing.PackageRole`` per package (coupling/existing.py)."""
+        ``existing.PackageRole`` per package (coupling/existing.py); ``units``, if given, MODFLOW 6's units and
+        the factors converting them at every link (``Modflow6.units_summary``)."""
         problems: list[str] = []
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -971,6 +975,8 @@ class Basin:
                         b._part("[modflow6]", b._start_takeover)
                         if takeover is not None:
                             takeover.extend(getattr(b, "takeover", []))
+                    if b.mf6 is not None and units is not None:
+                        units.append(b.mf6.units_summary())
                 finally:
                     b.finalize()
         return problems, list(dict.fromkeys(str(w.message) for w in caught))

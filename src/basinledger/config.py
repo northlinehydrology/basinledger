@@ -22,6 +22,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     builder = "model:build"             # model.py beside this file: build(workspace, days, start_date)
     builder_args = {}                   # optional keyword arguments for the builder (a scenario's variant)
     # workspace = "mf6"                 # or an existing simulation folder, copied into the run
+    # length_units = "feet"             # the model's, only where its DIS leaves LENGTH_UNITS undefined
+    # time_units = "days"               # the model's, only where its TDIS leaves TIME_UNITS undefined
     model = "gwf"
 
     [recharge]                          # SWAT+ -> MODFLOW 6 recharge (one-way)
@@ -201,6 +203,8 @@ class ExampleConfig:
     recharge_source: str = "aquifer"   # or "hru"
     weather: dict | None = None        # kind -> CSV path, and change (weather.py)
     groundwater_to_soil: dict | None = None  # rule, cap, package (coupling/gwsoil.py)
+    mf6_length_units: str | None = None  # the model's, where its DIS leaves them undefined (coupling/modflow6.py)
+    mf6_time_units: str | None = None
 
     @property
     def surface(self) -> str:
@@ -248,6 +252,10 @@ def load(path: str | Path) -> ExampleConfig:
     mf = c.get("modflow6", {})
     if "modflow6" in c and bool(mf.get("builder")) == bool(mf.get("workspace")):
         raise ValueError(f"{path}: [modflow6] needs one of builder or workspace")
+    from .coupling.modflow6 import DAYS, METERS
+    for key, known in (("length_units", METERS), ("time_units", DAYS)):
+        if key in mf and mf[key] not in known:
+            raise ValueError(f"{path}: [modflow6] {key} = {mf[key]!r}; one of {', '.join(known)}")
     if ("swatplus" in c) == ("nextgen" in c):
         raise ValueError(f"{path}: needs one surface model, [swatplus] or [nextgen]")
     sw = c.get("swatplus", {})
@@ -332,6 +340,8 @@ def load(path: str | Path) -> ExampleConfig:
         nextgen_run=_path(base, c["nextgen"]["run"]) if "nextgen" in c else None,
         rivers=c.get("rivers"),
         mf6_builder_args=mf.get("builder_args", {}),
+        mf6_length_units=mf.get("length_units"),
+        mf6_time_units=mf.get("time_units"),
         transport={sp: dict(t) for sp, t in transport.items()},
         recharge_source=rch.get("source", "aquifer"),
         weather=weather,

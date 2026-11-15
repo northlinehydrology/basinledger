@@ -27,7 +27,9 @@ splits it as the water ledger does (recharge, wells, coupled streams, boundaries
 and sorbed storage (MST's rates) and GWT's own boundary packages (a constant concentration, a mass source). The sum
 closes to the transport solve's convergence; ``closure_share`` is the residual over the day's gross mass flow.
 
-Concentrations in kg m-3 (= g L-1), masses in kg, with MODFLOW 6 in meters and days.
+Concentrations in kg m-3 (= g L-1), masses in kg. A model in other units (``Modflow6``, Units) holds its
+concentrations as kg per its own volume unit, and they are converted with its flows: a transport model in feet holds
+kg ft-3. Its length units must be the flow model's.
 """
 
 from __future__ import annotations
@@ -86,12 +88,13 @@ def add_transport(sim, gwf, species: str, porosity, dispersivity, sorption: dict
     settings.update(ims or {})
     solver = flopy.mf6.ModflowIms(sim, filename=f"{name}.ims", **settings)
     sim.register_ims_package(solver, [name])
+    units = dis.length_units.get_data()  # the flow model's own, so the two grids are the same
     if dis.package_type == "dis":
-        flopy.mf6.ModflowGwtdis(gwt, length_units="meters", nlay=dis.nlay.get_data(), nrow=dis.nrow.get_data(),
+        flopy.mf6.ModflowGwtdis(gwt, length_units=units, nlay=dis.nlay.get_data(), nrow=dis.nrow.get_data(),
                                 ncol=dis.ncol.get_data(), delr=dis.delr.get_data(), delc=dis.delc.get_data(),
                                 top=dis.top.get_data(), botm=dis.botm.get_data(), idomain=dis.idomain.get_data())
     else:  # the flow model's vertex grid, cell for cell
-        flopy.mf6.ModflowGwtdisv(gwt, length_units="meters", nlay=dis.nlay.get_data(), ncpl=dis.ncpl.get_data(),
+        flopy.mf6.ModflowGwtdisv(gwt, length_units=units, nlay=dis.nlay.get_data(), ncpl=dis.ncpl.get_data(),
                                  nvert=dis.nvert.get_data(), vertices=dis.vertices.get_data(),
                                  cell2d=dis.cell2d.get_data(), top=dis.top.get_data(), botm=dis.botm.get_data(),
                                  idomain=dis.idomain.get_data())
@@ -176,9 +179,14 @@ class Transport:
         # transport model with simulated values, mass from outside the coupled models
         prefix = self.model + "/"
         self.boundaries = sorted({v.split("/")[1] for v in names if v.startswith(prefix) and v.endswith("/SIMVALS")})
+        from .modflow6 import LENUNI
+        own = LENUNI.get(int(self._get("DIS", "LENUNI")[0]))
+        if own is not None and own != mf6.length_units:
+            raise ValueError(f"{self.model.lower()}: in {own}, the flow model in {mf6.length_units}")
 
     def _get(self, package: str, var: str) -> np.ndarray:
-        return self.mf6.api.get_value(self.mf6.api.get_var_address(var, self.model, package)).copy()
+        """In meters, days and kilograms (``Modflow6.get``)."""
+        return self.mf6.get(var, self.model, package)
 
     def _copy(self, package: str) -> int:
         try:
@@ -189,14 +197,13 @@ class Transport:
     # ---------- concentrations ----------
     def concentration(self) -> np.ndarray:
         """Concentration per reduced node, kg m-3 (GWT's X): at the end of the last day solved, or the start."""
-        return self.mf6.api.get_value(self.mf6.api.get_var_address("X", self.model)).copy()
+        return self.mf6.get("X", self.model, "")
 
     def set_concentration(self, c: np.ndarray):
         """Concentrations per reduced node, for a restart: after initialize and before the first prepare_day."""
-        addr = self.mf6.api.get_var_address("X", self.model)
-        if self.mf6.api.get_value(addr).shape != np.shape(c):
+        if self.concentration().shape != np.shape(c):
             raise ValueError("saved concentrations don't match this model's nodes")
-        self.mf6.api.set_value(addr, np.asarray(c, dtype=np.float64))
+        self.mf6.set("X", "", np.asarray(c, dtype=np.float64), model=self.model)
 
     def takes_inflow(self, package: str) -> bool:
         """Whether SSM gives the package's inflow a concentration (an AUX source)."""
@@ -215,7 +222,7 @@ class Transport:
         a = aux.reshape(-1, aux.shape[-1]) if aux.ndim > 1 else aux.reshape(-1, 1)
         sel = slice(0, nb) if entries is None else np.flatnonzero(np.asarray(entries[:nb], bool))
         a[sel, col] = c
-        self.mf6.api.set_value(self.mf6.api.get_var_address("AUXVAR", self.model, f"FMI-FT{n}"), a.reshape(aux.shape))
+        self.mf6.set("AUXVAR", f"FMI-FT{n}", a.reshape(aux.shape), model=self.model)
 
     # ---------- the day's mass ----------
     def _entries(self, package: str, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
