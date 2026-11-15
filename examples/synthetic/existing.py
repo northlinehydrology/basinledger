@@ -83,7 +83,7 @@ def cellid(cell, grid: str):
 
 
 def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", daily: bool = True,
-          steps: int = 1, tsmult: float = 1.0, septic: bool = False, length_units: str = "meters",
+          steps: int = 1, tsmult: float = 1.0, septic: bool | tuple = False, length_units: str = "meters",
           time_units: str = "days", state_units: bool = True, complexity: str = "moderate",
           neighbor: bool = False, lake: bool = False, neighbor_recharge: bool = False,
           neighbor_river: bool = False, maw: bool = False, steady: str | None = None) -> Path:
@@ -138,8 +138,9 @@ def build(workspace: str | Path, days: int, start: dt.date, grid: str = "dis", d
     month = lambda i: (start.month - 1 + i) % 12  # noqa: E731
     flopy.mf6.ModflowGwfrcha(gwf, recharge={i: u(seasonal[month(i)], *LT) for i in range(nper)}, pname="rch_swb",
                              filename="kzoo.rch_swb.rcha")
-    if septic:
-        flopy.mf6.ModflowGwfrch(gwf, stress_period_data={0: [(c((0, 6, 6)), u(0.002, *LT))]}, pname="rch_septic",
+    if septic:  # True: on a cell of SWAT+'s ground; or the cell, such as one outside it
+        cell_septic = (0, 6, 6) if septic is True else tuple(septic)
+        flopy.mf6.ModflowGwfrch(gwf, stress_period_data={0: [(c(cell_septic), u(0.002, *LT))]}, pname="rch_septic",
                                 filename="kzoo.rch_septic.rch")
     flopy.mf6.ModflowGwfriv(gwf, stress_period_data={
         i: [(c(x), u(STAGE + 0.2 * np.sin(2 * np.pi * month(i) / 12)), u(20.0, *COND), u(STAGE - 2.0)) for x in CREEK]
