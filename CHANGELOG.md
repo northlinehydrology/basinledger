@@ -80,6 +80,9 @@ MODFLOW 6 model").
   and two added wells at one cell are refused.
 - A recharge package for a model without one: `[recharge] add = true` adds an RCH package of Basin Ledger's own on
   the recharge map's cells to the run's copy (`existing.add_recharge`).
+- Multi-aquifer wells as users' wells: `[[wells]] well = <n>` names a MAW well by its number in place of a cell;
+  its rate is set each day and what it pumped delivered, booked from the aquifer (its connections) and from the
+  wellbore (`QSTO`).
 - Several groundwater models coupled together (`[modflow6] models`, `modflow6.Models`; the config recommended in the
   design, to be confirmed): each model a view through the one libmf6, their cells in one sequence, so one recharge
   map (with a `model` column) and the wells take cells of any; each model's accounts, storage and closure in the

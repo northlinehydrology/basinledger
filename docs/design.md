@@ -1273,8 +1273,15 @@ What it needs, in order:
    study's [A], and calibration may free them (the setting for groundwater parameters fixed or free).
 3. **Its size.** A day of 7.2 million cells is minutes of solve, a year days. A study would cut an inset around its
    question, as USGS cut this one from the regional model.
-4. **MAW wells** as users' wells: MAW's rate can be set each day through the API (point 1), and Basin Ledger's wells
-   take WEL entries only so far.
+4. **MAW wells** as users' wells (built Nov 15, 2026): a `[[wells]]` entry names a multi-aquifer well by its number
+   in a MAW package (`well = 3`, in place of `cell`). Each day the user's withdrawal is the well's `RATE`; MODFLOW 6
+   splits it among the well's connections by their heads, and what it pumped (`RATESIM`, less than asked only with
+   a shut-off) is what was delivered, booked with where it came from: the aquifer by the connections
+   (`route:well:<name>:from_aquifer`) and the wellbore's water (`from_wellbore`, MAW's `QSTO`), which add to it to
+   MAW's own solve (a few parts in a million). The well's connections are Basin Ledger's in the start-up check;
+   `well` naming a package that isn't MAW, a number it doesn't have, or a well given both a cell and a number is
+   refused; transport with a MAW well isn't built. Tested on the synthetic foreign model with a farm well screened
+   through both layers, pumped by a second plant for 75 days (`tests/test_existing.py`).
 
 **Lakes: the stream precedent (decided, Andrew, Nov 14, 2026).** SWAT+ owns a lake's water and quality, as a
 reservoir, and MODFLOW 6's LAK is the face it exchanges through, as SFR is for a stream. Two forms, as for channels,
@@ -1580,7 +1587,7 @@ added. Refused: a package name the model already has (a well added never mixes w
 in the wrong form for the grid, and two added wells at one cell of a package. The folder handed over is untouched; a
 restart re-keys the added package with the rest. Tested on the synthetic foreign model (`tests/test_existing.py`): a
 second plant drawing from a well added in the bottom layer, coupled 75 days, gets what it asked for every day and the
-ledger closes; the refusals. Not built: MAW wells as users' wells (Kalamazoo's point 4).
+ledger closes; the refusals. MAW wells as users' wells are built too (Kalamazoo's point 4, above).
 
 The same for recharge: `[recharge] add = true` gives a model without a recharge package one of Basin Ledger's own
 (`existing.add_recharge`), an RCH list package named by `[recharge] package` with one entry per cell of the recharge
