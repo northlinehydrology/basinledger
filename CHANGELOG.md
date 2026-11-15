@@ -80,6 +80,9 @@ MODFLOW 6 model").
   and two added wells at one cell are refused.
 - A recharge package for a model without one: `[recharge] add = true` adds an RCH package of Basin Ledger's own on
   the recharge map's cells to the run's copy (`existing.add_recharge`).
+- Storage for a model handed over steady (`[modflow6] storage`, `existing.add_storage`): a model with no storage
+  package gets one of Basin Ledger's own in the run's copy (SY, and SS per meter in the model's units), transient;
+  `storage = {}` makes a model's own steady periods transient. A steady model without it is noted.
 - Multi-aquifer wells as users' wells: `[[wells]] well = <n>` names a MAW well by its number in place of a cell;
   its rate is set each day and what it pumped delivered, booked from the aquifer (its connections) and from the
   wellbore (`QSTO`).

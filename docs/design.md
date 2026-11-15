@@ -1270,7 +1270,14 @@ What it needs, in order:
    given, and its reviewers' numbers with it. Its DIS leaves the length units undefined, so a study states them
    (`[modflow6] length_units = "feet"`); its SFR's Manning's constant passes the check for feet.
 2. **Storage** for daily steps: specific yield and specific storage, which a steady model never needed. They are the
-   study's [A], and calibration may free them (the setting for groundwater parameters fixed or free).
+   study's [A], and calibration may free them (the setting for groundwater parameters fixed or free). Built
+   (Nov 15, 2026, `existing.add_storage`): `[modflow6] storage = {sy = ..., ss = ...}` gives a model with no storage
+   package one of Basin Ledger's own in the run's copy (ICONVERT, 1 unless given, SY, and SS given per meter and
+   written in the model's length units, read from its DIS options or the config's), transient from the first period;
+   `storage = {}` makes a model's own steady periods transient, its own values kept (values given beside its own are
+   refused). Without it, a model with steady days is noted: MODFLOW 6 solves those days without storage, each the
+   day's steady state. Tested on the synthetic model handed over steady both ways, coupled 75 days, and on
+   Kalamazoo's files (text only: its name file and the STO added, SS per foot).
 3. **Its size.** A day of 7.2 million cells is minutes of solve, a year days. A study would cut an inset around its
    question, as USGS cut this one from the regional model.
 4. **MAW wells** as users' wells (built Nov 15, 2026): a `[[wells]]` entry names a multi-aquifer well by its number
