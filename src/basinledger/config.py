@@ -58,6 +58,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
                                         #   vertex grid (DISV), e.g. [0, 412]
     # add = true                        # a well the model doesn't have (a new user's): Basin Ledger adds a WEL
                                         #   package of its own, named by package, to the run's copy (existing.py)
+    # well = 3                          # or, for a multi-aquifer well (package a MAW package), its number there,
+                                        #   from 1, in place of cell: its rate is set and what it pumped read
 
     [irrigation]                        # optional: SWAT+'s irrigation pumped from MODFLOW 6's wells (coupling/
     wells = [{hru = "hru0001", well = "irr1", share = 1.0}]  # irrigation.py; swatplus-bmi 0.11.0): each day, the
@@ -178,15 +180,29 @@ class UserConfig:
 class WellConfig:
     name: str
     package: str
-    cell: tuple[int, ...]   # (layer, row, col) on a DIS grid, (layer, icell2d) on a DISV grid
+    cell: tuple[int, ...] | None  # (layer, row, col) on a DIS grid, (layer, icell2d) on a DISV grid; None for MAW
     add: bool = False       # a well the model doesn't have, in a WEL package Basin Ledger adds (existing.add_wells)
     model: str | None = None  # with several models coupled, the one it's in (the first if not given)
+    well: int | None = None   # a multi-aquifer well (MAW): its number in the package, 1-based, in place of a cell
 
 
 def _flag(path: Path, where: str, v) -> bool:
     if not isinstance(v, bool):
         raise ValueError(f"{path}: {where} must be true or false; got {v!r}")
     return v
+
+
+def _well(path: Path, w: dict) -> WellConfig:
+    """A [[wells]] entry: a cell for a WEL package, or ``well``, a multi-aquifer well's number in a MAW package."""
+    where = f"well {w.get('name')!r}"
+    if "well" in w:
+        if "cell" in w or w.get("add"):
+            raise ValueError(f"{path}: {where}: a MAW well is named by its number (well), not a cell, and isn't added")
+        if not isinstance(w["well"], int) or isinstance(w["well"], bool) or w["well"] < 1:
+            raise ValueError(f"{path}: {where}: well is the MAW well's number in its package, from 1; got {w['well']!r}")
+        return WellConfig(w["name"], w.get("package", "maw"), None, False, w.get("model"), w["well"])
+    return WellConfig(w["name"], w.get("package", "wel"), _cell(path, where, w.get("cell")),
+                      _flag(path, f"{where} add", w.get("add", False)), w.get("model"))
 
 
 def _cell(path: Path, where: str, cell) -> tuple[int, ...]:
@@ -391,9 +407,7 @@ def load(path: str | Path) -> ExampleConfig:
         recharge_map=rch.get("map", ""),
         recharge_add=_flag(path, "[recharge] add", rch.get("add", False)),
         area_rtol=None if rch.get("area_check", True) is False else float(rch.get("area_rtol", 1e-6)),
-        wells=[WellConfig(w["name"], w.get("package", "wel"), _cell(path, f"well {w['name']!r}", w.get("cell")),
-                          _flag(path, f"well {w['name']!r} add", w.get("add", False)), w.get("model"))
-               for w in c.get("wells", [])],
+        wells=[_well(path, w) for w in c.get("wells", [])],
         users=users,
         calibration_record=_path(base, c["calibration"]["record"]) if c.get("calibration", {}).get("record") else None,
         calibration_parameters=(_path(base, c["calibration"]["parameters"])

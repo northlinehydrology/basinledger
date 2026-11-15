@@ -276,8 +276,8 @@ class Basin:
         wells = {}
         self._wells_left_out = set()  # a check's wells with a problem: listed once, not again by the users on them
         for w in cfg.wells:
-            if self._part(f"well {w.name}", lambda w=w: wells.__setitem__(
-                    w.name, (w.package, self.mf6.node(*w.cell, model=w.model))) or True) is None:
+            if self._part(f"well {w.name}", lambda w=w: wells.__setitem__(w.name, (w.package, self._well_node(w)))
+                          or True) is None:
                 self._wells_left_out.add(w.name)
         self.router = Router(self.sw, self.mf6, wells, L)
 
@@ -701,6 +701,23 @@ class Basin:
     def _well_cell(self, name: str):
         return next(w.cell for w in self.cfg.wells if w.name == name)
 
+    def _well_node(self, w: C.WellConfig):
+        """A well's node (a WEL well's cell), or ("maw", its 0-based number, its model) for a multi-aquifer well."""
+        if w.well is None:
+            return self.mf6.node(*w.cell, model=w.model)
+        v = self._view(w.model)
+        if not v.has_package(w.package):
+            raise ValueError(f"well {w.name}: the model has no package {w.package!r}")
+        t = package_type(v, w.package)
+        if t != "maw":
+            raise ValueError(f"well {w.name}: well = {w.well} names a multi-aquifer well, but {w.package} is a "
+                             f"{t.upper() or 'missing'} package")
+        if not 1 <= w.well <= v.maw_wells(w.package):
+            raise ValueError(f"well {w.name}: {w.package} has wells 1 to {v.maw_wells(w.package)}")
+        if self.cfg.transport:
+            raise ValueError(f"well {w.name}: transport with a multi-aquifer well isn't built")
+        return ("maw", w.well - 1, v.model)
+
     def _views(self) -> list:
         """Each coupled groundwater model's view: several (``[modflow6] models``), or the one."""
         return self.mf6.views if isinstance(self.mf6, Models) else [self.mf6]
@@ -999,6 +1016,11 @@ class Basin:
             for name, (pkg, node) in self.router.wells.items():
                 if pkg.upper() != p:
                     continue
+                if isinstance(node, tuple):  # a multi-aquifer well: its connections
+                    if self._view(node[2]) is mf:
+                        wells[mf.maw_connections(p, node[1])] = True
+                        named.append(name)
+                    continue
                 v, local = self.mf6.model_of(node) if several else (self.mf6, node)
                 if v is not mf:
                     continue
@@ -1228,7 +1250,8 @@ class Basin:
                         if cfg.rivers:
                             b._part("[rivers]", b._build_rivers)
                         for name, (pkg, node) in b.router.wells.items():
-                            b._part(f"well {name}", lambda pkg=pkg, node=node: b.mf6.entry(pkg, node))
+                            if not isinstance(node, tuple):  # a multi-aquifer well is checked by its number
+                                b._part(f"well {name}", lambda pkg=pkg, node=node: b.mf6.entry(pkg, node))
                         if b.gw_soil is not None:
                             b._part("[groundwater_to_soil]", lambda: b.gw_soil.attach(b.mf6))
                         if b.transport:

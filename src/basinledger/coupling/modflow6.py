@@ -71,7 +71,7 @@ DIMENSION = {
     "RAINFALL": LT, "EVAPORATION": LT, "WITHDRAWAL": Q, "XNEWPAK": L, "XOLDPAK": L,
     "RATESIM": Q, ("maw", "RATE"): Q, ("evt", "RATE"): LT,
     ("lak", "TELEV"): L, ("lak", "BELEV"): L, ("lak", "SAREA"): A, ("lak", "LAKEBOT"): L, ("lak", "LAKETOP"): L,
-    ("lak", "STRT"): L,
+    ("lak", "STRT"): L, ("maw", "QSTO"): Q,
     ("gwt", "X"): C, ("gwt", "SIMVALS"): MT, ("gwt", "FLOW"): Q, ("gwt", "AUXVAR"): C,
     ("gwt", "RATESTO"): MT, ("gwt", "RATESRB"): MT,
 }
@@ -283,6 +283,30 @@ class Modflow6:
 
     def has_package(self, package: str) -> bool:
         return self._has(self.model, package.upper())
+
+    # ---------- multi-aquifer wells ----------
+    def maw_wells(self, package: str) -> int:
+        return int(self.get_model_units("NMAWWELLS", self.model, package.upper())[0])
+
+    def maw_connections(self, package: str, well: int) -> slice:
+        """A MAW well's connections (0-based well) among the package's entries; SIMVALS is one value per connection."""
+        ia = self.get_model_units("IACONN", self.model, package.upper()).astype(int)
+        return slice(ia[well] - 1, ia[well + 1] - 1)
+
+    def set_maw_rate(self, package: str, well: int, q: float):
+        """A MAW well's rate, m3 d-1 (negative pumps out); MODFLOW 6 splits it among its connections."""
+        r = self.get("RATE", self.model, package.upper())
+        r[well] = q
+        self.set("RATE", package, r)
+
+    def maw_pumped(self, package: str, well: int) -> float:
+        """What a MAW well pumped on the day solved (RATESIM), m3 d-1, negative out: the rate, less any shut-off."""
+        return float(self.get("RATESIM", self.model, package.upper())[well])
+
+    def maw_wellbore(self, package: str, well: int) -> float:
+        """The water a MAW well's wellbore gave up on the day solved, m3 d-1 (QSTO: the pumping is the connections'
+        flow less it, to MAW's own solve)."""
+        return float(self.get("QSTO", self.model, package.upper())[well])
 
     def aux_multiplier(self, package: str) -> bool:
         """Whether a boundary package multiplies its values by an auxiliary variable."""
