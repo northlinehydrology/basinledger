@@ -31,6 +31,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     source = "aquifer"                  # each aquifer's recharge (default), or "hru": each HRU's percolation, placed
                                         #   on the cells under its ground (swatplus-bmi 0.6.0; coupling/recharge.py)
     map = "all:aqu001"                  # every top-layer cell to one aquifer (or HRU), or a CSV (see mapping.py)
+    # add = true                        # a model without a recharge package: Basin Ledger adds one, named by package,
+                                        #   on the map's cells (a CSV of cells), to the run's copy (existing.py)
     area_rtol = 1e-6                    # mapped area must match each object's area in the surface model (default 1e-6);
     area_check = false                  #   or no check, where an example maps more or less area on purpose (say why)
 
@@ -210,6 +212,7 @@ class ExampleConfig:
     mf6_builder_args: dict = field(default_factory=dict)
     transport: dict[str, dict] = field(default_factory=dict)  # species -> recharge, stream (kg m-3) [A], model
     recharge_source: str = "aquifer"   # or "hru"
+    recharge_add: bool = False          # a recharge package Basin Ledger adds, for a model without one
     weather: dict | None = None        # kind -> CSV path, and change (weather.py)
     groundwater_to_soil: dict | None = None  # rule, cap, package (coupling/gwsoil.py)
     mf6_length_units: str | None = None  # the model's, where its DIS leaves them undefined (coupling/modflow6.py)
@@ -332,6 +335,7 @@ def load(path: str | Path) -> ExampleConfig:
         mf6_model=mf.get("model", "gwf"),
         recharge_package=rch.get("package", "rch"),
         recharge_map=rch.get("map", ""),
+        recharge_add=_flag(path, "[recharge] add", rch.get("add", False)),
         area_rtol=None if rch.get("area_check", True) is False else float(rch.get("area_rtol", 1e-6)),
         wells=[WellConfig(w["name"], w.get("package", "wel"), _cell(path, f"well {w['name']!r}", w.get("cell")),
                           _flag(path, f"well {w['name']!r} add", w.get("add", False)))

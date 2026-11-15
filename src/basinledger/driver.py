@@ -195,6 +195,9 @@ class Basin:
             added = [(w.name, w.package, w.cell) for w in cfg.wells if w.add]  # new users' wells, a package of its own
             for note in EX.add_wells(ws, cfg.mf6_model, added) if added else []:
                 warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            if cfg.recharge_add:  # a model without recharge: a package of Basin Ledger's own on the map's cells
+                for note in EX.add_recharge(ws, cfg.mf6_model, cfg.recharge_package, self._map_cells(cfg)):
+                    warnings.warn(note, EX.TakeoverNote, stacklevel=2)
             if saved and not cfg.mf6_builder:
                 remaining_simulation(ws, ws, self.day, cfg.mf6_time_units)
             elif not saved:
@@ -488,6 +491,23 @@ class Basin:
             if k not in takes:
                 raise KeyError(f"user {u.name}: {k!r} is not an input of {u.component}")
             out[k] = (lambda value: (lambda t: value))(float(v))
+        return out
+
+    @staticmethod
+    def _map_cells(cfg: C.ExampleConfig) -> list[tuple[int, ...]]:
+        """The recharge map's cells, 0-based, in the grid's form, for a recharge package Basin Ledger adds."""
+        import csv
+        if cfg.recharge_map.startswith("all:") or not cfg.recharge_map:
+            raise ValueError("[recharge] add = true needs a map of cells (a CSV), not \"all:\"")
+        out = []
+        with open(cfg.folder / cfg.recharge_map, newline="") as f:
+            for r in csv.DictReader(f):
+                if (r.get("row") or "").strip():
+                    out.append((int(r["layer"]), int(r["row"]), int(r["col"])))
+                elif (r.get("icell2d") or "").strip():
+                    out.append((int(r["layer"]), int(r["icell2d"])))
+                else:
+                    raise ValueError(f"{cfg.recharge_map}: [recharge] add = true needs cells, not nodes")
         return out
 
     def _area_map(self, spec: str, aquifers: list[str]) -> AreaMap:

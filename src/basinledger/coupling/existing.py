@@ -127,16 +127,10 @@ def table(rows: list[PackageRole]) -> str:
     return "\n".join(lines)
 
 
-def add_wells(ws, model: str, wells: list[tuple[str, str, tuple[int, ...]]]) -> list[str]:
-    """Wells a model doesn't have, added to a run's copy (``[[wells]] add = true``): for each package named, a WEL
-    package of Basin Ledger's own, one entry per well at its cell (0-based, in the grid's form), its rate 0 in the
-    file and set every day by the users' routes, and its line in the model's name file. ``wells``: (name, package,
-    cell). A package name the model already has, a cell in the wrong form for the grid and two wells at one cell in
-    a package are refused. Returns the start-up's notes."""
-    from pathlib import Path
 
+def _model_nam(ws, model: str):
+    """The model's name file, the package names it has (lower case) and its grid type ("dis", "disv", "disu")."""
     from .mover import _blocks
-    ws = Path(ws)
     nam = None
     for name, _, lines in _blocks(ws / "mfsim.nam", ws):
         if name == "MODELS":
@@ -153,6 +147,52 @@ def add_wells(ws, model: str, wells: list[tuple[str, str, tuple[int, ...]]]) -> 
                     have.add(words[2].lower())
                 if words[0].upper() in ("DIS6", "DISV6", "DISU6"):
                     grid = words[0].upper()[:-1].lower()
+    return nam, have, grid
+
+
+def _add_package(ws, model: str, nam, ftype: str, package: str, cells: list[tuple[int, ...]], what: str):
+    """A list package of Basin Ledger's own, one entry per cell with a value of 0 (set every day), and its line in the
+    model's name file."""
+    f = f"{model.lower()}.{package}.{ftype.lower()}"
+    rows = "\n".join("  " + " ".join(str(i + 1) for i in c) + "  0.0" for c in cells)
+    (ws / f).write_text(f"# Basin Ledger: {what} (coupling/existing.py); each value set every day\n"
+                        "BEGIN options\nEND options\n\nBEGIN dimensions\n"
+                        f"  MAXBOUND  {len(cells)}\nEND dimensions\n\nBEGIN period  1\n{rows}\nEND period  1\n")
+    text = nam.read_text().splitlines()
+    end = next(i for i, x in enumerate(text) if [w.upper() for w in x.split()[:2]] == ["END", "PACKAGES"])
+    nam.write_text("\n".join(text[:end] + [f"  {ftype.upper()}6  {f}  {package}"] + text[end:]) + "\n")
+
+
+def add_recharge(ws, model: str, package: str, cells: list[tuple[int, ...]]) -> list[str]:
+    """A recharge package of Basin Ledger's own for a model without one (``[recharge] add = true``), added to a run's
+    copy: an RCH package named ``package``, one entry per cell of the recharge map (0-based, in the grid's form), its
+    rate set every day from SWAT+. A package name the model has and cells in the wrong form are refused; a model
+    that has a recharge package of its own is refused at the takeover (it would count recharge twice). Returns the
+    start-up's notes."""
+    from pathlib import Path
+    ws = Path(ws)
+    nam, have, grid = _model_nam(ws, model)
+    size = {"dis": 3, "disv": 2, "disu": 1}[grid]
+    if package.lower() in have:
+        raise ValueError(f"[recharge] add = true: the model has a package {package!r}; name the one Basin Ledger adds "
+                         "otherwise, or leave add out to set the model's own")
+    cells = list(dict.fromkeys(tuple(c) for c in cells))
+    if not cells or any(len(c) != size for c in cells):
+        raise ValueError(f"[recharge] add = true needs the map's cells in {grid.upper()} form")
+    _add_package(ws, model, nam, "rch", package.lower(), cells, "recharge the model doesn't have")
+    return [(f"{package.lower()}: a recharge package Basin Ledger adds to the run's copy, the model having none: "
+             f"{len(cells)} cells of the recharge map")]
+
+
+def add_wells(ws, model: str, wells: list[tuple[str, str, tuple[int, ...]]]) -> list[str]:
+    """Wells a model doesn't have, added to a run's copy (``[[wells]] add = true``): for each package named, a WEL
+    package of Basin Ledger's own, one entry per well at its cell (0-based, in the grid's form), its rate 0 in the
+    file and set every day by the users' routes, and its line in the model's name file. ``wells``: (name, package,
+    cell). A package name the model already has, a cell in the wrong form for the grid and two wells at one cell in
+    a package are refused. Returns the start-up's notes."""
+    from pathlib import Path
+    ws = Path(ws)
+    nam, have, grid = _model_nam(ws, model)
     size = {"dis": 3, "disv": 2, "disu": 1}[grid]
     by_package: dict[str, list[tuple[str, tuple[int, ...]]]] = {}
     for well, package, cell in wells:
@@ -162,20 +202,12 @@ def add_wells(ws, model: str, wells: list[tuple[str, str, tuple[int, ...]]]) -> 
         if len(cell) != size:
             raise ValueError(f"well {well!r}: cell {list(cell)} isn't a {grid.upper()} cell")
         by_package.setdefault(package.lower(), []).append((well, tuple(cell)))
-    notes, lines = [], []
-    for package, ws_wells in by_package.items():
-        cells = [c for _, c in ws_wells]
+    notes = []
+    for package, added in by_package.items():
+        cells = [c for _, c in added]
         if len(set(cells)) != len(cells):
             raise ValueError(f"{package}: two wells Basin Ledger adds share a cell; give them one well")
-        f = f"{model.lower()}.{package}.wel"
-        rows = "\n".join("  " + " ".join(str(i + 1) for i in c) + "  0.0" for c in cells)
-        (ws / f).write_text("# Basin Ledger: wells the model doesn't have (coupling/existing.py, add_wells); each rate "
-                            "set every day\nBEGIN options\nEND options\n\nBEGIN dimensions\n"
-                            f"  MAXBOUND  {len(cells)}\nEND dimensions\n\nBEGIN period  1\n{rows}\nEND period  1\n")
-        lines.append(f"  WEL6  {f}  {package}")
+        _add_package(ws, model, nam, "wel", package, cells, "wells the model doesn't have")
         notes.append(f"{package}: a well package Basin Ledger adds to the run's copy for wells the model doesn't have: "
-                     + ", ".join(f"{w} at {list(c)}" for w, c in ws_wells))
-    text = nam.read_text().splitlines()
-    end = next(i for i, x in enumerate(text) if [w.upper() for w in x.split()[:2]] == ["END", "PACKAGES"])
-    nam.write_text("\n".join(text[:end] + lines + text[end:]) + "\n")
+                     + ", ".join(f"{w} at {list(c)}" for w, c in added))
     return notes
