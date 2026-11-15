@@ -75,6 +75,9 @@ MODFLOW 6 model").
   booked as water from or to outside (`groundwater:boundary:gwf-gwf_<n>`), so its daily closure holds, and the
   start-up check notes each exchange. The synthetic foreign model takes a neighbor (`neighbor=True`). Coupling
   several models together is proposed in the design, not built.
+- Wells the model doesn't have: `[[wells]] add = true` puts a user's well in a WEL package Basin Ledger adds to the
+  run's copy (`existing.add_wells`), its rate set every day; a package name the model has, a cell in the wrong form
+  and two added wells at one cell are refused.
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS

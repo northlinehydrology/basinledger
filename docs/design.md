@@ -1326,8 +1326,9 @@ aquifer.
   of `[exchange] package` the map gives a channel), seepage (its drains), groundwater up into the soil, and users'
   wells. The rest of each package is the model's, booked each day as `groundwater:boundary:<package>`, as before.
   The recharge Basin Ledger sets goes into the model's own recharge package, named in the config, so its calibrated
-  recharge is replaced rather than added to; adding a package of Basin Ledger's own, for a model without one, isn't
-  built. A user's well must be an entry the model has (a city well already in it); adding wells isn't built either.
+  recharge is replaced rather than added to; adding a recharge package of Basin Ledger's own, for a model without
+  one, isn't built. A user's well is an entry the model has (a city well already in it), or, with `add = true`, a
+  well Basin Ledger adds in a WEL package of its own (built Nov 14, 2026; below, "wells the model doesn't have").
 - **What would count water twice is refused:** another recharge package left as the model's, a UZF package (its own
   infiltration), and EVT with groundwater up into the soil. Noted, not refused: EVT otherwise (groundwater ET stays
   the model's), and SFR or LAK left as the model's while SWAT+'s channels are coupled (the same river carried by
@@ -1519,6 +1520,18 @@ every day and the exchange brings the regional water in (`tests/test_existing.py
 - **Size.** Several days: the driver's links each take a model, the maps a column, and the tests the synthetic
   neighbor coupled both sides (it must give one model's ledger when the neighbor is the same aquifer's continuation)
   and Pleasant Lake's two models with its lake refused until LAK is coupled (need 4).
+
+**Built (Nov 14, 2026): wells the model doesn't have** (a new large user's, the question Basin Ledger exists for).
+A `[[wells]]` entry with `add = true` is a well the model lacks: Basin Ledger writes a WEL package of its own, named
+by the well's `package`, into the run's copy (`existing.add_wells`), one entry per such well at its cell with a rate
+of 0 in the file, and lists it in the model's name file; the users' routes set its rate every day, as for the
+model's own wells. The package is all Basin Ledger's in the start-up check's table, and the check notes each well
+added. Refused: a package name the model already has (a well added never mixes with the model's own entries), a cell
+in the wrong form for the grid, and two added wells at one cell of a package. The folder handed over is untouched; a
+restart re-keys the added package with the rest. Tested on the synthetic foreign model (`tests/test_existing.py`): a
+second plant drawing from a well added in the bottom layer, coupled 75 days, gets what it asked for every day and the
+ledger closes; the refusals. Not built: a recharge package added to a model without one, and MAW wells as users'
+wells (Kalamazoo's point 4).
 
 **Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
 on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a
