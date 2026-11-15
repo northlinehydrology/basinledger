@@ -230,7 +230,7 @@ class Basin:
             several = len(cfg.mf6_models) > 1  # several groundwater models coupled together (modflow6.Models)
             if several:
                 for what, on in (("transport", cfg.transport), ("[rivers]", cfg.rivers),
-                                 ("[groundwater_to_soil]", cfg.groundwater_to_soil), ("[recharge] add", cfg.recharge_add)):
+                                 ("[groundwater_to_soil]", cfg.groundwater_to_soil)):
                     if on:
                         raise ValueError(f"{what} with several groundwater models coupled isn't built")
             by_model: dict[str, list] = {}  # new users' wells, a package of its own in each model that has them
@@ -251,9 +251,11 @@ class Basin:
                                   "MODFLOW 6 solves those days without storage, each day's heads the day's steady "
                                   "state; [modflow6] storage gives it specific yield and storage",
                                   EX.TakeoverNote, stacklevel=2)
-            if cfg.recharge_add:  # a model without recharge: a package of Basin Ledger's own on the map's cells
-                for note in EX.add_recharge(ws, cfg.mf6_model, cfg.recharge_package, self._map_cells(cfg)):
-                    warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            if cfg.recharge_add:  # a model without recharge: a package of Basin Ledger's own on the map's cells,
+                # in each coupled model the map has cells in
+                for model, cells in self._map_cells(cfg).items():
+                    for note in EX.add_recharge(ws, model, cfg.recharge_package, cells):
+                        warnings.warn(f"{model}: {note}" if several else note, EX.TakeoverNote, stacklevel=2)
             if saved and not cfg.mf6_builder:
                 remaining_simulation(ws, ws, self.day, cfg.mf6_time_units)
             elif not saved:
@@ -636,20 +638,26 @@ class Basin:
         return out
 
     @staticmethod
-    def _map_cells(cfg: C.ExampleConfig) -> list[tuple[int, ...]]:
-        """The recharge map's cells, 0-based, in the grid's form, for a recharge package Basin Ledger adds."""
+    def _map_cells(cfg: C.ExampleConfig) -> dict[str, list[tuple[int, ...]]]:
+        """The recharge map's cells, 0-based, in the grid's form, by model (a row's ``model``, or the first), for a
+        recharge package Basin Ledger adds."""
         import csv
         if cfg.recharge_map.startswith("all:") or not cfg.recharge_map:
             raise ValueError("[recharge] add = true needs a map of cells (a CSV), not \"all:\"")
-        out = []
+        coupled = [m.lower() for m in (cfg.mf6_models or [cfg.mf6_model])]
+        out: dict[str, list[tuple[int, ...]]] = {}
         with open(cfg.folder / cfg.recharge_map, newline="") as f:
             for r in csv.DictReader(f):
+                model = ((r.get("model") or "").strip() or coupled[0]).lower()
+                if model not in coupled:
+                    raise ValueError(f"{cfg.recharge_map}: a row of model {model!r}, which isn't coupled")
                 if (r.get("row") or "").strip():
-                    out.append((int(r["layer"]), int(r["row"]), int(r["col"])))
+                    cell = (int(r["layer"]), int(r["row"]), int(r["col"]))
                 elif (r.get("icell2d") or "").strip():
-                    out.append((int(r["layer"]), int(r["icell2d"])))
+                    cell = (int(r["layer"]), int(r["icell2d"]))
                 else:
                     raise ValueError(f"{cfg.recharge_map}: [recharge] add = true needs cells, not nodes")
+                out.setdefault(model, []).append(cell)
         return out
 
     def _area_map(self, spec: str, aquifers: list[str]) -> AreaMap:

@@ -245,3 +245,34 @@ def test_drains_and_lakes_in_both_models(libmf6, tmp_path):
         assert X.part_map("bad.csv", tmp_path, ea, "drn_tile", swat, river.channels, "KZOO")[1] == ["cha01"]
     finally:
         m.finalize()
+
+
+def test_a_recharge_package_added_in_both_models(swatplus):
+    """Both models handed over without recharge (kzoo's rch_swb out of its name file, the neighbor built without
+    one): ``[recharge] add = true`` puts a package of Basin Ledger's own in each model the map has cells in, and
+    SWAT+'s recharge reaches both through them, by the map."""
+    from basinledger.driver import Basin
+    ws = RUNS / "models-no-recharge"
+    if ws.exists():
+        shutil.rmtree(ws)
+    E.build(ws, 75, START, neighbor=True)
+    nam = ws / "kzoo.nam"
+    nam.write_text("\n".join(x for x in nam.read_text().splitlines() if "rch_swb" not in x) + "\n")
+    cfg = both(config(neighbor=True))
+    cfg.mf6_builder, cfg.mf6_workspace = None, ws
+    cfg.recharge_package, cfg.recharge_add = "rch_swat", True
+    rows = []
+    found, notes = Basin.check(cfg, run="models-check-no-recharge", takeover=rows)
+    assert found == []
+    assert ("kzoo: rch_swat: a recharge package Basin Ledger adds to the run's copy, the model having none: 64 cells "
+            "of the recharge map") in notes
+    assert ("kzoo_east: rch_swat: a recharge package Basin Ledger adds to the run's copy, the model having none: 36 "
+            "cells of the recharge map") in notes
+    roles = {r.package: r.role for r in rows}
+    assert roles["kzoo/rch_swat"] == roles["kzoo_east/rch_swat"] == "Basin Ledger's"
+    t, _, _ = run(cfg, "models-run-no-recharge")
+    rk, re = t["recharge:received:kzoo"], t["recharge:received:kzoo_east"]
+    assert re.sum() > 0
+    np.testing.assert_allclose(re, rk * 36 / 64, rtol=1e-9)
+    assert np.nansum(t["recharge:received"]) == pytest.approx(np.nansum(t["recharge:made"]), rel=1e-9)
+    assert np.abs(t["groundwater:closure_share"]).max() < 1e-6
