@@ -6,9 +6,11 @@ examples/central-sands/fetch.py``, 16 MB).
 
 What Basin Ledger does with it today: reads it as given (meters, days, a georeferenced structured grid), lists both
 models' packages, puts its SFR networks through the line-up rule with SFRmaker's lines as SWAT+'s channels (they
-line up: SWAT+ built on the same lines would route every channel), lists their confluences, and refuses what isn't
-built yet, by name: the mover, and time steps longer than a day. Tier 1: MODFLOW 6 reads it and solves its first,
-steady day; nothing longer runs.
+line up: SWAT+ built on the same lines would route every channel), lists their confluences, reads the mover from the
+exchange's file and cuts it where it carries the inset's streams into the parent's channels, and refuses what isn't
+built yet, by name: the inset's coupled streams given to the parent through the mover, and (on the model as given,
+before a run rewrites them) time steps longer than a day. Tier 1: MODFLOW 6 reads it and solves its first, steady
+day; nothing longer runs.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import importlib.util
 import numpy as np
 import pytest
 
+from basinledger.coupling import mover as MV
 from basinledger.coupling.exchange import ChannelMap, StreamExchange, sfr_problems
 from basinledger.coupling.existing import inventory
 from basinledger.coupling.modflow6 import Modflow6
@@ -68,20 +71,30 @@ def test_both_models_packages_listed(mf):
 
 
 def test_its_streams_line_up_with_their_own_lines(mf, sim):
+    out = {}
     for model, reaches, n_lines, cuts in ((INSET, 25, 2, 0), (PARENT, 551, 48, 21)):
         mf.model = model.upper()
         try:
             cmap = lines(sim, model)
-            lay = sfr_problems(mf, "sfr_0", cmap)
+            out[model] = lay = sfr_problems(mf, "sfr_0", cmap)
         finally:
             mf.model = INSET.upper()
         assert len(cmap.entry_channel) == reaches and len(cmap.channels) == n_lines
         assert lay.channel_problems == {} and len(lay.top) == n_lines and len(lay.cut) == cuts
-        assert lay.problems == ["sfr_0: the mover moves water SWAT+ doesn't see"]  # the one thing in the way
+    # the mover carries the inset's two outlet reaches into two of the parent's top reaches: lined up on the parent's
+    # side (cut each day), and on the inset's the one thing in the way, until both models are coupled
+    parent = out[PARENT]
+    assert parent.problems == []
+    assert [(m.provider.id, m.receiver.id) for m in parent.moves_cut] == [(24, 218), (4, 213)]
+    assert {218, 213} <= set(parent.top.values())
+    assert [p.split(" through")[0] for p in out[INSET].problems] == [
+        "sfr_0: reach 24 (104) gives water to plsnt_lgr_parent's sfr_0 entry 218",
+        "sfr_0: reach 4 (102) gives water to plsnt_lgr_parent's sfr_0 entry 213"]
 
 
 def test_the_mover_is_refused_by_name(mf, sim):
-    with pytest.raises(ValueError, match="the mover moves water SWAT\\+ doesn't see"):
+    with pytest.raises(ValueError, match="gives water to plsnt_lgr_parent's sfr_0 entry 218 through the mover "
+                                         "\\(GWF-GWF_1, period 1's move 1\\); SWAT\\+ routes the channel's water"):
         StreamExchange(mf, "sfr_0", lines(sim, INSET), sfr="route_or_stage")
 
 
@@ -102,13 +115,14 @@ def test_the_grid_is_georeferenced(sim):
 
 def test_the_mover_cut_at_run_time_then_monthly_steps_refused(mf):
     """Last: it moves the shared model on (libmf6 holds one simulation per process). The mover here is the GWF-GWF
-    exchange's, carrying the inset's two outlet reaches into the parent's SFR; a factor of 0 set through the API cuts
-    it, and that water leaves the inset's SFR as its external outflow, as a cut upstream fraction does."""
-    a = "GWF-GWF_1/MVR/VALUE"
-    v = mf.api.get_value(a).copy()
-    assert mf.api.get_value("GWF-GWF_1/MVR/IMVRTYPE").tolist() == [1, 1] and v.tolist() == [1.0, 1.0]  # factors
-    v[:] = 0.0
-    mf.api.set_value(a, v)
+    exchange's, carrying the inset's two outlet reaches into the parent's SFR; cut as the parent's line-up has it
+    (each move's factor set to 0), that water leaves the inset's SFR as its external outflow, as a cut upstream
+    fraction does."""
+    (mv,) = MV.movers(WS)
+    assert mv.path == "GWF-GWF_1/MVR" and mv.file.name == "pleasant_lgr.mvr"
+    assert mf.api.get_value("GWF-GWF_1/MVR/VALUE").tolist() == [1.0, 1.0]  # factors
+    MV.cut(mf, [mv], mv.active(1))
+    assert mf.api.get_value("GWF-GWF_1/MVR/VALUE").tolist() == [0.0, 0.0]
     mf.solve_day()
     ext = mf.get("QEXTOUTFLOW", mf.model, "SFR_0")
     assert ext[4] < -100.0 and ext[24] < -100.0  # m3 d-1 leaving at the two outlets
