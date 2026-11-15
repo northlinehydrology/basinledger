@@ -32,6 +32,7 @@ MODFLOW 6 continue exactly, and the users are stepped forward to the restart day
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import importlib.util
 import json
@@ -78,6 +79,29 @@ class Basin:
     def __init__(self, cfg: C.ExampleConfig, run: str = "base", users: bool = True, days: int | None = None,
                  restart: str | Path | None = None, prepare=None, heads: np.ndarray | None = None,
                  wrap_surface=None, parameters: list | None = None, _problems: list | None = None):
+        """See ``_start``. A start-up that stops finalizes the models it started, so libmf6 and SWAT+ can be started
+        again in the same process (a second start of libmf6 over one left running ends the process)."""
+        try:
+            self._start(cfg, run=run, users=users, days=days, restart=restart, prepare=prepare, heads=heads,
+                        wrap_surface=wrap_surface, parameters=parameters, _problems=_problems)
+        except BaseException:
+            self._finalize_started()
+            raise
+
+    def _finalize_started(self):
+        """Finalize whatever models a start-up that stopped had started, each on its own."""
+        for _, wu in getattr(self, "users", None) or []:
+            with contextlib.suppress(Exception):
+                wu.finalize()
+        for name in ("mf6", "swat"):
+            model = getattr(self, name, None)
+            if model is not None:
+                with contextlib.suppress(Exception):
+                    model.finalize()
+
+    def _start(self, cfg: C.ExampleConfig, run: str = "base", users: bool = True, days: int | None = None,
+               restart: str | Path | None = None, prepare=None, heads: np.ndarray | None = None,
+               wrap_surface=None, parameters: list | None = None, _problems: list | None = None):
         """``prepare(model, folder)``, if given, is called on the run's copy of each model's files ("swatplus",
         "modflow6") before that model starts, after the parameter set is written into them: the example's own
         (``[calibration] parameters``) with ``parameters``' values in place of any it names (calibration.py's
