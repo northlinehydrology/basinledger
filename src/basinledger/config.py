@@ -57,6 +57,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     limit = true                        # RIV: a losing reach takes no more than its channel carries (default; SFR
                                         #   does this itself)
     drains = {package = "drn", map = "maps/drains.csv"}   # optional: seepage cells, to their channels the next day
+    lakes = {package = "lakes", map = "maps/lakes.csv"}   # optional: lake cells at a fixed stage (a RIV package of
+                                        #   their own), each to its outlet channel, one of the rivers' or drains'
 
     [transport.chloride]                # optional: a MODFLOW 6 transport model per species (coupling/transport.py),
     recharge = 0.02                     #   built by the example's builder (add_transport); kg m-3 of recharge [A]
@@ -289,6 +291,9 @@ def load(path: str | Path) -> ExampleConfig:
             raise ValueError(f"{path}: [transport.{sp}] stream needs the two-way [exchange]")
         if "exchange" in c and "stream" not in t:
             raise ValueError(f"{path}: [transport.{sp}] needs stream (kg m-3): the coupled rivers' losses carry it")
+    lakes = c.get("exchange", {}).get("lakes")
+    if lakes is not None and (not isinstance(lakes, dict) or set(lakes) != {"package", "map"}):
+        raise ValueError(f"{path}: [exchange] lakes is {{package = \"<a RIV package>\", map = \"<a map>\"}}")
     for h in c.get("outputs", {}).get("heads", []):
         _cell(path, f"[outputs] heads {h.get('name')!r}", h.get("cell"))
     for r in c.get("rules", []):

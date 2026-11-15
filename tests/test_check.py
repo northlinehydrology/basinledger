@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shutil
 
+import numpy as np
 import pytest
 
 from basinledger import config as C
@@ -75,3 +76,36 @@ def test_the_command(tmp_path, swatplus, capsys):
     assert main(["check", str(cfg.path)]) == 1
     out = capsys.readouterr().out
     assert "1 problem" in out and "- well pw1: cell (0, 5, 16) is outside the grid" in out
+
+
+def test_the_runs_start_up_hooks_are_checked(tmp_path, swatplus):
+    """A study's runs pass prepare, parameters, heads or wrap_surface; check takes the same, so it checks what the run
+    runs. The project's stored calibration.cal turns flo_min back on; the study's prepare hook writes its own."""
+    project = tmp_path / "Osu_1hru"
+    shutil.copytree(swatplus / "Osu_1hru", project)
+    cio = project / "file.cio"
+    cio.write_text(cio.read_text().replace("cal_parms.cal     null", "cal_parms.cal     calibration.cal"))
+    (project / "calibration.cal").write_text("calibration.cal\n 1\n NAME CHG_TYP VAL\n"
+                                             "flo_min absval 5.0 0 0 0 0 0 0 0 0\n")
+    cfg = C.load(SYNTHETIC / "two_way.toml")
+    cfg.run_folder = RUNS
+    cfg.swat_project = project
+    problems, _ = Basin.check(cfg)
+    assert any("flo_min" in p for p in problems)
+
+    def prepare(model, folder):
+        if model == "swatplus":
+            (folder / "calibration.cal").write_text("calibration.cal\n 0\n NAME CHG_TYP VAL\n")
+
+    assert Basin.check(cfg, prepare=prepare)[0] == []
+
+    from basinledger.calibration import Parameter
+    evt = Parameter("x", "modflow6", "evt.rate:all", 2.0, 0.0, 4.0, "none")  # the synthetic model has no EVT
+    problems, _ = Basin.check(cfg, prepare=prepare, parameters=[evt])
+    assert len(problems) == 1 and "has no package 'evt'" in problems[0]
+
+    wrapped = []
+    problems, _ = Basin.check(cfg, prepare=prepare, wrap_surface=lambda m: wrapped.append(m) or m)
+    assert problems == [] and len(wrapped) == 1
+    problems, _ = Basin.check(cfg, prepare=prepare, heads=np.zeros(3))
+    assert problems == ["the start-up stopped: saved heads don't match this model's nodes"]

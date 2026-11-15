@@ -45,18 +45,23 @@ def build(workspace: str | Path, days: int, start: dt.date) -> Path:
 
 SMALL_CELL = 1000.0 ** 0.5  # m: 10 x 10 cells of 1,000 m2 make 10 ha, the area of Osu_1hru's aquifer
 SMALL_WELL = (0, 5, 6)
+LAKE_CELLS = [(0, 4, 8), (0, 4, 9), (0, 5, 8), (0, 5, 9)]  # a small lake east of the well
+LAKE_DEPTH = 2.0         # m [A]: the lake's bottom (RBOT) below its surface
+LAKE_CONDUCTANCE = 10.0  # m2 d-1 per cell [A]
 
 
 def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevation: float | None = None,
                 transport: dict | None = None, top: float = 100.0, soil: str | None = None,
-                soil_conductance: float = 10.0) -> Path:
+                soil_conductance: float = 10.0, lake_stage: float | None = None) -> Path:
     """A 10 ha aquifer under Osu_1hru for the two-way exchange: 10 x 10 cells, the river along the west edge.
     Thinner and less permeable than the large grid so the river can lose water when the well pumps hard.
     ``drain_elevation``: seepage cells (a drain) along the second column at that elevation, for the coupled drains'
     tests. ``transport``: species -> ``add_transport`` settings (porosity, dispersivity, strt, sorption), a transport
     model per species with recharge and the river as its sources. ``top`` and ``soil``: land surface (m) and a
     package named "soil" on every cell for groundwater up into the soil, a drain ("drn", conductance
-    ``soil_conductance`` m2 d-1 [A], elevation set by Basin Ledger each day) or a well ("wel", gwflow's rule)."""
+    ``soil_conductance`` m2 d-1 [A], elevation set by Basin Ledger each day) or a well ("wel", gwflow's rule).
+    ``lake_stage``: a lake on LAKE_CELLS at that fixed surface (m), a RIV package named "lakes", for the coupled
+    lakes' tests."""
     ws = Path(workspace)
     sim = flopy.mf6.MFSimulation(sim_name="synthetic_small", sim_ws=ws, exe_name="mf6")
     flopy.mf6.ModflowTdis(sim, time_units="days", start_date_time=start.isoformat(),
@@ -76,6 +81,10 @@ def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevatio
     if drain_elevation is not None:
         flopy.mf6.ModflowGwfdrn(gwf, stress_period_data={0: [((0, r, 1), drain_elevation, 5.0) for r in range(10)]},
                                 pname="drn")
+    if lake_stage is not None:
+        flopy.mf6.ModflowGwfriv(gwf, stress_period_data={0: [(x, lake_stage, LAKE_CONDUCTANCE, lake_stage - LAKE_DEPTH)
+                                                             for x in LAKE_CELLS]}, pname="lakes",
+                                filename="gwf.lakes.riv")
     cells = [(0, r, c) for r in range(10) for c in range(10)]
     if soil == "drn":
         flopy.mf6.ModflowGwfdrn(gwf, stress_period_data={0: [(x, top, soil_conductance) for x in cells]}, pname="soil",
@@ -99,14 +108,16 @@ SFR_BED_K = 20.0 / (SFR_WIDTH * SMALL_CELL)  # m d-1 [A]: with a 1 m bed, a reac
 
 
 def build_small_sfr(workspace: str | Path, days: int, start: dt.date, unit_conversion: float | None = 86400.0,
-                    time_conversion: float | None = None, storage: bool = False, split: int | None = None) -> Path:
+                    time_conversion: float | None = None, storage: bool = False, split: int | None = None,
+                    lake_stage: float | None = None) -> Path:
     """``build_small`` with the river as a streamflow routing (SFR) package: a reach in each west-edge cell, a chain
     from north to south, the streambed top falling from 88.0 m at SFR_SLOPE, and each reach's bed conductance the RIV
     entries' (20 m2 d-1). Its inflow is set by Basin Ledger each day. Built by ``coupling.sfr`` from the channel's
     line down the west column. For the coupling's refusals, a package the helper won't make, built by hand:
     ``unit_conversion`` and ``time_conversion`` (Manning's constant; None leaves MODFLOW 6's default), ``storage``
-    (kinematic-wave routing) and ``split`` (the chain cut above that reach, so the channel has two top reaches)."""
-    build_small(workspace, days, start)
+    (kinematic-wave routing) and ``split`` (the chain cut above that reach, so the channel has two top reaches).
+    ``lake_stage``: the lake of ``build_small``."""
+    build_small(workspace, days, start, lake_stage=lake_stage)
     sim = flopy.mf6.MFSimulation.load(sim_ws=str(workspace), verbosity_level=0)
     gwf = sim.get_model("gwf")
     gwf.remove_package("riv")

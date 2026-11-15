@@ -61,8 +61,9 @@ not the basin.
 | groundwater up into the soil | yes (cell to HRU to layer split, drain elevation) | yes (sent, due, received) | yes (Osu_1hru, each rule and cap, restarts) | MODFLOW 6 budget, SWAT+'s gwsoilq | the config names a rule and a cap | |
 | calibration parameters and PEST++ files | yes (targets, multipliers by where, refusals, file agreement) | | yes (a zero change and a multiplier of one = the plain run; restarts) | | parameters for a model not run refused | |
 | SFR reaches from channel lines | yes (both grids, order, lengths, refusals) | | yes (the synthetic SFR example is built with it) | | | |
-| `basinledger check` | yes (several problems listed, knock-ons not) | | | | yes (exit codes) | |
+| `basinledger check` | yes (several problems listed, knock-ons not; a run's start-up hooks) | | | | yes (exit codes) | |
 | two-way exchange through SFR | yes (inflow at the top reach, refusals, map rows by reach) | yes | yes (Osu_1hru, three years; restarts) | MODFLOW 6 budget | no reach loses more than it carries | |
+| lakes at a fixed stage | yes (refused packages, the map onto some channels) | yes (in the exchange's pairs) | yes (Osu_1hru with RIV and SFR, three years; restarts; zero conductance = no lakes) | MODFLOW 6 budget, the whole basin | no more taken than the channel has; refusals at start-up | |
 | vertex grids (DISV) | yes (cells to nodes, forms refused, map rows) | yes | yes (refined two-way with a rule and transport; uniform DISV = DIS) | MODFLOW 6 budget | | |
 | boundary flows, storage, closure | | yes | yes | | | study |
 | wells and capture of pumping | | yes | yes (G1, two-way and one-way) | Glover and Balmer (G2) | | study |

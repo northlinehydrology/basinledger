@@ -54,10 +54,50 @@ def layer_split(top_depth: np.ndarray, bottom_depth: np.ndarray, water_depth: fl
 
 def to_layers(row_volume: np.ndarray, row_water_depth: np.ndarray, amap: AreaMap, layer_hru: np.ndarray,
               layer_bottom: np.ndarray) -> tuple[np.ndarray, float]:
-    """Volumes (m3) per map row into the HRU's soil layers, each row split at its own cell's depth to water.
-    Returns m3 per layer, and the volume of rows whose water table is below their HRU's profile: that water still
-    left the cell (a drain under a cell is at the deepest profile over it, by share), so it goes to the HRU's bottom
-    layer, where it reaches the soil."""
+    """Volumes (m3) per map row into the HRU's soil layers, each row split at its own cell's depth to water
+    (``layer_split``'s rule, for every row at once). Returns m3 per layer, and the volume of rows whose water table is
+    below their HRU's profile: that water still left the cell (a drain under a cell is at the deepest profile over
+    it, by share), so it goes to the HRU's bottom layer, where it reaches the soil. Vectorized Nov 13, 2026: the loop
+    over rows took half of a coupled day on a study basin (2,371 HRUs, 11,400 rows); ``to_layers_loop`` is the
+    reference it is tested against."""
+    layer_hru = np.asarray(layer_hru)
+    layer_bottom = np.asarray(layer_bottom, float)
+    row_volume = np.asarray(row_volume, float)
+    out = np.zeros(len(layer_bottom))
+    nz = np.flatnonzero(row_volume != 0.0)
+    if not len(nz):
+        return out, 0.0
+    # each HRU's layers in their order, as a padded table (HRU x position) of layer indices, -1 past its last
+    srt = np.argsort(layer_hru, kind="stable")
+    hs = layer_hru[srt]
+    _, first, counts = np.unique(hs, return_index=True, return_counts=True)
+    rank = np.arange(len(srt)) - np.repeat(first, counts)
+    table = np.full((int(layer_hru.max()) + 1, int(counts.max())), -1)
+    table[hs, rank] = srt
+    tops = np.empty_like(layer_bottom)
+    prev = np.concatenate([[0.0], layer_bottom[srt][:-1]])
+    tops[srt] = np.where(rank == 0, 0.0, prev)
+    lay = table[np.asarray(amap.obj)[nz]]                 # rows x positions
+    ok = lay >= 0
+    if not ok.any(axis=1).all():
+        raise ValueError("a mapped HRU has no soil layers")
+    li = np.where(ok, lay, 0)
+    wd = np.asarray(row_water_depth, float)[nz][:, None]
+    below = np.where(ok, np.clip(layer_bottom[li] - np.maximum(tops[li], wd), 0.0, None), 0.0)
+    total = below.sum(axis=1)
+    v = row_volume[nz]
+    deep = total <= 0
+    share = np.divide(below, total[:, None], out=np.zeros_like(below), where=~deep[:, None])
+    np.add.at(out, li[ok & ~deep[:, None]], (v[:, None] * share)[ok & ~deep[:, None]])
+    if deep.any():  # the water table below the profile: the HRU's bottom layer
+        bottom = np.where(ok, layer_bottom[li], -np.inf)
+        np.add.at(out, li[deep, np.argmax(bottom[deep], axis=1)], v[deep])
+    return out, float(v[deep].sum())
+
+
+def to_layers_loop(row_volume: np.ndarray, row_water_depth: np.ndarray, amap: AreaMap, layer_hru: np.ndarray,
+                   layer_bottom: np.ndarray) -> tuple[np.ndarray, float]:
+    """``to_layers`` one row at a time, as built Nov 8-9, 2026: the reference the vectorized one is tested against."""
     layer_hru = np.asarray(layer_hru)
     layer_bottom = np.asarray(layer_bottom, float)
     order = {h: np.flatnonzero(layer_hru == h) for h in np.unique(layer_hru)}

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Groundwater up into the soil splits each day's water among HRUs and layers for all map rows at once (`gwsoil.to_layers`, vectorized; the row-by-row version stays as `to_layers_loop`, the reference it is tested against to 1e-12). On a study basin (2,371 HRUs, 11,400 rows) the loop was half of a coupled day; a year went from 103 s to 68 s with the same results.
+
+- The daily pair of percolation sent and SWAT+'s own aquifer recharge (recharge by HRU) is bounded by the precision the project's files give each HRU's area and share (`hru.con`, `rout_unit.ele`), added to its tolerance each day (`recharge:precision`; a ledger pair's `bound`). On a study basin with groundwater up into the soil, a frozen day's 4.76 m3 of recharge, carried by a few small HRUs whose shares are written to 7 decimals, missed the fixed 1e-5 by 9e-5 m3 and stopped the run.
+
+- `Basin.check` takes the run's start-up hooks (`prepare`, `parameters`, `wrap_surface`, `heads`), so a study checks
+  what it runs: a prepare hook that rewrites SWAT+'s `calibration.cal` is checked on the file it writes, not on the
+  project's stored one.
+- Lakes at a fixed stage coupled to channels (`[exchange] lakes = {package, map}`): a RIV package of the lakes' own,
+  each lake cell mapped to its outlet channel, one of the exchange's coupled channels. The lakes' net exchange joins
+  that channel's the next day (`exchange:<channel>:lakes`), and the package's coupled entries aren't a boundary
+  flow. A lake takes no more than its channel has: with RIV the supply limit lowers a channel's river and lake
+  stages together; with SFR the lakes have a limit of their own, and a combined excess is a booked shortfall
+  (`exchange:<channel>:lake_stage_lowered_m`). Refused at start-up: a package that isn't RIV, the exchange's or the
+  drains' package, `[rivers]` on it, a channel the exchange doesn't couple, and transport with lakes. The synthetic
+  examples `lakes.toml` and `lakes_sfr.toml`; restarts match the unbroken run bit for bit.
+
 ## 0.7.0 (2026-11-11)
 
 SFR's reaches built from SWAT+'s channel lines, and `basinledger check`. Needs swatplus-bmi 0.9.0, as 0.6.0
