@@ -608,7 +608,8 @@ through a river (RIV) or a streamflow routing (SFR) package, and that exchange r
   - Also refused: diversions and the mover (water SWAT+ doesn't see), SFR's storage option (kinematic-wave routing:
     water held in the reaches from day to day, which a restart would need), `[exchange] limit = false`, `[rivers]` on
     the SFR package, and transport with an SFR exchange (MODFLOW 6's SFT package, not built).
-  - Manning's constant must be for meters and days (`UNIT_CONVERSION 86400`, or `TIME_CONVERSION 86400`). MODFLOW 6's
+  - Manning's constant must be for the model's units: `UNIT_CONVERSION 86400` (or `TIME_CONVERSION 86400`) for meters
+    and days, 1.486 × 86,400 for feet and days (to a thousandth: the 1.486 written for feet is 1.4859). MODFLOW 6's
     default, 1, is for meters and seconds; on it, a reach of the synthetic example a few centimeters deep came out
     eight meters deep. It is refused.
   - Maps give each reach's cell, or its 0-based number (`object, reach`), since several reaches can share a cell.
@@ -1254,11 +1255,12 @@ files it can't open; the model's input is untouched. What it holds:
 
 What it needs, in order:
 
-1. **Units.** Basin Ledger takes meters. Most consultants' models in the US are in feet, so this matters beyond
-   this model. Two ways, for Andrew to choose: Basin Ledger converts at each link (SWAT+'s m3 and m to the model's
-   ft3 and ft as they cross, the ledger in m3 throughout), which leaves the model as given; or the study rescales the
-   model to meters, which changes every length, conductance and rate in it, and its reviewers' numbers with them.
-   Converting at the links keeps the second way in's promise, the model as given.
+1. **Units (decided, Andrew, Nov 14, 2026: convert at each link; built, below).** Basin Ledger took meters. Most
+   consultants' models in the US are in feet, so this matters beyond this model. Of the two ways, Basin Ledger
+   converting at each link (SWAT+'s m3 and m to the model's ft3 and ft as they cross, the ledger in m3 throughout)
+   was chosen over the study rescaling the model to meters: it keeps the second way in's promise, the model as
+   given, and its reviewers' numbers with it. Its DIS leaves the length units undefined, so a study states them
+   (`[modflow6] length_units = "feet"`); its SFR's Manning's constant passes the check for feet.
 2. **Storage** for daily steps: specific yield and specific storage, which a steady model never needed. They are the
    study's [A], and calibration may free them (the setting for groundwater parameters fixed or free).
 3. **Its size.** A day of 7.2 million cells is minutes of solve, a year days. A study would cut an inset around its
@@ -1353,6 +1355,46 @@ aquifer.
   it runs as B, its water in at its top and at the confluence by length; every channel at a stage loses no more than
   went in), and coupled on Osu_1hru for a year: the ledger closes, each reach's stage is its streambed top plus
   SWAT+'s depth (or its top, where it lost all it had), and no day's loss is more than the channel's inflow.
+
+**Built (Nov 14, 2026): a model in its own units, converted at each link** (Andrew: "Let's build that option").
+
+- **The model stays as given.** Its units are DIS's `LENGTH_UNITS` (feet, meters or centimeters) and TDIS's
+  `TIME_UNITS` (seconds, minutes, hours or days). Where either is undefined, as in Kalamazoo's conversion, the
+  study states it (`[modflow6] length_units`, `time_units`) and a run that doesn't is refused at start-up. A unit
+  stated otherwise than the model's own is refused, and so are years (a day isn't a whole step of them).
+- **One place converts** (`Modflow6.get` and `set`, coupling/modflow6.py). Every link reads and sets MODFLOW 6's
+  memory through them, so each value crosses in meters, cubic meters, days and kilograms whatever the model holds:
+  recharge (m d-1), the stream exchange's stages, bottoms, conductances and fluxes on RIV, DRN and SFR (A and B
+  alike), users' wells, groundwater up into the soil, the cell areas the recharge map is checked against, heads,
+  every package's flow and storage booked in the ledger, and a transport model's concentrations, its sources' and
+  its mass budget (concentrations as kg per the model's volume unit). Each variable converts by its dimension, a
+  (length, time) pair (`DIMENSION`); one name meaning two things (EVT's rate, a depth rate, and MAW's, a flow) is
+  told apart by package type. Integers (counts, nodes, status) are never converted. In a model not in meters and
+  days, a real value of a dimension not listed is refused rather than passed through; in meters and days nothing
+  is converted, so models Basin Ledger builds run exactly as before. Simulated time and the one-day step are
+  checked in days.
+- **Maps** (`gridmaps.py`): the grid's world coordinates are in its length units, so a grid in feet takes polygons
+  and lines projected to a CRS in feet; areas and lengths come out in square meters and meters, by the grid's
+  `LENGTH_UNITS` or the `length_units` a study gives where it is undefined.
+- **The start-up check reports it.** `basinledger check` prints the model's units and every factor (lengths ×
+  0.3048, areas × 0.0929, flows × 0.0283 to m3 d-1, conductances, depth rates, concentrations), with which units
+  were stated in the config; a run in other units than meters and days starts with the same line as a warning.
+  `Basin.check(..., units=[])` returns it.
+- **What isn't converted, because it is the model's:** its solver settings (IMS's closure criteria and the
+  backtracking limits of its moderate and complex settings are absolute, in its units, and its builder set them),
+  the files MODFLOW 6 writes (heads and budgets in its units), and SFR's Manning's constant (checked for its units,
+  above). MODFLOW 6 calibration parameters multiply the model's values, so they carry no units.
+- **Tested on twins** (`tests/test_units.py`): the same model in meters and days and in feet and days, feet and
+  seconds, or centimeters and hours, every length, area, rate, conductance and tolerance converted, so MODFLOW 6
+  solves one problem. MODFLOW 6 alone (recharge, a well and stages set; heads, every package's flows and storage
+  read), SFR routed and at SWAT+'s stage, solute mass with sorption, maps on DIS and DISV, and a restart's remaining
+  simulation all give the meters twin's values to 1e-6. The synthetic foreign model coupled to Osu_1hru for 75 days
+  in feet and days, and in feet and seconds left undefined and stated in the config, gives its meters twin's ledger
+  to 1e-6 and closes across each converted link (recharge received = made, each well delivered = requested, the
+  model's own well read back at its rate). The twins take IMS's simple settings, with the residual criterion a
+  tenth as tight in seconds: the solver can't reach 1e-8 m3 d-1 when it is 4e-12 ft3 s-1.
+- **Waiting until a study needs them** (Kalamazoo's points 2 to 4): storage for daily steps, an inset of a model
+  too large to run, and MAW wells as users' wells.
 
 **Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
 on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a

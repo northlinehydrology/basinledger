@@ -46,10 +46,21 @@ MODFLOW 6 model").
   two-way mode a SWAT+ project that irrigates or allocates water from its own aquifer is refused
   (`swatplus.aquifer_withdrawals`): that aquifer only holds what it passed to MODFLOW 6. Irrigation pumped from the
   model's wells needs swatplus-bmi to report HRU irrigation (docs/requests.md, 7).
+- A MODFLOW 6 model in its own units, converted at each link (Andrew's choice over rescaling the model): feet,
+  meters or centimeters, and seconds, minutes, hours or days, from DIS and TDIS, or stated in `[modflow6]
+  length_units` and `time_units` where the model leaves them undefined (as mf5to6 does); a run that doesn't state
+  them, or states them otherwise than the model, is refused. `Modflow6.get` and `set` convert every value a link
+  reads or sets by its dimension (recharge, stream exchange stages, conductances and flows on RIV, DRN and SFR,
+  wells, the soil link, heads, every package's flow and storage, transport concentrations and mass), so the ledger
+  stays in cubic meters; a real value of unknown dimension is refused, and a model in meters and days converts
+  nothing. Maps on a grid in feet come out in square meters and meters. SFR's Manning's constant is checked for the
+  model's units. `basinledger check` prints the units and their factors (`Basin.check(..., units=[])`). Twins in
+  feet, seconds and centimeters give their meters twin's values and, coupled to SWAT+, its ledger.
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS
-  and DISV alike.
+  and DISV alike. It can be written in other units (`length_units`, `time_units`, and `state_units=False`
+  to leave them undefined), as twins for the unit conversion.
 
 ## 0.7.0 (2026-11-11)
 

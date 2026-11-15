@@ -22,6 +22,9 @@ coupled; no SWAT+ project is built over it. `tests/test_kalamazoo.py` checks wha
   heads from IBOUND (28,424), recharge as arrays, and 710 multi-node wells (MNW2) as MAW. **Feet and days**: the
   converted DIS says `LENGTH_UNITS UNDEFINED`, `usgs.model.reference` says feet (UTM zone 16 in feet), and SFR's
   Manning's constant is for feet (1.486 × 86,400). The DIS carries no origin; the reference file has it.
-- **What stops a coupled run, in order:** feet (Basin Ledger takes meters); no storage (daily steps need specific
+- **Units:** Basin Ledger converts at each link, so the model stays in feet. Its DIS leaves the length units
+  undefined, so a study's config states them: `[modflow6] length_units = "feet"` (TDIS says days). Its SFR's
+  Manning's constant passes the check for feet.
+- **What stops a coupled run, in order:** no storage (daily steps need specific
   yield and storage, the study's [A]); its size (a run of 7.2 million cells a day is a long run; a study would cut an
   inset around its question); the MAW wells, which Basin Ledger's wells don't take yet.
