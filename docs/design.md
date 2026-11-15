@@ -1243,7 +1243,9 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
       (built, below): on the parent's side its two moves land on top reaches and are cut; on the inset's they take
       coupled streams to another model, refused until both models are coupled (3).
    3. Several groundwater models in one simulation: each with its own maps, recharge and exchange, and the
-      GWF-GWF exchange's flow inside the ledger's groundwater, not a boundary.
+      GWF-GWF exchange's flow inside the ledger's groundwater, not a boundary. *First step built (below): one model
+      of such a simulation coupled, the exchange booked as a boundary. Coupling them together is proposed below, for
+      Andrew to decide.*
    4. The lake coupled, as streams are (below, "Lakes").
    5. The parent's irrigation wells, MODFLOW first (below, "Large users and irrigation").
 
@@ -1481,6 +1483,42 @@ aquifer.
   restarted run's ledger and heads are the unbroken run's to the last digit (`tests/test_existing.py`).
 - **Still to save:** the state of packages that hold water from day to day (MAW, UZF, LAK, SFR with storage); a
   model with them restarts with their files' starting state, and the restart says so for each such package.
+
+**Built (Nov 14, 2026): one model of a simulation with several.** A simulation can hold more than one groundwater
+model, joined by GWF-GWF exchanges and solved together (an LGR inset and its parent, or neighbors). Basin Ledger
+couples one (`[modflow6] model`). What crosses its GWF-GWF exchanges to the others is now booked as water from or to
+outside, `groundwater:boundary:gwf-gwf_<n>` (`Modflow6.exchanges` and `exchange_flow`, from libmf6's SIMVALS, positive
+into the exchange's first model), so the coupled model's daily closure holds; before, a coupled run of such a model
+would have stopped on its closure. The start-up check notes each exchange and the model on its other side. Tested
+on the synthetic foreign model with a neighbor east of it (`neighbor=True`), coupled 75 days: the ledger closes
+every day and the exchange brings the regional water in (`tests/test_existing.py`).
+
+**Proposed, for Andrew to decide: several groundwater models coupled together** (Pleasant Lake's need 3). Not built.
+
+- **What changes.** libmf6 already solves every model of the simulation together; what is one model in Basin Ledger
+  today (`Modflow6.model`, every link's cells, the groundwater accounts, saved heads) becomes a list. Each link
+  carries the model its cells are in.
+- **The config** (the decision). Recommended: `[modflow6] models = ["plsnt_lgr_parent", "plsnt_lgr_inset"]`, and
+  the maps stay one file each with a `model` column, which gridmaps writes from each model's grid; a well's `cell`
+  gets a `model` beside it. The other way, a `[modflow6.<model>]` table per model with its own maps, repeats more and
+  checks less (the area check needs all models' cells at once).
+- **Recharge.** Each HRU's or aquifer's recharge goes to the top active cells of every model under it, by area. In
+  an LGR simulation the parent's cells under the inset are inactive, so nothing is counted twice; the map's area
+  check (each HRU's cells add to its area) catches an overlap where they aren't.
+- **Streams.** SWAT+'s channels map to reaches of either model's SFR. Where a stream crosses from the inset to the
+  parent, the exchange's mover joins them: with SWAT+'s outlet at the model boundary (one channel ends at the
+  inset's last reach, the next starts at the parent's top reach) it lines up and is cut, as built above; a channel
+  spanning both models is a move within a channel, refused until a study needs it.
+- **The ledger.** Groundwater accounts per model, and each GWF-GWF exchange between coupled models booked inside
+  the groundwater (`groundwater:exchange:<model>-><model>`, equal and opposite on each side), so the sum over models
+  closes as one aquifer and each model's closure is checked as today. An exchange to a model not coupled stays a
+  boundary, as built.
+- **Also per model:** heads outputs, the soil link, rivers, the units (all coupled models must share them, or the
+  conversion runs per model), restarts (each model's heads saved and set), transport (a GWT model per GWF model,
+  joined by GWT-GWT exchanges), and the start-up check's table.
+- **Size.** Several days: the driver's links each take a model, the maps a column, and the tests the synthetic
+  neighbor coupled both sides (it must give one model's ledger when the neighbor is the same aquifer's continuation)
+  and Pleasant Lake's two models with its lake refused until LAK is coupled (need 4).
 
 **Plan.** A design pass on the open questions (done above); then the start-up check and maps on a foreign grid, tested
 on the synthetic foreign model and then a published model; then stress periods and restarts; then solutes. Each a

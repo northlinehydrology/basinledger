@@ -71,6 +71,10 @@ MODFLOW 6 model").
 - Restarts of a copied MODFLOW 6 model with several stress periods (`timesteps.remaining_days`): the periods over
   left out, the current one shortened, every input file's period blocks renumbered and its time series moved back,
   all as text. Restarted runs of the synthetic foreign model, alone and coupled, match the unbroken run bit for bit.
+- One groundwater model of a simulation with several coupled: what crosses its GWF-GWF exchanges to the others is
+  booked as water from or to outside (`groundwater:boundary:gwf-gwf_<n>`), so its daily closure holds, and the
+  start-up check notes each exchange. The synthetic foreign model takes a neighbor (`neighbor=True`). Coupling
+  several models together is proposed in the design, not built.
 - A synthetic model in someone else's style (`examples/synthetic/existing.py`, `existing.toml`): a rotated two-layer
   grid with inactive cells, monthly stress periods of daily steps, its own recharge, creek, tile drains, regional
   boundaries, city wells and riparian ET. Coupled both ways, the ledger closes every day across the periods, on DIS
