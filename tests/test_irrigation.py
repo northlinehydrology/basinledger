@@ -94,10 +94,13 @@ def test_irrigation_pumped_from_wells(swatplus):
     days = FIRST + 8
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        b = Basin(irrigated(config()), run="existing-run-irrigation", days=days)
         try:
-            if not b.sw.has(IR.IRRIGATION):
+            b = Basin(irrigated(config()), run="existing-run-irrigation", days=days)
+        except ValueError as e:
+            if "swatplus-bmi 0.11.0" in str(e):
                 pytest.skip("swatplus-bmi before 0.11.0: no HRU irrigation to read")
+            raise
+        try:
             b.run()
             t = b.ledger.table()
         finally:

@@ -160,10 +160,12 @@ def test_a_restart_carries_the_lake_and_the_irrigation(swatplus):
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        a = Basin(cfg(), run="existing-restart-lake-unbroken", days=days)
-        if a.lakes is None:
-            a.finalize()
-            pytest.skip("swatplus-bmi before 0.11.0: no reservoirs")
+        try:
+            a = Basin(cfg(), run="existing-restart-lake-unbroken", days=days)
+        except ValueError as e:
+            if "swatplus-bmi 0.11.0" in str(e):
+                pytest.skip("swatplus-bmi before 0.11.0: no reservoirs or HRU irrigation")
+            raise
         a.run()
         ta, ha = a.ledger.table(), a.mf6.head()
         a.finalize()
