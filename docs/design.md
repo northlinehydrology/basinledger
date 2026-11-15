@@ -1213,8 +1213,8 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
    - **Michigan Hydrologic Framework** (EGLE, MSU and USGS): a platform hosting Michigan groundwater models and
      inset extraction. If Andrew has access, it may hold the Michigan MODFLOW 6 model the search didn't find.
    *Chosen (Andrew, Nov 14, 2026): the best one first, more than one likely.* The first is the Central Sands
-   **Pleasant Lake model** (16 MB; `examples/central-sands`, `tests/test_central_sands.py`). The Kalamazoo model
-   through mf5to6 is the likely second, as the Michigan example. What Pleasant Lake holds, from its files:
+   **Pleasant Lake model** (16 MB; `examples/central-sands`, `tests/test_central_sands.py`). The second, *yes
+   (Andrew)*, is the **Kalamazoo model** through mf5to6, as the Michigan example (below). What Pleasant Lake holds, from its files:
    - **Two groundwater models in one simulation.** A parent (5 layers, 100 × 100, CHD edges, 244 irrigation wells,
      551 SFR reaches) and an LGR inset of 20 m cells around the lake (5 layers, 100 × 120, 25 SFR reaches, one lake
      of 1,382 connections with no outlets), joined by a GWF-GWF exchange with ghost nodes.
@@ -1239,6 +1239,32 @@ each answer as a test, so a new MODFLOW 6 that changes one fails there first.
       GWF-GWF exchange's flow inside the ledger's groundwater, not a boundary.
    4. The lake coupled, as streams are (below, "Lakes").
    5. The parent's irrigation wells, MODFLOW first (below, "Large users and irrigation").
+
+**The Kalamazoo model, converted (Nov 14, 2026; `examples/kalamazoo`, `tests/test_kalamazoo.py`).** USGS's
+Kalamazoo inset of the Lake Michigan Basin model (doi:10.5066/F76D5R5V), downloaded by hand (ScienceBase puts a
+captcha in front of files over 1 GB) and converted with mf5to6 from the MODFLOW 6.8.2 release in 13 seconds. The
+converter needed a copy of the name file with Unix line endings and without MNWI (MNW2's reporting), whose output
+files it can't open; the model's input is untouched. What it holds:
+
+- 8 layers × 730 × 1,230 cells of 500 ft, 7.2 million cells, one steady period with no storage package;
+- SFR of 20,010 reaches, RIV (52,969 entries), DRN (29,897), GHB (137,100, its regional boundaries), fixed heads
+  from IBOUND (28,424), recharge as arrays, and 710 multi-node wells (MNW2) as MAW;
+- **feet and days.** The converted DIS says `LENGTH_UNITS UNDEFINED`, its reference file says feet (UTM zone 16 in
+  feet, origin there and not in the DIS), and SFR's Manning's constant is for feet (1.486 × 86,400).
+
+What it needs, in order:
+
+1. **Units.** Basin Ledger takes meters. Most consultants' models in the US are in feet, so this matters beyond
+   this model. Two ways, for Andrew to choose: Basin Ledger converts at each link (SWAT+'s m3 and m to the model's
+   ft3 and ft as they cross, the ledger in m3 throughout), which leaves the model as given; or the study rescales the
+   model to meters, which changes every length, conductance and rate in it, and its reviewers' numbers with them.
+   Converting at the links keeps the second way in's promise, the model as given.
+2. **Storage** for daily steps: specific yield and specific storage, which a steady model never needed. They are the
+   study's [A], and calibration may free them (the setting for groundwater parameters fixed or free).
+3. **Its size.** A day of 7.2 million cells is minutes of solve, a year days. A study would cut an inset around its
+   question, as USGS cut this one from the regional model.
+4. **MAW wells** as users' wells: MAW's rate can be set each day through the API (point 1), and Basin Ledger's wells
+   take WEL entries only so far.
 
 **Lakes: the stream precedent (decided, Andrew, Nov 14, 2026).** SWAT+ owns a lake's water and quality, as a
 reservoir, and MODFLOW 6's LAK is the face it exchanges through, as SFR is for a stream. Two forms, as for channels,

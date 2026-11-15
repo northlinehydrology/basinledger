@@ -35,6 +35,10 @@ MODFLOW 6 model").
   (`existing.inventory`), its SFR networks lined up with SFRmaker's own lines as SWAT+'s channels (they line up;
   `gridmaps.sfr_aux`), its confluences listed and its mover cut at run time; what stops a coupled run is refused by
   name. Its tests skip until it is fetched.
+- The second published test model: the Kalamazoo River basin, Michigan (USGS, doi:10.5066/F76D5R5V), its MODFLOW-NWT
+  inset converted to MODFLOW 6 by mf5to6 (`examples/kalamazoo/fetch.py`, from a model.zip downloaded by hand). Feet
+  and days, steady with no storage, 7.2 million cells, SFR, RIV, DRN, GHB, IBOUND heads and MNW2 wells as MAW.
+  Its tests read the converted files and skip until it is fetched.
 - Lakes follow the stream precedent (Andrew): SWAT+'s reservoir owns the water, MODFLOW 6's LAK is the face, active
   within the day from SWAT+'s stage (A) or at a fixed stage (B). Both checked through the API; not built until
   swatplus-bmi exposes reservoirs (docs/requests.md, 6).

@@ -67,6 +67,7 @@ not the basin.
 | an existing MODFLOW 6 model: what is taken over, maps on its grid | yes (roles, refusals; HRU and channel maps on a rotated DIS and DISV grid with inactive cells, unreached entries, length checks, SFR reaches; LAK, MAW and SFR inputs set through the API) | yes (the model's boundaries booked from or to outside) | yes (Osu_1hru on a foreign model across monthly stress periods; DISV = DIS) | MODFLOW 6 budget | yes (a second recharge package refused; the check's list) | |
 | SFR line-up rule, and B at a fixed stage | yes (lined up and cut, a confluence inside a channel, the model's own tributary, not one chain, confluences listed; B's entries, stages and loss held to inflow) | | yes (B on Osu_1hru, a year) | SFR's own flows | yes (modes refused where they don't apply) | |
 | a published model as given (Pleasant Lake, once fetched) | | yes (read, both models listed, line-up with its own lines, confluences, mover cut, first day solved) | | | yes (the mover and monthly steps refused by name) | |
+| a published NWT model converted (Kalamazoo, once fetched) | yes (packages, feet and days, steady, sizes, from the converted files) | | | | | |
 | boundary flows, storage, closure | | yes | yes | | | study |
 | wells and capture of pumping | | yes | yes (G1, two-way and one-way) | Glover and Balmer (G2) | | study |
 | water users (CoolingWaterBmi) on SWAT+'s weather | yes | yes | yes (G7) | user balance | | study |
