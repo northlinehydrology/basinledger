@@ -39,8 +39,8 @@ Status (Nov 15, 2026, release 0.8.1). Built and tested on synthetic examples:
 The first real example is built too: Plaster Creek, Michigan, on a calibrated NextGen model replayed day by day. A
 study's coupled SWAT+ and MODFLOW 6 model, kept in its own repository, runs every function (testing.md, tier 5).
 
-Not built yet: water quality's second stage (through SWAT+'s streams), the SWAT+ hydrofabric builder, AORC forcing,
-and MODFLOW 6 parameters by pilot point. Each section says which parts are built.
+Not built yet: water quality's second stage (through SWAT+'s streams), the SWAT+ hydrofabric builder and AORC
+forcing. Each section says which parts are built.
 
 ## Principles
 
@@ -974,8 +974,16 @@ it names.
   (`[calibration] zones`: a CSV of cells and zones, such as a study's hydrostratigraphic units): `npf.k`, `npf.k22`,
   `npf.k33`, `sto.sy`, `sto.ss`, and the columns `riv.cond`, `drn.cond`, `ghb.cond`, `sfr.rhk` and `sfr.man`. Only
   the packages changed are written again, with flopy, at full precision, so a multiplier of one gives the plain run
-  bit for bit (tested). Recharge isn't one: Basin Ledger sets it each day from the surface model. Pilot points
-  (pyEMU) are still to build.
+  bit for bit (tested). Recharge isn't one: Basin Ledger sets it each day from the surface model.
+- **MODFLOW 6 by pilot point** (built Nov 15, 2026): a parameter targeting `<package>.<array>:pp=<set>` is one pilot
+  point, its location a row of `[calibration] pilot_points`' file (`name, set, layer, x, y`, in the grid's world
+  coordinates). A set's values are interpolated over each layer they're on by ordinary kriging, an exponential
+  covariance of the given `range` with an optional `nugget` (`calibration.kriging_weights`), in log10 where the
+  set's parameters are log-transformed, and the field multiplies the array there; a layer without points is
+  unchanged. Written in numpy rather than with pyEMU: the system is small and solved once per layer, and Basin
+  Ledger writes its own PEST++ files, where each point is an ordinary parameter row. Tested: the weights honour
+  each point and add to 1, far from all points they give the points' declustered mean; on the small model each
+  point's value lands at its cell and the field is the kriged one.
 - **Water users:** parameters in each component's config file, e.g. `CoolingWaterBmi`'s cycles of concentration.
   These are set from the applicant's data, not calibrated; a user parameter in the list is refused.
 - A parameter for a model the example doesn't run is refused.
@@ -1056,7 +1064,10 @@ source). All of them start from one warm-up:
   folder (any platform). Both are exact (swatplus-bmi's tests).
 - **MODFLOW 6:** its state is its heads, plus the storages of advanced packages (MAW, UZF; SFR with its storage
   option, which the exchange refuses) if used. SFR without storage holds no water from day to day.
-  At the end of the warm-up the driver saves heads (`X`). Each scenario starts a new MODFLOW 6 simulation covering
+  At the end of the warm-up the driver saves heads (`X`), and each lake's stage (LAK `XNEWPAK`) and multi-aquifer
+  well's head and wellbore storage head (MAW `HEAD`, `XSTO`) beside them, set back before the first day (built Nov
+  15, 2026: a model's own pond and an idle farm well restart to the last digit, 1.47 m off without; UZF and CSUB
+  still start from their files, and the start-up says so). Each scenario starts a new MODFLOW 6 simulation covering
   only the days left: the example's builder is called for them, or a copied model is cut to them
   (`remaining_simulation`, `timesteps.remaining_days`, built Nov 14, 2026): its steps rewritten to days first, the
   periods already over left out, the one the restart falls in shortened, every input file's period blocks renumbered
@@ -1549,9 +1560,14 @@ aquifer.
   carries it on, as for a cut connection.
 - **Refused by name**, with the mover and the period block's move: a move within a channel (not built); from a
   coupled reach to a reach no channel has, to another package or to another model (SWAT+ routes the channel's
-  water); and into a channel from a package that isn't SFR, such as tile drains or a lake outlet (water SWAT+'s
-  channel doesn't see; to be built with lakes and drains as the study needs). Moves among the model's own entries
-  stay the model's: a drain's water moved into the model's own reaches is the model's boundary flow, as before.
+  water); and into a channel from a lake's outlet or a well (water SWAT+'s channel doesn't see: a lake's outlet
+  water isn't groundwater, so it would come into SWAT+'s channel from outside both models; how to book it is
+  Andrew's call). Moves among the model's own entries stay the model's: a drain's water moved into the model's own
+  reaches is the model's boundary flow, as before.
+- **A drain's move into a coupled channel** (built Nov 15, 2026) is cut each day and the drain's water is that
+  channel's the next day, as the exchange's drains' seepage is (`exchange:<channel>:drains_moved`, part of
+  `to_stream`; the drain's entry Basin Ledger's in the takeover): it leaves the aquifer either way, and SWAT+ carries
+  the channel's water. A drain the exchange's drains map to another channel is refused.
 - **Pleasant Lake:** the exchange's two moves carry the inset's outlet reaches into two of the parent's top reaches.
   Coupling the parent, they line up and are cut; coupling the inset, they take its coupled streams to the parent and
   are refused, until both models are coupled together (need 3).
@@ -1620,9 +1636,18 @@ couples more than one of them.
   move within a channel, refused. On Pleasant Lake, each model's SFR to its own lines with a SWAT+ outlet where the
   inset meets its parent: the mover from the inset's two outlet reaches into the parent's top reaches lines up on both
   sides and is cut; the lines as SFRmaker numbered them, the same line on both sides of the edge, are refused as a
-  move within a channel (`tests/test_central_sands.py`). Drains coupled with streams in several models aren't built.
+  move within a channel (`tests/test_central_sands.py`).
+- **Drains and lakes at a fixed stage** (built Nov 15, 2026): each model's own (`[exchange] drains` or `lakes`, a
+  package named alike in each), mapped onto its own channels by the map's rows (`exchange.part_map`); a drain or
+  lake whose channel's reaches are in another model is refused.
 - **One model's links.** A lake, the head outputs and an exchange in one model name their model (`[exchange]
-  model`). Transport, `[rivers]`, `[groundwater_to_soil]` and `[recharge] add` are refused with several models.
+  model`).
+- **Across the models** (built Nov 15, 2026): `[recharge] add` adds a package in each model the map has cells in;
+  `[rivers]` sets the stage of each model's river package of that name on its mapped cells; groundwater up into the
+  soil takes the soil package in each model with mapped cells, set and read across them (`Models.node_values`,
+  `entry_values`, `set_entries`; `Models.set` without a model refuses a package that's in several). Transport is
+  refused with several models: it needs a transport model per groundwater model and species, the exchanges between
+  them and a mass budget per model.
 - **Restarts** save every model's heads and set them back.
 - **Tested** (`tests/test_models.py`) on the synthetic foreign model and its neighbor, both coupled: Osu_1hru's
   10 ha aquifer recharging 64 of kzoo's top cells and 36 of its neighbor's through one map (each model's share as the
@@ -1630,7 +1655,10 @@ couples more than one of them.
   groundwater, each model's closure and the whole's holding over 75 days; a restart continuing the unbroken run to
   the last digit; the models' cells in one sequence; the settings read and refused.
   With streams in both models, MODFLOW 6 alone: the synthetic creek in kzoo and a losing river in its neighbor, one
-  exchange through both, the supply limit holding the neighbor's river to the water its channel carries.
+  exchange through both, the supply limit holding the neighbor's river to the water its channel carries; with each
+  model's tile drains and the neighbor's lake, each model's seepage and lake flow back to its own channel. Coupled
+  with SWAT+: a recharge package added in both models (75 days), both river stages from SWAT+'s depth (30 days), and
+  groundwater up into the soil from both (75 days), every closure holding.
 - **Next for Pleasant Lake:** the study's SWAT+ build, with an outlet where the inset meets its parent and the lake as
   a reservoir.
 
@@ -1754,9 +1782,10 @@ Next:
 2. Point source loads (asked of swatplus-bmi).
 3. Two-way refinements: leaks and infiltration in the chain exchanged with MODFLOW 6; SFT for transport with an SFR
    exchange.
-4. Restarts for MODFLOW 6 models with several stress periods (built Nov 14, 2026; advanced packages' own state,
-   such as MAW's, UZF's and LAK's, still to save).
-5. MODFLOW 6 parameters by pilot point (pyEMU); USGS groundwater levels as observations.
+4. Restarts for MODFLOW 6 models with several stress periods (built Nov 14, 2026), and the advanced packages' own
+   state, LAK's and MAW's (built Nov 15; UZF's and CSUB's still to save).
+5. MODFLOW 6 parameters by pilot point (built Nov 15, 2026: ordinary kriging in numpy, Calibration); USGS groundwater
+   levels as observations.
 6. AORC forcing for SWAT+ and the users; the SWAT+ project builder on the hydrofabric, with outputs at every nexus.
 7. Extending an existing MODFLOW 6 model (decided Nov 14, 2026; the section above): the start-up check and maps on a
    model Basin Ledger didn't write, then stress periods and restarts, then solutes.

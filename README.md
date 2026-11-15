@@ -83,7 +83,7 @@ Still to come ([docs/design.md](docs/design.md)):
 - water quality through SWAT+'s streams (stage 2), on swatplus-bmi 0.5.0's species variables;
 - SWAT+ built on the NextGen hydrofabric, for water quality on the same catchments;
 - AORC forcing;
-- MODFLOW 6 parameters by pilot point, and USGS groundwater levels as observations.
+- USGS groundwater levels as observations.
 
 ## How it works
 
