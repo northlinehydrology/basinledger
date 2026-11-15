@@ -229,8 +229,7 @@ class Basin:
                 warnings.warn(note, EX.TakeoverNote, stacklevel=2)
             several = len(cfg.mf6_models) > 1  # several groundwater models coupled together (modflow6.Models)
             if several:
-                for what, on in (("transport", cfg.transport),
-                                 ("[groundwater_to_soil]", cfg.groundwater_to_soil)):
+                for what, on in (("transport", cfg.transport),):
                     if on:
                         raise ValueError(f"{what} with several groundwater models coupled isn't built")
             by_model: dict[str, list] = {}  # new users' wells, a package of its own in each model that has them

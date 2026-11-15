@@ -180,7 +180,7 @@ class GroundwaterToSoil:
         n = mf6.nodes
         self.mf6 = mf6
         self.shares = cell_shares(self.map, n)
-        self.top = mf6.get("TOP", mf6.model, "DIS").astype(float)[:n]
+        self.top = mf6.node_values("TOP", "DIS")
         nodes = mf6.package_nodes(self.package)
         mapped = np.unique(self.map.node)
         if sorted(nodes.tolist()) != mapped.tolist():
@@ -189,7 +189,7 @@ class GroundwaterToSoil:
         self.nodes = nodes
         self.elev0 = drain_elevation(self.map, self.top, self.depth, n)[nodes]
         if self.rule == "gwflow":
-            self.sy = mf6.get("SY", mf6.model, "STO").astype(float)[:n]
+            self.sy = mf6.node_values("SY", "STO")
         self.planned = np.zeros(len(nodes))
 
     # -- SWAT+'s side --
@@ -225,7 +225,7 @@ class GroundwaterToSoil:
 
     def before_solve(self):
         """Set the package for the day, after ``prepare_day`` and before the solve."""
-        mf, P = self.mf6, self.package.upper()
+        mf = self.mf6
         h0 = mf.head()
         self.h0 = h0
         if self.rule == "drain":
@@ -233,12 +233,12 @@ class GroundwaterToSoil:
             self.raised = 0
             if self.cap == "room":
                 # the drain raised so it gives no more than the room at the day's starting heads: q = C (h - elev)
-                cond = mf.get("COND", mf.model, P).astype(float)[: len(self.nodes)]
+                cond = mf.entry_values("COND", self.package)
                 cap = self._cell_cap(h0)
                 want = h0[self.nodes] - cap / np.where(cond > 0, cond, np.inf)
                 elev = np.maximum(self.elev0, want)
                 self.raised = int(np.sum(elev > self.elev0))
-            mf.set("ELEV", self.package, elev)
+            mf.set_entries("ELEV", self.package, elev)
             return
         # gwflow: Sy x the water table's height above each HRU's profile bottom x its ground in the cell
         bottom_elev = self.top[self.map.node] - self.depth[self.map.obj]
@@ -247,7 +247,7 @@ class GroundwaterToSoil:
             row = np.minimum(row, self._room_rows(h0))
         self.row_planned = row
         self.planned = np.bincount(self.map.node, weights=row, minlength=mf.nodes)[self.nodes]
-        mf.set("Q", self.package, -self.planned)
+        mf.set_entries("Q", self.package, -self.planned)
         return None
 
     def after_solve(self) -> tuple[float, float]:

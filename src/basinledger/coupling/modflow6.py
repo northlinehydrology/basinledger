@@ -312,6 +312,18 @@ class Modflow6:
         """Whether a boundary package multiplies its values by an auxiliary variable."""
         return int(self.get("IAUXMULTCOL", self.model, package.upper())[0]) > 0
 
+    def node_values(self, var: str, package: str) -> np.ndarray:
+        """A per-node variable of one of the model's own packages (``DIS``'s TOP, ``STO``'s SY), m and d."""
+        return self.get(var, self.model, package.upper()).astype(float)[: self.nodes]
+
+    def entry_values(self, var: str, package: str) -> np.ndarray:
+        """A per-entry variable of a boundary package (a drain's COND), m and d."""
+        return self.get(var, self.model, package.upper()).astype(float)[: self.nbound(package)]
+
+    def set_entries(self, var: str, package: str, values: np.ndarray):
+        """A per-entry variable of a boundary package, given in m and d."""
+        self.set(var, package, np.asarray(values, float))
+
     def entry_multipliers(self, package: str) -> np.ndarray:
         """Each entry's multiplier: its auxiliary multiplier column (AUXMULTNAME), or 1 where the package has none."""
         n = self.nbound(package)
@@ -513,6 +525,25 @@ class Models:
 
     def aux_multiplier(self, package: str) -> bool:
         return any(v.aux_multiplier(package) for v, _ in self._parts(package))
+
+    def node_values(self, var: str, package: str) -> np.ndarray:
+        """A per-node variable of each model's own package, the models' nodes in their one sequence."""
+        return np.concatenate([v.node_values(var, package) for v in self.views])
+
+    def entry_values(self, var: str, package: str) -> np.ndarray:
+        """A per-entry variable of a package named alike in several models, their entries one after the other."""
+        return np.concatenate([v.entry_values(var, package) for v, _ in self._parts(package)])
+
+    def set_entries(self, var: str, package: str, values: np.ndarray):
+        """A per-entry variable of a package named alike in several models, split back to each."""
+        values = np.asarray(values, float)
+        i = 0
+        for v, _ in self._parts(package):
+            n = v.nbound(package)
+            v.set_entries(var, package, values[i:i + n])
+            i += n
+        if i != len(values):
+            raise ValueError(f"{package}: {len(values)} values for {i} entries")
 
     def entry(self, package: str, node: int) -> int:
         idx = np.flatnonzero(self.package_nodes(package) == node)
