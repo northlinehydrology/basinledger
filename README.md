@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.9.1).** Built and tested:
+**Status: early (0.10.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -146,7 +146,7 @@ pip install "basinledger[users,nextgen]"      # or: uv add "basinledger[users,ne
 ```
 
 On Windows x86-64, Linux x86-64 (glibc 2.34 or later: Ubuntu 22.04, RHEL 9 and newer) and macOS 15 or later on Apple
-silicon, that's all. Both models come with it, nothing to compile or fetch:
+silicon, that's all (0.10.0). Both models come with it, nothing to compile or fetch:
 
 - **SWAT+**, built with the exchange mode, inside swatplus-bmi's wheel (swatplus-bmi 0.13.1 or later);
 - **MODFLOW 6's shared library** (`libmf6`), USGS's release unchanged (6.8.2), inside Basin Ledger's own wheel

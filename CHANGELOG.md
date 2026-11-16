@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 (2026-11-16)
 
 - `pip install basinledger` brings both models on Windows x86-64, Linux x86-64 (glibc 2.34 or later) and macOS 15 or
   later on Apple silicon: Basin Ledger's wheel for each carries USGS's libmf6 (MODFLOW 6 6.8.2, unchanged, with a note
