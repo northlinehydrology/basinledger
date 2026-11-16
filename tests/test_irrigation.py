@@ -71,7 +71,7 @@ def test_the_map_read(tmp_path):
 
 
 def test_the_irrigation_settings_read(tmp_path):
-    base = CONFIG.read_text().replace('"maps/', f'"{SYNTHETIC}/maps/')
+    base = CONFIG.read_text().replace('"maps/', f'"{SYNTHETIC.as_posix()}/maps/')
     extra = ('\n[[wells]]\nname = "irr1"\npackage = "wel_irr"\ncell = [1, 6, 6]\nadd = true\n'
              '\n[irrigation]\nwells = [{hru = "hru0001", well = "irr1"}]\n')
     (tmp_path / "x.toml").write_text(base + extra)
