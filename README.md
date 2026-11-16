@@ -139,7 +139,8 @@ Open problems:
 
 ## Install
 
-Needs Python 3.11 or later, and gfortran for SWAT+ (on macOS, Homebrew's `gcc`).
+Needs Python 3.11 or later, and gfortran for SWAT+ (on macOS, Homebrew's `gcc`; on Windows, MSYS2's, as swatplus-bmi's
+README says). Mac, Linux and Windows are tested on every push.
 
 ```bash
 pip install "basinledger[users,nextgen]"      # or: uv add "basinledger[users,nextgen]"
@@ -164,8 +165,12 @@ Two model programs aren't Python packages, and come separately:
   with Basin Ledger. Basin Ledger looks for it where `:flopy` puts it, or at `$LIBMF6`:
 
   ```bash
-  get-modflow :flopy --repo modflow6 --subset mf6,libmf6.dylib     # libmf6.so on Linux
+  get-modflow :flopy --repo modflow6 --subset mf6,libmf6.dylib     # libmf6.so on Linux; mf6.exe,libmf6.dll on Windows
   ```
+
+On Windows, write paths in a config with forward slashes or as TOML literal strings (`project = 'D:\models\clam'`): in
+double quotes a backslash starts an escape. A Windows PC on ARM runs the x86-64 builds of SWAT+ and libmf6 under
+emulation, so its Python must be x86-64 too (`uv python install cpython-3.12-windows-x86_64-none`).
 
 From a source checkout, for development and the tests, with [uv](https://docs.astral.sh/uv/):
 
