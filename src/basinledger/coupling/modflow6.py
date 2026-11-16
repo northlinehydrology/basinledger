@@ -51,6 +51,7 @@ import numpy as np
 from modflowapi import ModflowApi
 
 LIBNAME = {"darwin": "libmf6.dylib", "win32": "libmf6.dll"}.get(sys.platform, "libmf6.so")
+MF6 = "mf6.exe" if sys.platform == "win32" else "mf6"      # get-modflow's subset names the files as they are
 GRIDS = {3: "dis", 2: "disv", 1: "disu"}  # by the length of the discretization's shape (MSHAPE)
 CELL_FORM = {"dis": "layer, row, col", "disv": "layer, icell2d", "disu": "reduced nodes (give node)"}
 
@@ -90,7 +91,7 @@ def find_library(path: str | None = None) -> Path:
         if cand and Path(cand).exists():
             return Path(cand)
     raise FileNotFoundError(f"{LIBNAME} not found: set LIBMF6, or run `uv run get-modflow :flopy --repo modflow6 "
-                            f"--subset mf6,{LIBNAME}`")
+                            f"--subset {MF6},{LIBNAME}`")
 
 
 class Modflow6:

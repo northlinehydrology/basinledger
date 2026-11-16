@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 from basinledger.config import swatplus_refdata
-from basinledger.coupling.modflow6 import LIBNAME, find_library
+from basinledger.coupling.modflow6 import LIBNAME, MF6, find_library
 
 
 def main(get: bool) -> int:
@@ -35,9 +35,9 @@ def main(get: bool) -> int:
         print("libmf6:", find_library())
     except FileNotFoundError:
         missing += 1
-        print(f"libmf6 missing: uv run get-modflow :flopy --repo modflow6 --subset mf6,{LIBNAME}")
+        print(f"libmf6 missing: uv run get-modflow :flopy --repo modflow6 --subset {MF6},{LIBNAME}")
         if get:
-            subprocess.run(["get-modflow", ":flopy", "--repo", "modflow6", "--subset", f"mf6,{LIBNAME}"], check=True)
+            subprocess.run(["get-modflow", ":flopy", "--repo", "modflow6", "--subset", f"{MF6},{LIBNAME}"], check=True)
     return 0 if (missing == 0 or get) else 1
 
 
