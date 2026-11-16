@@ -37,8 +37,8 @@ def test_wheel_installs_in_a_clean_environment(tmp_path):
     venv = tmp_path / "venv"
     subprocess.run([uv, "venv", "--python", f"{sys.version_info.major}.{sys.version_info.minor}", str(venv)],
                    check=True, capture_output=True)
-    scripts = venv / ("Scripts" if sys.platform == "win32" else "bin")
-    py = scripts / "python"
+    scripts, exe = (venv / "Scripts", ".exe") if sys.platform == "win32" else (venv / "bin", "")
+    py = scripts / f"python{exe}"
     subprocess.run([uv, "pip", "install", "--python", str(py), f"{wheel}[users,nextgen]"], check=True,
                    capture_output=True)
     out = subprocess.run([str(py), "-c", "import basinledger, basinledger.driver, basinledger.coupling.nextgen, "
@@ -46,7 +46,7 @@ def test_wheel_installs_in_a_clean_environment(tmp_path):
                          check=True, capture_output=True, text=True, cwd=tmp_path)
     import basinledger
     assert out.stdout.strip() == basinledger.__version__
-    h = subprocess.run([str(scripts / "basinledger"), "--help"], check=True, capture_output=True, text=True)
+    h = subprocess.run([str(scripts / f"basinledger{exe}"), "--help"], check=True, capture_output=True, text=True)
     assert "run" in h.stdout and "status" in h.stdout
 
 
