@@ -21,7 +21,8 @@ from pathlib import Path
 WINDOWS_DLLS = {"kernel32.dll", "kernelbase.dll", "ntdll.dll", "msvcrt.dll", "ucrtbase.dll", "user32.dll", "gdi32.dll",
                 "advapi32.dll", "shell32.dll", "shlwapi.dll", "ole32.dll", "oleaut32.dll", "comdlg32.dll", "ws2_32.dll",
                 "bcrypt.dll", "crypt32.dll", "secur32.dll", "rpcrt4.dll", "version.dll", "psapi.dll", "dbghelp.dll",
-                "winmm.dll", "iphlpapi.dll", "shcore.dll", "userenv.dll"}
+                "winmm.dll", "iphlpapi.dll", "shcore.dll", "userenv.dll", "imagehlp.dll", "dnsapi.dll",
+                "netapi32.dll", "wininet.dll", "setupapi.dll", "cfgmgr32.dll"}
 GLIBC = re.compile(r"^(libc|libm|libdl|libpthread|librt|libutil|ld-linux[\w.-]*)\.so(\.\d+)*$")
 
 
