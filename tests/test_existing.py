@@ -397,7 +397,7 @@ def test_another_groundwater_model_in_the_simulation_is_outside(swatplus):
 def test_the_add_settings_read(tmp_path):
     base = CONFIG.read_text().replace('[recharge]\n', '[recharge]\nadd = true\n')
     base = base.replace('cell = [1, 5, 6]', 'cell = [1, 5, 6]\nadd = true')
-    (tmp_path / "x.toml").write_text(base.replace('"maps/', f'"{SYNTHETIC}/maps/'))
+    (tmp_path / "x.toml").write_text(base.replace('"maps/', f'"{SYNTHETIC.as_posix()}/maps/'))
     cfg = C.load(tmp_path / "x.toml")
     assert cfg.recharge_add and cfg.wells[0].add
     (tmp_path / "x.toml").write_text(base.replace("add = true", 'add = "yes"', 1))
@@ -539,7 +539,7 @@ def test_a_multi_aquifer_well_refused(swatplus, tmp_path):
     cfg.wells.append(C.WellConfig("farm1", "wel_city", None, well=1))
     found, _ = Basin.check(cfg, run="existing-check-maw-bad")
     assert len(found) == 1 and "well = 1 names a multi-aquifer well, but wel_city is a WEL package" in found[0]
-    base = CONFIG.read_text().replace('"maps/', f'"{SYNTHETIC}/maps/')
+    base = CONFIG.read_text().replace('"maps/', f'"{SYNTHETIC.as_posix()}/maps/')
     (tmp_path / "x.toml").write_text(base.replace("cell = [1, 5, 6]", "cell = [1, 5, 6]\nwell = 1"))
     with pytest.raises(ValueError, match="a MAW well is named by its number .well., not a cell"):
         C.load(tmp_path / "x.toml")

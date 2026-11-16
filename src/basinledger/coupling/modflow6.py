@@ -51,6 +51,7 @@ import numpy as np
 from modflowapi import ModflowApi
 
 LIBNAME = {"darwin": "libmf6.dylib", "win32": "libmf6.dll"}.get(sys.platform, "libmf6.so")
+MF6 = "mf6.exe" if sys.platform == "win32" else "mf6"      # get-modflow's subset names the files as they are
 GRIDS = {3: "dis", 2: "disv", 1: "disu"}  # by the length of the discretization's shape (MSHAPE)
 CELL_FORM = {"dis": "layer, row, col", "disv": "layer, icell2d", "disu": "reduced nodes (give node)"}
 
@@ -84,11 +85,13 @@ def units_factor(dimension: tuple[int, int], meters: float, days: float) -> floa
 
 def find_library(path: str | None = None) -> Path:
     """libmf6: the given path, $LIBMF6, or where flopy's get-modflow puts it (``get-modflow :flopy --repo modflow6``)."""
-    for cand in (path, os.environ.get("LIBMF6"), Path.home() / ".local" / "share" / "flopy" / "bin" / LIBNAME):
+    flopy = (Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "flopy" if sys.platform == "win32"
+             else Path.home() / ".local" / "share" / "flopy")              # get-modflow's :flopy folder
+    for cand in (path, os.environ.get("LIBMF6"), flopy / "bin" / LIBNAME):
         if cand and Path(cand).exists():
             return Path(cand)
     raise FileNotFoundError(f"{LIBNAME} not found: set LIBMF6, or run `uv run get-modflow :flopy --repo modflow6 "
-                            f"--subset mf6,{LIBNAME}`")
+                            f"--subset {MF6},{LIBNAME}`")
 
 
 class Modflow6:

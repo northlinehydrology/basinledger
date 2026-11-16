@@ -99,7 +99,7 @@ def test_what_the_start_up_refuses(api_model, swatplus, tmp_path):
 
 def test_the_lakes_settings_read(tmp_path):
     from test_existing import CONFIG, SYNTHETIC
-    base = CONFIG.read_text().replace('"maps/', f'"{SYNTHETIC}/maps/')
+    base = CONFIG.read_text().replace('"maps/', f'"{SYNTHETIC.as_posix()}/maps/')
     (tmp_path / "x.toml").write_text(base + '\n[[lakes]]\nreservoir = "res01"\npackage = "lak_pond"\n'
                                      'form = "fixed_stage"\n')
     assert C.load(tmp_path / "x.toml").lakes == [LK.LakeConfig("res01", "lak_pond", 1, "fixed_stage")]

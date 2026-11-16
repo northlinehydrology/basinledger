@@ -13,7 +13,7 @@ from conftest import ROOT, RUNS
 def copy_example(tmp_path):
     d = tmp_path / "synthetic"
     shutil.copytree(ROOT / "examples" / "synthetic", d, ignore=shutil.ignore_patterns("__marimo__", "*.pyc"))
-    text = (d / "basin.toml").read_text().replace('folder = "../../runs/synthetic"', f'folder = "{RUNS / "cli"}"')
+    text = (d / "basin.toml").read_text().replace('folder = "../../runs/synthetic"', f'folder = "{(RUNS / "cli").as_posix()}"')
     (d / "basin.toml").write_text(text)
     return d / "basin.toml"
 

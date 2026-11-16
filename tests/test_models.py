@@ -69,7 +69,7 @@ def test_a_model_not_in_the_simulation_refused(libmf6):
 
 
 def test_the_models_settings_read(tmp_path):
-    base = CONFIG.read_text().replace('"maps/', f'"{SYNTHETIC}/maps/')
+    base = CONFIG.read_text().replace('"maps/', f'"{SYNTHETIC.as_posix()}/maps/')
     (tmp_path / "x.toml").write_text(base.replace('model = "kzoo"', 'models = ["kzoo", "kzoo_east"]'))
     cfg = C.load(tmp_path / "x.toml")
     assert cfg.mf6_models == MODELS and cfg.mf6_model == "kzoo"

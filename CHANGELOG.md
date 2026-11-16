@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.1 (2026-11-16)
+
+- Windows: tested on every push (windows-latest; SWAT+ built with MSYS2's gfortran by `swatplus-bmi build`, which needs
+  swatplus-bmi 0.12.0, now the minimum). libmf6 is found where `get-modflow` puts it there (`%LOCALAPPDATA%\flopy\bin`), and the
+  example's fetch asks it for `mf6.exe`.
+
 ## 0.9.0 (2026-11-15)
 
 - Several coupled models, more links: drains and lakes at a fixed stage with streams in several models, each model's

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sqlite3
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -123,9 +124,9 @@ def config(run, tmp_path, extra=""):
     (tmp_path / "basin.toml").write_text(f'''
 name = "ngen-test"
 [run]
-folder = "{RUNS / 'ngen-test'}"
+folder = "{(RUNS / 'ngen-test').as_posix()}"
 [nextgen]
-run = "{run}"
+run = "{Path(run).as_posix()}"
 [[utilities]]
 name = "city"
 sources = [{{route = "offsite:lake", share = 1.0}}]

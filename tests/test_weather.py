@@ -113,7 +113,7 @@ PCP_FILE, TMP_FILE = "Imsilpcp.pcp", "Imsiltmp.tmp"
 
 
 def osu_config(tmp_path, swatplus, name, weather=None, days=0) -> C.ExampleConfig:
-    (tmp_path / f"{name}.toml").write_text(f'name = "{name}"\n[swatplus]\nproject = "{swatplus / "Osu_1hru"}"\n')
+    (tmp_path / f"{name}.toml").write_text(f'name = "{name}"\n[swatplus]\nproject = "{(swatplus / "Osu_1hru").as_posix()}"\n')
     cfg = C.load(tmp_path / f"{name}.toml")
     cfg.run_folder = RUNS
     cfg.weather = weather

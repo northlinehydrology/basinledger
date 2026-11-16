@@ -4,6 +4,7 @@ SWAT+ and MODFLOW 6, and PEST++ IES files."""
 from __future__ import annotations
 
 import csv
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -53,7 +54,7 @@ def test_forward_model(tmp_path, swatplus):
     import shutil
     d = tmp_path / "synthetic"
     shutil.copytree(ROOT / "examples" / "synthetic", d, ignore=shutil.ignore_patterns("__marimo__"))
-    text = (d / "basin.toml").read_text().replace('folder = "../../runs/synthetic"', f'folder = "{RUNS / "fwd"}"')
+    text = (d / "basin.toml").read_text().replace('folder = "../../runs/synthetic"', f'folder = "{(RUNS / "fwd").as_posix()}"')
     text = text.replace('[run]\nfolder', '[run]\ndays = 60\nfolder')
     text += '\n[outputs]\nheads = [{name = "pw1", cell = [0, 20, 28]}]\n'
     (d / "basin.toml").write_text(text)
@@ -262,7 +263,8 @@ def test_pest_files(tmp_path):
     assert [r.split() for r in odata] == [["q1", "0.002", "1.0", "flow_cha01"], ["q2", "0.003", "1.0", "flow_cha01"],
                                           ["h1", "88.5", "2.0", "head_pw1"]]
     cmd = lines[sec["* model command line"] + 1]
-    assert cmd.startswith("python -m basinledger forward /") and cmd.endswith("simulated.csv --run-folder runs")
+    assert cmd.startswith("python -m basinledger forward ") and cmd.endswith("simulated.csv --run-folder runs")
+    assert Path(cmd.split()[4]).is_absolute()
     assert lines[-1] == "++ ies_num_reals(20)" and (d / "observations.csv").exists()
 
 
@@ -388,7 +390,7 @@ def test_modflow6_by_pilot_point(tmp_path):
 
 def test_pilot_points_settings_read(tmp_path):
     from basinledger import config as C
-    base = (ROOT / "examples" / "synthetic" / "two_way.toml").read_text().replace('"maps/', f'"{ROOT}/examples/synthetic/maps/')
+    base = (ROOT / "examples" / "synthetic" / "two_way.toml").read_text().replace('"maps/', f'"{ROOT.as_posix()}/examples/synthetic/maps/')
     (tmp_path / "x.toml").write_text(base + '\n[calibration]\npilot_points = {file = "pp.csv", range = 500.0}\n')
     cfg = C.load(tmp_path / "x.toml")
     assert cfg.calibration_pilot_points == {"file": tmp_path / "pp.csv", "range": 500.0, "nugget": 0.0}
