@@ -139,12 +139,18 @@ Open problems:
 
 ## Install
 
-Needs Python 3.11 or later, and gfortran for SWAT+ (on macOS, Homebrew's `gcc`; on Windows, MSYS2's, as swatplus-bmi's
-README says). Mac, Linux and Windows are tested on every push.
+Needs Python 3.11 or later. Mac, Linux and Windows are tested on every push.
 
 ```bash
 pip install "basinledger[users,nextgen]"      # or: uv add "basinledger[users,nextgen]"
 ```
+
+On Windows x86-64, Linux x86-64 (glibc 2.34 or later: Ubuntu 22.04, RHEL 9 and newer) and macOS 15 or later on Apple
+silicon, that's all. Both models come with it, nothing to compile or fetch:
+
+- **SWAT+**, built with the exchange mode, inside swatplus-bmi's wheel (swatplus-bmi 0.13.1 or later);
+- **MODFLOW 6's shared library** (`libmf6`), USGS's release unchanged (6.8.2), inside Basin Ledger's own wheel
+  (`basinledger/_lib/`, with a note on its source and license).
 
 The extras:
 
@@ -152,17 +158,13 @@ The extras:
 - **`nextgen`:** netCDF4, for reading NextGen runs;
 - **`gis`:** shapely, for building SFR's reaches from channel lines (`coupling/sfr.py`).
 
-Two model programs aren't Python packages, and come separately:
+Elsewhere (macOS 14 or older, an Intel Mac, Linux on ARM or with an older glibc), pip installs the packages without
+the models, and they come separately, once:
 
-- **SWAT+** is built by swatplus-bmi, which is installed with Basin Ledger. It fetches SWAT+ 62.0.1, patches it and
-  builds it, in a few minutes:
-
-  ```bash
-  swatplus-bmi build
-  ```
-
-- **MODFLOW 6's shared library** (`libmf6`) comes from USGS's release through flopy's `get-modflow`, also installed
-  with Basin Ledger. Basin Ledger looks for it where `:flopy` puts it, or at `$LIBMF6`:
+- **SWAT+:** `swatplus-bmi build` fetches SWAT+ 62.0.1, patches it and builds it, in a few minutes. It needs gfortran
+  (on macOS, Homebrew's `gcc`; on Windows, MSYS2's, as swatplus-bmi's README says).
+- **libmf6:** USGS's release through flopy's `get-modflow`, installed with Basin Ledger. Basin Ledger looks for it in
+  its own wheel, then where `:flopy` puts it, or at `$LIBMF6` first:
 
   ```bash
   get-modflow :flopy --repo modflow6 --subset mf6,libmf6.dylib     # libmf6.so on Linux; mf6.exe,libmf6.dll on Windows
@@ -170,7 +172,8 @@ Two model programs aren't Python packages, and come separately:
 
 On Windows, write paths in a config with forward slashes or as TOML literal strings (`project = 'D:\models\clam'`): in
 double quotes a backslash starts an escape. A Windows PC on ARM runs the x86-64 builds of SWAT+ and libmf6 under
-emulation, so its Python must be x86-64 too (`uv python install cpython-3.12-windows-x86_64-none`).
+emulation, so its Python must be x86-64 too (`uv python install cpython-3.12-windows-x86_64-none`), and then the
+x86-64 wheels come with it.
 
 From a source checkout, for development and the tests, with [uv](https://docs.astral.sh/uv/):
 
