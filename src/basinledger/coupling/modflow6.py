@@ -84,10 +84,12 @@ def units_factor(dimension: tuple[int, int], meters: float, days: float) -> floa
 
 
 def find_library(path: str | None = None) -> Path:
-    """libmf6: the given path, $LIBMF6, or where flopy's get-modflow puts it (``get-modflow :flopy --repo modflow6``)."""
+    """libmf6: the given path, $LIBMF6, the one inside the installed wheel (``_lib/``, on platforms with a wheel of
+    their own: USGS's, unchanged), or where flopy's get-modflow puts it (``get-modflow :flopy --repo modflow6``)."""
     flopy = (Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "flopy" if sys.platform == "win32"
              else Path.home() / ".local" / "share" / "flopy")              # get-modflow's :flopy folder
-    for cand in (path, os.environ.get("LIBMF6"), flopy / "bin" / LIBNAME):
+    bundled = Path(__file__).resolve().parents[1] / "_lib" / LIBNAME
+    for cand in (path, os.environ.get("LIBMF6"), bundled, flopy / "bin" / LIBNAME):
         if cand and Path(cand).exists():
             return Path(cand)
     raise FileNotFoundError(f"{LIBNAME} not found: set LIBMF6, or run `uv run get-modflow :flopy --repo modflow6 "
