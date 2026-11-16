@@ -32,6 +32,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: uv run python examples/synthetic/fetch.py --get
       - run: uv run pytest -q
+      - name: The wheel with MODFLOW 6 inside, installed alone and run
+        run: uv run python tools/check_wheel.py "$(uv run python -c 'from basinledger.coupling.modflow6 import find_library; print(find_library())')" --out wheels
 
   # Windows: SWAT+ built with MSYS2's gfortran (swatplus-bmi build runs build.sh in MSYS2's bash), libmf6 from USGS's
   # release, Python from uv
@@ -62,3 +64,5 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: uv run python examples/synthetic/fetch.py --get
       - run: uv run pytest -q
+      - name: The wheel with MODFLOW 6 inside, installed alone and run
+        run: uv run python tools/check_wheel.py "$(uv run python -c 'from basinledger.coupling.modflow6 import find_library; print(find_library())')" --out wheels
