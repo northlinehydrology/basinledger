@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.0 (2026-11-16)
+
+- `pip install basinledger` brings both models on Windows x86-64, Linux x86-64 (glibc 2.34 or later) and macOS 15 or
+  later on Apple silicon: Basin Ledger's wheel for each carries USGS's libmf6 (MODFLOW 6 6.8.2, unchanged, with a note
+  on its source and license), and swatplus-bmi 0.13.1, now the minimum, carries SWAT+. Each platform wheel is built
+  and run installed alone before it's published (`hatch_build.py`, `tools/lib_tag.py`, `tools/check_wheel.py`).
+  libmf6 is found in the wheel after a given path and `$LIBMF6`, before `get-modflow`'s folder. Elsewhere, both come
+  separately, as before.
+
 ## 0.9.1 (2026-11-16)
 
 - Windows: tested on every push (windows-latest; SWAT+ built with MSYS2's gfortran by `swatplus-bmi build`, which needs
