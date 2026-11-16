@@ -57,10 +57,8 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
       - run: uv sync --locked --group gis
-      - name: swatplus-bmi with Windows support, until its release
-        run: uv pip install "swatplus-bmi @ git+https://github.com/northlinehydrology/swatplus-bmi@windows"
       - name: SWAT+ (swatplus-bmi build) and libmf6 (get-modflow)
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: uv run --no-sync python examples/synthetic/fetch.py --get
-      - run: uv run --no-sync pytest -q
+        run: uv run python examples/synthetic/fetch.py --get
+      - run: uv run pytest -q

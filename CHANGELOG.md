@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.9.1 (2026-11-16)
 
 - Windows: tested on every push (windows-latest; SWAT+ built with MSYS2's gfortran by `swatplus-bmi build`, which needs
-  swatplus-bmi 0.12.0). libmf6 is found where `get-modflow` puts it there (`%LOCALAPPDATA%\flopy\bin`), and the
+  swatplus-bmi 0.12.0, now the minimum). libmf6 is found where `get-modflow` puts it there (`%LOCALAPPDATA%\flopy\bin`), and the
   example's fetch asks it for `mf6.exe`.
 
 ## 0.9.0 (2026-11-15)
