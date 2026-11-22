@@ -39,6 +39,30 @@ def test_recharge_and_well_set_each_day(libmf6):
     mf.finalize()
 
 
+def test_a_solve_that_breaks_down_stops_at_once(libmf6):
+    """MODFLOW 6 can return NaN heads from a linear solver that broke down and still report convergence (found in a
+    Rappahannock calibration, Nov 22, 2026): the day stops there, with and without a callback, naming the iteration."""
+    ws = RUNS / "mf6-nan"
+    build(ws, 3)
+    mf = Modflow6(ws)
+    real = mf.head
+    mf.prepare_day()
+    mf.solve_day()  # a good day first
+    mf.head = lambda: np.full_like(real(), np.nan)
+    mf.prepare_day()
+    with pytest.raises(FloatingPointError, match="day 1 .the day's solve"):
+        mf.solve_day()
+    mf.finalize()
+    ws2 = RUNS / "mf6-nan-callback"
+    build(ws2, 3)
+    mf = Modflow6(ws2)
+    mf.head = lambda: np.full(mf.nodes, np.nan)
+    mf.prepare_day()
+    with pytest.raises(FloatingPointError, match="outer iteration 1"):
+        mf.solve_day(lambda: False)
+    mf.finalize()
+
+
 def test_runs_follow_one_another_in_a_process(libmf6):
     ws = RUNS / "mf6-again"
     build(ws, 2)
