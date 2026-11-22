@@ -147,6 +147,48 @@ def test_limit_to_supply_fits_the_loss():
     assert (new >= rbot).all()
 
 
+def test_limit_to_supply_channels_together_as_one_by_one():
+    """The channels bisected together give each channel's depth as bisecting it alone does (0.10.0's loop, kept here
+    as the reference), with entries not coupled (-1), channels with no entries and channels with nothing to give."""
+    from basinledger.coupling.exchange import limit_to_supply
+
+    def one_by_one(stage, rbot, cond, head, e, available, iterations=60):
+        stage = stage.copy()
+        floor = np.maximum(head, rbot)
+
+        def loss(st, sel):
+            return float(np.sum(cond[sel] * (np.clip(st[sel] - floor[sel], 0, None) - np.clip(head[sel] - st[sel], 0,
+                                                                                               None))))
+        low = np.zeros(len(available))
+        for i, have in enumerate(np.maximum(available, 0.0)):
+            sel = np.flatnonzero(e == i)
+            if len(sel) == 0 or loss(stage, sel) <= have:
+                continue
+            lo, hi = 0.0, float(np.max(stage[sel] - rbot[sel]))
+            s0 = stage.copy()
+            for _ in range(iterations):
+                mid = 0.5 * (lo + hi)
+                s0[sel] = np.maximum(stage[sel] - mid, rbot[sel])
+                lo, hi = (lo, mid) if loss(s0, sel) <= have else (mid, hi)
+            stage[sel] = np.maximum(stage[sel] - hi, rbot[sel])
+            low[i] = hi
+        return stage, low
+
+    rng = np.random.default_rng(1)
+    for _ in range(200):
+        ne, nc = int(rng.integers(1, 300)), int(rng.integers(1, 30))
+        rbot = rng.uniform(0, 10, ne)
+        stage, head = rbot + rng.uniform(0, 3, ne), rbot + rng.uniform(-3, 4, ne)
+        cond = rng.uniform(0, 1e4, ne)
+        e = rng.integers(-1, nc + 3, ne)
+        e[e >= nc] = -1
+        available = rng.uniform(-1e3, 3e4, nc)
+        s1, d1 = one_by_one(stage, rbot, cond, head, e, available)
+        s2, d2 = limit_to_supply(stage, rbot, cond, head, e, available)
+        np.testing.assert_allclose(s2, s1, rtol=0, atol=1e-12)
+        np.testing.assert_allclose(d2, d1, rtol=0, atol=1e-12)
+
+
 def test_the_limit_removes_the_shortfall(swatplus):
     """Lowering the stage where the channel can't supply the loss leaves a smaller shortfall than booking it."""
     out = {}

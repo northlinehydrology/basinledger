@@ -376,29 +376,34 @@ def limit_to_supply(stage: np.ndarray, rbot: np.ndarray, cond: np.ndarray, head:
     other gains, such as seepage, can be added to it), the channel's stages are lowered by one depth d,
     ``max(stage - d, rbot)``, with d found by bisection: the losses shrink and the gains grow as d grows, and at
     d = max(stage - rbot) the channel loses nothing, so a d always exists. Returns the new stages and each
-    channel's d (m, 0 where nothing was lowered)."""
+    channel's d (m, 0 where nothing was lowered). The channels are bisected together, each on its own interval."""
     stage = np.asarray(stage, float).copy()
+    rbot, cond = np.asarray(rbot, float), np.asarray(cond, float)
     floor = np.maximum(head, rbot)
     head = np.asarray(head, float)
+    e = np.asarray(entry_channel)
+    n = len(available)
+    have = np.maximum(np.asarray(available, float), 0.0)
 
-    def net_loss(st, sel):
-        lose = np.clip(st[sel] - floor[sel], 0.0, None)
-        gain = np.clip(head[sel] - st[sel], 0.0, None)
-        return float(np.sum(cond[sel] * (lose - gain)))
+    def net_loss(st, idx, ch):  # each channel's net loss over the entries idx (their channels ch)
+        q = cond[idx] * (np.clip(st - floor[idx], 0.0, None) - np.clip(head[idx] - st, 0.0, None))
+        return np.bincount(ch, weights=q, minlength=n)
 
-    lowered = np.zeros(len(available))
-    for i, have in enumerate(np.maximum(available, 0.0)):
-        sel = np.flatnonzero(entry_channel == i)
-        if len(sel) == 0 or net_loss(stage, sel) <= have:
-            continue
-        lo, hi = 0.0, float(np.max(stage[sel] - rbot[sel]))
-        s0 = stage.copy()
-        for _ in range(iterations):
-            mid = 0.5 * (lo + hi)
-            s0[sel] = np.maximum(stage[sel] - mid, rbot[sel])
-            lo, hi = (lo, mid) if net_loss(s0, sel) <= have else (mid, hi)
-        stage[sel] = np.maximum(stage[sel] - hi, rbot[sel])
-        lowered[i] = hi
+    coupled = np.flatnonzero(e >= 0)
+    over = net_loss(stage[coupled], coupled, e[coupled]) > have
+    lowered = np.zeros(n)
+    if not over.any():
+        return stage, lowered
+    idx = coupled[over[e[coupled]]]
+    ch = e[idx]
+    lo, hi = np.zeros(n), np.full(n, -np.inf)
+    np.maximum.at(hi, ch, stage[idx] - rbot[idx])
+    for _ in range(iterations):
+        mid = 0.5 * (lo + hi)
+        ok = net_loss(np.maximum(stage[idx] - mid[ch], rbot[idx]), idx, ch) <= have
+        lo, hi = np.where(ok, lo, mid), np.where(ok, mid, hi)
+    stage[idx] = np.maximum(stage[idx] - hi[ch], rbot[idx])
+    lowered[over] = hi[over]
     return stage, lowered
 
 

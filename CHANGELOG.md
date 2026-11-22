@@ -4,6 +4,8 @@
 
 - A map from pixels reads in seconds: `AreaMap.from_csv` finds each object by name in a table and each distinct cell's
   node once (a 1,025,254-row HRU map took 173 s, most of it in list lookups), as does the soil link's layer index.
+- The supply limit bisects all its channels together (`exchange.limit_to_supply`): the same depths as one channel at a
+  time, to 1e-12 m (tested against 0.10.0's loop), at a seventh of the cost on 1,157 channels.
 
 ## 0.10.0 (2026-11-16)
 
