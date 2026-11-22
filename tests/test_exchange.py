@@ -368,3 +368,104 @@ def test_spin_up_settles_storage(swatplus):
     b = Basin(cfg, run="two-way-spun", days=2, heads=heads)
     np.testing.assert_array_equal(b.mf6.head(), heads)
     b.finalize()
+
+
+def _two_way(run, days, restart=None, **exchange):
+    cfg = C.load(ROOT / "examples" / "synthetic" / "two_way.toml")
+    cfg.run_folder = RUNS
+    cfg.exchange = dict(cfg.exchange, limit=True, **exchange)
+    return Basin(cfg, run=run, days=days, restart=restart)
+
+
+def _lowered(t):
+    return {k: np.asarray(t[k]) for k in t if k.endswith("stage_lowered_m")}
+
+
+def test_limit_warm_start_finds_the_same_stages(swatplus):
+    """Starting each day's limit from yesterday's lowered stages finds the cold start's answer (to the stage
+    tolerance) in no more outer iterations, and a start far too low is put back up: the limit works from the day's
+    own stages, not from where its search starts."""
+    from basinledger.coupling import modflow6 as M
+
+    calls = {}
+    real = M.Modflow6.solve_day
+
+    def counting(self, callback=None, max_rounds=30):
+        n = [0]
+
+        def cb():
+            n[0] += 1
+            return callback()
+        real(self, None if callback is None else cb, max_rounds)
+        calls[tag] = calls.get(tag, 0) + n[0]
+
+    tol = 1e-6
+    tables = {}
+    M.Modflow6.solve_day = counting
+    try:
+        for tag, warm in (("cold", False), ("warm", True)):
+            b = _two_way(f"two-way-limit-{tag}", 120, limit_warm_start=warm, limit_tolerance=tol)
+            b.run()
+            assert b.exchange.warm_start is warm
+            tables[tag] = b.ledger.table()
+            b.finalize()
+    finally:
+        M.Modflow6.solve_day = real
+    cold, warm = _lowered(tables["cold"]), _lowered(tables["warm"])
+    assert cold and any(v.any() for v in cold.values())  # the limit acts in this example
+    for k in cold:
+        np.testing.assert_allclose(warm[k], cold[k], rtol=0, atol=10 * tol, err_msg=k)
+    assert calls["warm"] < calls["cold"]
+
+    # a start far below the answer: two runs alike to a day the limit acts on, then one starts that day 10 m down
+    # (one model open at a time: MODFLOW 6's library is shared)
+    a = _two_way("two-way-limit-low-a", 40, limit_warm_start=False, limit_tolerance=tol)
+    a.run(30)
+    ta = _lowered(a.ledger.table())
+    a.finalize()
+    b = _two_way("two-way-limit-low-b", 40, limit_warm_start=False, limit_tolerance=tol)
+    b.run(29)
+    b.exchange.warm_start = True
+    b.exchange.last_lowered = np.full(len(b.exchange.map.channels), 10.0)
+    b.step()
+    tb = _lowered(b.ledger.table())
+    b.finalize()
+    assert any(v[29] > 0 for v in ta.values())
+    for k in ta:
+        assert abs(tb[k][29] - ta[k][29]) <= 10 * tol, k
+
+
+def test_a_restart_carries_where_the_limit_starts(swatplus):
+    """Saved on a day the limit lowered stages, a run restarts with tomorrow's limit starting where the unbroken run's
+    does, so the two match bit for bit; without that state they don't."""
+    import json
+
+    n, k = 60, 30
+    a = _two_way("two-way-limit-unbroken", n)
+    a.run()
+    ta, ha = a.ledger.table(), a.mf6.head()
+    a.finalize()
+    assert any(v[k - 1] > 0 for v in _lowered(ta).values())  # the saved day had stages lowered
+
+    w = _two_way("two-way-limit-first", n)
+    w.run(k)
+    w.save(RUNS / "two-way-limit-state")
+    w.finalize()
+    saved = json.loads((RUNS / "two-way-limit-state" / "basin.json").read_text())
+    assert saved["limit_lowered"] is not None and any(saved["limit_lowered"])
+
+    b = _two_way("two-way-limit-restarted", n, restart=RUNS / "two-way-limit-state")
+    b.run()
+    tb, hb = b.ledger.table(), b.mf6.head()
+    b.finalize()
+    assert np.array_equal(ha, hb)
+    for key in ta:
+        assert np.array_equal(ta[key], tb[key], equal_nan=True), key
+
+    saved["limit_lowered"] = None  # the control: a restart that forgets where the limit starts
+    (RUNS / "two-way-limit-state" / "basin.json").write_text(json.dumps(saved))
+    c = _two_way("two-way-limit-forgot", n, restart=RUNS / "two-way-limit-state")
+    c.run()
+    hc = c.mf6.head()
+    c.finalize()
+    assert not np.array_equal(ha, hc)

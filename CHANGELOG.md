@@ -13,7 +13,14 @@
   it stands; a day that still doesn't converge stops with an error naming `outer_maximum`.
 - `[exchange] limit_tolerance` (m, default 0.001 as before): the supply limit's stages agree with the heads once none
   moves more than this in an outer iteration. On a 1,157-channel basin the stages chased the heads for 43 outer
-  iterations a day at 1 mm; at 1 cm it took 11, with gage flows within 1e-4 of 1 mm's.
+  iterations a day at 1 mm; at 1 cm it took 11, with gage flows within 1e-4 of 1 mm's, but one reservoir's lake lost
+  60% more over Jan-Sep 1991 (a lake's conductance is large), so check channels and lakes, not only gages, before
+  loosening it.
+- `[exchange] limit_warm_start` (default on): each day's supply limit starts its search from yesterday's lowered
+  stages. The answer is the same (the limit works from the day's own stages and puts a start that is too low back
+  up; tested), found in fewer outer iterations: on the same basin at 1 mm, 12.9 a day instead of 53.6 (35-54 in
+  summer), with gage flows within 2e-5 and that lake within 1% of the cold start's. Where each channel's search starts
+  is saved with a restart (`limit_lowered` in basin.json), so restarts still match the unbroken run bit for bit.
 
 ## 0.10.0 (2026-11-16)
 

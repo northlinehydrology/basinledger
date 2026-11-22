@@ -343,6 +343,7 @@ class Basin:
         self.due = {c: 0.0 for c in ex_channels}  # yesterday's exchange, m3 per channel, applied in SWAT+ today
         if saved and saved.get("exchange_due"):
             self.due = dict(saved["exchange_due"])
+        self._saved_limit = saved.get("limit_lowered") if saved else None
         if ex:
             for c in ex_channels:
                 if not self.direct_exchange:
@@ -916,6 +917,8 @@ class Basin:
         self.mf6.prepare_day()
         if self.cfg.exchange and self.exchange is None:
             self._build_exchange()
+            if self.exchange is not None and getattr(self, "_saved_limit", None) is not None:
+                self.exchange.set_limit_state(self._saved_limit)  # where a restart's first day's limit starts
         if not hasattr(self, "_gw_packages"):
             self._start_takeover()
         if self.transport:
@@ -1019,7 +1022,8 @@ class Basin:
             check_lake_package(mf, lp, ex.get("package", "riv"), drains[0] if drains else None)
             lakes = (lp, lake_map(ex["lakes"]["map"], self.cfg.folder, mf, lp, names, list(self.due)))
         self.exchange = StreamExchange(mf, ex.get("package", "riv"), cmap, drains, sfr=ex.get("sfr", "route"),
-                                       lakes=lakes, stage_tolerance=ex.get("limit_tolerance", STAGE_TOLERANCE_M))
+                                       lakes=lakes, stage_tolerance=ex.get("limit_tolerance", STAGE_TOLERANCE_M),
+                                       warm_start=ex.get("limit_warm_start", True))
         if any(m == "stage" for m, _ in self.exchange.modes.values()) and not self.sw.has(S.DEPTH):
             raise ValueError("SFR channels at a fixed stage take SWAT+'s channel depth (swatplus-bmi 0.2.0)")
         if self.exchange.kind == "sfr" and ex.get("limit") is False:
@@ -1085,7 +1089,8 @@ class Basin:
                     lakes = (lp, lake_map(ex["lakes"]["map"], self.cfg.folder, v, lp, names, cmap.channels,
                                           first_model=self.mf6.model))
             parts.append(StreamExchange(v, pkg, cmap, drains, sfr=ex.get("sfr", "route"), others=others,
-                                        lakes=lakes, stage_tolerance=ex.get("limit_tolerance", STAGE_TOLERANCE_M)))
+                                        lakes=lakes, stage_tolerance=ex.get("limit_tolerance", STAGE_TOLERANCE_M),
+                                        warm_start=ex.get("limit_warm_start", True)))
         if ex.get("drains") and all(p.drains is None for p in parts):
             raise ValueError(f"[exchange] drains: no coupled model has a package {ex['drains'].get('package', 'drn')!r}")
         if ex.get("lakes") and all(p.lakes is None for p in parts):
@@ -1318,6 +1323,7 @@ class Basin:
             "day": self.day, "ledger": self.ledger.state(), "series": self.series,
             "rule_memory": self.rule_memory,
             "exchange_due": self.due,
+            "limit_lowered": self.exchange.limit_state() if self.exchange is not None else None,
             "lakes_due": self.lakes.due if self.lakes is not None else None,
             "gw_soil_due": self.gw_soil.due.tolist() if getattr(self, "gw_soil", None) is not None else None,
         }))

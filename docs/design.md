@@ -588,7 +588,12 @@ through a river (RIV) or a streamflow routing (SFR) package, and that exchange r
   without today's exchange, which won't be there tomorrow when this one is taken. The limit works inside MODFLOW 6's
   solve: after each outer iteration, a channel taking more than that at the heads as they are has its stages
   lowered by one depth, no entry below its bottom (`limit_to_supply`), and the day is done when the solve has
-  converged and no stage moves more than 1 mm. The ledger records the depth (`exchange:<channel>:stage_lowered_m`).
+  converged and no stage moves more than `limit_tolerance` (1 mm by default). The ledger records the depth
+  (`exchange:<channel>:stage_lowered_m`). The stages move for at most half the solver's `outer_maximum` or 30 rounds
+  after convergence; the rest of the day solves them as they stand (0.10.1). Each day's search starts from yesterday's
+  lowered stages (`limit_warm_start`, on by default from 0.10.1), saved with a restart: the depths are lowered from
+  the day's own stages either way, so only the number of outer iterations changes (a 1,157-channel study basin's
+  summer days went from 35-54 to 7-13).
   Two earlier forms failed on a study basin: a limit set before the solve, at the day's starting heads (wells and
   drains beside a river pull its heads down during the day), and a limit that counted the channel's own gain from
   the day before, so it lost on alternate days what it had gained.

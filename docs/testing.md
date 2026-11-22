@@ -114,6 +114,13 @@ Built Nov 6, 2026, for water quality's stage 1 (`tests/test_transport.py`; desig
   at its well the day before, its returned mass is that intake, and the well's mass differs from it by the lag
   (0.03% over two years); a restart carries the concentrations bit for bit.
 
+The supply limit's search (0.10.1, `tests/test_exchange.py`): the channels bisected together give 0.10.0's
+one-by-one depths to 1e-12 m; a looser `limit_tolerance` takes no more outer iterations and one no stage can meet
+ends each day solved at the round cap; starting from yesterday's lowered stages finds the cold start's depths (to
+10 times a 1e-6 m tolerance, every day of 120) in fewer iterations, and a start 10 m too low is put back up; a
+restart saved on a day with stages lowered matches the unbroken run bit for bit, and one that forgets where the
+search starts doesn't.
+
 What it turned up:
 - `Modflow6.solve_day` with a callback (the supply limit's path) prepared, solved and finalized only the first
   solution, so a transport model was never solved there: it now solves every solution after the flow's.
