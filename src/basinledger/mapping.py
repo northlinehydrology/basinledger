@@ -97,13 +97,20 @@ class AreaMap:
     @classmethod
     def from_csv(cls, path: str | Path, objects: list[str], node_of) -> "AreaMap":
         """``node_of(*cell)`` -> 0-based reduced node (``Modflow6.node``); see ``cell_node`` for the columns."""
+        index = {o: i for i, o in enumerate(objects)}
         obj, node, area = [], [], []
+        nodes = {}  # each distinct cell's node, found once (a map from pixels repeats its cells)
         with open(path, newline="") as f:
             for r in csv.DictReader(f):
-                if r["object"] not in objects:
+                i = index.get(r["object"])
+                if i is None:
                     raise KeyError(f"{path}: {r['object']!r} is not an object of the source model")
-                obj.append(objects.index(r["object"]))
-                node.append(cell_node(r, node_of, path))
+                obj.append(i)
+                cell = tuple(r.get(k) for k in ("node", "layer", "row", "col", "icell2d", "model"))
+                n = nodes.get(cell)
+                if n is None:
+                    n = nodes[cell] = cell_node(r, node_of, path)
+                node.append(n)
                 area.append(float(r["area_m2"]))
         return cls(list(objects), np.array(obj, dtype=int), np.array(node, dtype=int), np.array(area))
 

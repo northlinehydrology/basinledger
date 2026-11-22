@@ -169,8 +169,9 @@ class GroundwaterToSoil:
         self.mf6 = None
         self.hru_area = np.asarray(hru_area, float)
         hrus = list(amap.objects)
+        index = {h: i for i, h in enumerate(hrus)}
         names = sw.names(INFLOW)
-        self.layer_hru = np.array([hrus.index(n.split(":")[0]) for n in names])
+        self.layer_hru = np.array([index[n.split(":")[0]] for n in names])
         self.bottom = sw.get(BOTTOM).astype(float)
         self.depth = profile_depth(self.layer_hru, self.bottom, len(hrus))
         self.due = np.zeros(len(names)) if due is None else np.asarray(due, float)  # m s-1 per layer, SWAT+'s next day

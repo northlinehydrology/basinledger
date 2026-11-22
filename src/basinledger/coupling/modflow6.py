@@ -375,35 +375,49 @@ class Modflow6:
         within the day: moving the boundary with the iterations, rather than after each convergence, takes about
         half as many iterations.
 
+        MODFLOW 6 keeps a record of each outer iteration up to its solver's ``outer_maximum`` (IMS) and fails past it
+        (a segmentation fault, not an error), so the day's outer iterations stay within it: the callback moves the
+        boundary for at most half of them (or ``max_rounds`` rounds after convergence), and the rest solve the
+        boundary as it then stands, so a day never ends on a moved, unsolved boundary (which wouldn't close).
+
         A simulation with transport models (``coupling/transport.py``) has a solution for each, solved after the
         flow's: ``do_time_step`` solves them all, and with a callback they are solved here once the flow is done."""
         if callback is None:
             self.api.do_time_step()
         else:
+            mx = self.outer_maximum(1)
             self.api.prepare_solve(1)
-            iterations, rounds = 0, 0
+            iterations, rounds, moving = 0, 0, True
             while True:
+                if iterations >= mx:
+                    raise RuntimeError(f"MODFLOW 6 didn't converge on day {self.day} within its solver's "
+                                       f"outer_maximum ({mx} outer iterations)")
                 converged = self.api.solve(1)
                 iterations += 1
-                changed = callback()
+                changed = moving and callback()
                 if converged and not changed:
                     break
                 if converged:
                     rounds += 1
-                    if rounds >= max_rounds:
-                        break
-                if iterations >= 2000:
-                    raise RuntimeError(f"MODFLOW 6 didn't converge on day {self.day}")
+                if moving and (rounds >= max_rounds or iterations >= mx // 2):
+                    moving = False  # the boundary as it stands is solved; the rest of the day's iterations leave it
             self.api.finalize_solve(1)
             for sol in range(2, self.api.get_subcomponent_count() + 1):
                 self._solve(sol)
         self.api.finalize_time_step()
         self.day += 1
 
-    def _solve(self, sol: int, max_iterations: int = 2000):
+    def outer_maximum(self, sol: int) -> int:
+        """Solution ``sol``'s outer_maximum (IMS), the most outer iterations MODFLOW 6 takes in a time step."""
+        try:
+            return int(self.api.get_value(f"SLN_{sol}/MXITER")[0])
+        except Exception:  # a build that doesn't expose it: the most this code asked for before 0.10.1
+            return 2000
+
+    def _solve(self, sol: int):
         """One solution's outer iterations to convergence (as modflowapi's ``do_time_step`` does for each)."""
         self.api.prepare_solve(sol)
-        for _ in range(max_iterations):
+        for _ in range(self.outer_maximum(sol)):
             if self.api.solve(sol):
                 break
         else:

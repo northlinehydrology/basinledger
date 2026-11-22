@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.10.1 (2026-11-22)
+
+- A map from pixels reads in seconds: `AreaMap.from_csv` finds each object by name in a table and each distinct cell's
+  node once (a 1,025,254-row HRU map took 173 s, most of it in list lookups), as does the soil link's layer index.
+- The supply limit bisects all its channels together (`exchange.limit_to_supply`): the same depths as one channel at a
+  time, to 1e-12 m (tested against 0.10.0's loop), at a seventh of the cost on 1,157 channels.
+- Fixed: a day whose boundary a coupling kept moving (the supply limit) could run past the solver's `outer_maximum`,
+  where MODFLOW 6 fails with a segmentation fault (0.10.0 did on the synthetic example's 25 at a tight stage
+  tolerance), or end on a moved boundary it hadn't solved, which the ledger refuses. The boundary now moves for at most
+  half of `outer_maximum` (read from MODFLOW 6) or 30 rounds after convergence, and the rest of the day solves it as
+  it stands; a day that still doesn't converge stops with an error naming `outer_maximum`.
+- `[exchange] limit_tolerance` (m, default 0.001 as before): the supply limit's stages agree with the heads once none
+  moves more than this in an outer iteration. On a 1,157-channel basin the stages chased the heads for 43 outer
+  iterations a day at 1 mm; at 1 cm it took 11, with gage flows within 1e-4 of 1 mm's, but one reservoir's lake lost
+  60% more over Jan-Sep 1991 (a lake's conductance is large), so check channels and lakes, not only gages, before
+  loosening it.
+- `[exchange] limit_warm_start` (default on): each day's supply limit starts its search from yesterday's lowered
+  stages. The answer is the same (the limit works from the day's own stages and puts a start that is too low back
+  up; tested), found in fewer outer iterations: on the same basin at 1 mm, 12.9 a day instead of 53.6 (35-54 in
+  summer), with gage flows within 2e-5 and that lake within 1% of the cold start's. Where each channel's search starts
+  is saved with a restart (`limit_lowered` in basin.json), so restarts still match the unbroken run bit for bit.
+
 ## 0.10.0 (2026-11-16)
 
 - `pip install basinledger` brings both models on Windows x86-64, Linux x86-64 (glibc 2.34 or later) and macOS 15 or
