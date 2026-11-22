@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.1 (2026-11-22)
 
 - A map from pixels reads in seconds: `AreaMap.from_csv` finds each object by name in a table and each distinct cell's
   node once (a 1,025,254-row HRU map took 173 s, most of it in list lookups), as does the soil link's layer index.
