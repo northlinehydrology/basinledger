@@ -6,6 +6,11 @@
   node once (a 1,025,254-row HRU map took 173 s, most of it in list lookups), as does the soil link's layer index.
 - The supply limit bisects all its channels together (`exchange.limit_to_supply`): the same depths as one channel at a
   time, to 1e-12 m (tested against 0.10.0's loop), at a seventh of the cost on 1,157 channels.
+- Fixed: a day whose boundary a coupling kept moving (the supply limit) could run past the solver's `outer_maximum`,
+  where MODFLOW 6 fails with a segmentation fault (0.10.0 did on the synthetic example's 25 at a tight stage
+  tolerance), or end on a moved boundary it hadn't solved, which the ledger refuses. The boundary now moves for at most
+  half of `outer_maximum` (read from MODFLOW 6) or 30 rounds after convergence, and the rest of the day solves it as
+  it stands; a day that still doesn't converge stops with an error naming `outer_maximum`.
 
 ## 0.10.0 (2026-11-16)
 
