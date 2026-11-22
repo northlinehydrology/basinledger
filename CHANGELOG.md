@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- A map from pixels reads in seconds: `AreaMap.from_csv` finds each object by name in a table and each distinct cell's
+  node once (a 1,025,254-row HRU map took 173 s, most of it in list lookups), as does the soil link's layer index.
+
 ## 0.10.0 (2026-11-16)
 
 - `pip install basinledger` brings both models on Windows x86-64, Linux x86-64 (glibc 2.34 or later) and macOS 15 or

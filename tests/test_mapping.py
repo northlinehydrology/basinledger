@@ -48,6 +48,29 @@ def test_from_csv(tmp_path):
         AreaMap.from_csv(f, ["a"], lambda l, r, c: 0)
 
 
+def test_from_csv_finds_each_cell_once(tmp_path):
+    """A map from pixels repeats its cells: each distinct cell's node is looked up once, and every row keeps its own
+    object, node and area; a cell the grid refuses is still refused."""
+    f = tmp_path / "map.csv"
+    f.write_text("object,layer,row,col,area_m2\na,0,0,1,100\nb,0,0,1,40\na,0,1,0,60\nb,0,0,1,5\n")
+    calls = []
+
+    def node_of(l, r, c):
+        calls.append((l, r, c))
+        return r * 2 + c
+
+    m = AreaMap.from_csv(f, ["a", "b"], node_of)
+    assert sorted(calls) == [(0, 0, 1), (0, 1, 0)]
+    assert m.obj.tolist() == [0, 1, 0, 1] and m.node.tolist() == [1, 1, 2, 1]
+    assert m.area.tolist() == [100.0, 40.0, 60.0, 5.0]
+
+    def inactive(l, r, c):
+        raise ValueError(f"cell {(l, r, c)} is inactive")
+
+    with pytest.raises(ValueError, match="inactive"):
+        AreaMap.from_csv(f, ["a", "b"], inactive)
+
+
 def test_cells_back_to_objects():
     m, cell_area = two_aquifers()
     drawdown = np.array([1.0, 2.0, 4.0, 8.0])
