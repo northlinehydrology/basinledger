@@ -455,10 +455,13 @@ class StreamExchange:
 
     def __init__(self, mf6: Modflow6, package: str, cmap: ChannelMap, drains: tuple[str, ChannelMap] | None = None,
                  *, sfr: str = "route", others: dict[tuple[str, str], ChannelMap] | None = None,
-                 lakes: tuple[str, ChannelMap] | None = None):
+                 lakes: tuple[str, ChannelMap] | None = None, stage_tolerance: float = STAGE_TOLERANCE_M):
         self.mf6, self.package, self.map = mf6, package, cmap
         self.drains = drains
         self.lakes = lakes
+        if not stage_tolerance > 0:
+            raise ValueError(f"[exchange] limit_tolerance must be a depth above 0 m, not {stage_tolerance!r}")
+        self.stage_tolerance = float(stage_tolerance)
         if drains is not None and drains[1].channels != cmap.channels:
             raise ValueError("the drains' channels must be the rivers' channels, in the same order")
         if lakes is not None:
@@ -607,7 +610,7 @@ class StreamExchange:
                 self.lowered = dict(zip(self.map.channels, d.tolist()))
             self.lake_lowered = dict(zip(self.map.channels, np.where(lake_channels, d, 0.0).tolist()))
             now = np.concatenate([st[:n] for st, (_, n, *_) in zip(stages, day)])
-            if np.max(np.abs(new - now), initial=0.0) <= STAGE_TOLERANCE_M:
+            if np.max(np.abs(new - now), initial=0.0) <= self.stage_tolerance:
                 return False
             at = 0
             for st, (pkg, n, *_) in zip(stages, day):

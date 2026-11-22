@@ -207,6 +207,49 @@ def test_the_limit_removes_the_shortfall(swatplus):
     assert (out[True][1] > 0).any()
 
 
+def test_limit_tolerance(swatplus):
+    """[exchange] limit_tolerance sets how far the limit's stages may still move when the day's solve ends: a looser one
+    takes no more outer iterations, a tolerance no stage can meet ends each day at the round cap with the moved stages
+    solved (so the day closes), and one that isn't a depth above 0 is refused."""
+    from basinledger.coupling import modflow6 as M
+
+    rounds = {}
+    real = M.Modflow6.solve_day
+
+    def counting(self, callback=None, max_rounds=30):
+        calls = [0]
+
+        def cb():
+            calls[0] += 1
+            return callback()
+        real(self, None if callback is None else cb, max_rounds)
+        rounds.setdefault(tol, []).append(calls[0])
+
+    M.Modflow6.solve_day = counting
+    try:
+        for tol in (0.001, 0.05, 1e-300):
+            cfg = C.load(ROOT / "examples" / "synthetic" / "two_way.toml")
+            cfg.run_folder = RUNS
+            cfg.exchange = dict(cfg.exchange, limit=True, limit_tolerance=tol)
+            b = Basin(cfg, run=f"two-way-tolerance-{tol:g}", days=DAYS)
+            b.run()  # the ledger is checked every day: a day ended on an unsolved boundary fails here
+            b.finalize()
+    finally:
+        M.Modflow6.solve_day = real
+    assert sum(rounds[0.05]) <= sum(rounds[0.001])
+    assert sum(rounds[1e-300]) > sum(rounds[0.001])
+    for bad in (0.0, -0.01):
+        cfg = C.load(ROOT / "examples" / "synthetic" / "two_way.toml")
+        cfg.run_folder = RUNS
+        cfg.exchange = dict(cfg.exchange, limit=True, limit_tolerance=bad)
+        b = Basin(cfg, run="two-way-tolerance-bad", days=2)
+        try:
+            with pytest.raises(ValueError, match="limit_tolerance"):
+                b.step()
+        finally:
+            b.finalize()
+
+
 def test_recharge_made_is_recharge_sent(two_way):
     """The two-way grid is exactly the aquifer's area: the map adds nothing and places everything."""
     t = two_way["table"]

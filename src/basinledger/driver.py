@@ -54,6 +54,7 @@ from .coupling import lakes as LK
 from .coupling import recharge as RC
 from .coupling import swatplus as S
 from .coupling.exchange import (
+    STAGE_TOLERANCE_M,
     ChannelMap,
     StreamExchange,
     StreamExchanges,
@@ -1018,7 +1019,7 @@ class Basin:
             check_lake_package(mf, lp, ex.get("package", "riv"), drains[0] if drains else None)
             lakes = (lp, lake_map(ex["lakes"]["map"], self.cfg.folder, mf, lp, names, list(self.due)))
         self.exchange = StreamExchange(mf, ex.get("package", "riv"), cmap, drains, sfr=ex.get("sfr", "route"),
-                                       lakes=lakes)
+                                       lakes=lakes, stage_tolerance=ex.get("limit_tolerance", STAGE_TOLERANCE_M))
         if any(m == "stage" for m, _ in self.exchange.modes.values()) and not self.sw.has(S.DEPTH):
             raise ValueError("SFR channels at a fixed stage take SWAT+'s channel depth (swatplus-bmi 0.2.0)")
         if self.exchange.kind == "sfr" and ex.get("limit") is False:
@@ -1084,7 +1085,7 @@ class Basin:
                     lakes = (lp, lake_map(ex["lakes"]["map"], self.cfg.folder, v, lp, names, cmap.channels,
                                           first_model=self.mf6.model))
             parts.append(StreamExchange(v, pkg, cmap, drains, sfr=ex.get("sfr", "route"), others=others,
-                                        lakes=lakes))
+                                        lakes=lakes, stage_tolerance=ex.get("limit_tolerance", STAGE_TOLERANCE_M)))
         if ex.get("drains") and all(p.drains is None for p in parts):
             raise ValueError(f"[exchange] drains: no coupled model has a package {ex['drains'].get('package', 'drn')!r}")
         if ex.get("lakes") and all(p.lakes is None for p in parts):

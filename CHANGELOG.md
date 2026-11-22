@@ -11,6 +11,9 @@
   tolerance), or end on a moved boundary it hadn't solved, which the ledger refuses. The boundary now moves for at most
   half of `outer_maximum` (read from MODFLOW 6) or 30 rounds after convergence, and the rest of the day solves it as
   it stands; a day that still doesn't converge stops with an error naming `outer_maximum`.
+- `[exchange] limit_tolerance` (m, default 0.001 as before): the supply limit's stages agree with the heads once none
+  moves more than this in an outer iteration. On a 1,157-channel basin the stages chased the heads for 43 outer
+  iterations a day at 1 mm; at 1 cm it took 11, with gage flows within 1e-4 of 1 mm's.
 
 ## 0.10.0 (2026-11-16)
 
