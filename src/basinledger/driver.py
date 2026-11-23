@@ -168,6 +168,8 @@ class Basin:
                 print_daily(swat_dir, ["lsunit_wb", "channel_sd"])
             if cfg.outputs.get("balance"):      # the whole-basin balance reads SWAT+'s daily land budget
                 print_daily(swat_dir, ["basin_wb", "channel_sd", "reservoir"])
+            if cfg.salt:  # salt reads SWAT+'s daily records, made only after print.prt's nyskip years (salt.py)
+                print_daily(swat_dir, [])
             prepare("swatplus", swat_dir)
             problems = S.coupling_problems(swat_dir, two_way=bool(ex))
             if problems:
@@ -387,6 +389,11 @@ class Basin:
             self._part(f"rule {r.get('name', r['kind'])}", lambda r=r: self._add_rule(r, users, users_by_name))
         self.rule_memory = {}
 
+        # salt: chloride through the land, the aquifer and the streams (salt.py)
+        self.salt = {}
+        for sp in cfg.salt:
+            self._part(f"[salt.{sp}]", lambda sp=sp: self._salt(cfg, sp, swat_dir, restart))
+
         # outputs
         out = cfg.outputs
         self.out_channels = out.get("channels", channels)
@@ -406,6 +413,10 @@ class Basin:
             for c in self._river_objects(cfg.rivers):
                 self.series[f"baseflow:{c}"] = []
         self.series.update({f"head:{n}": [] for n, _ in self.out_heads})
+        for sp, s in self.salt.items():  # each output channel's concentration (mg/L) and conductance (uS/cm)
+            self.series.update({f"{sp}_mg_l:{c}": [] for c in self.out_channels})
+            if s.s.conductance is not None:
+                self.series.update({f"conductance_us_cm:{c}": [] for c in self.out_channels})
 
         if saved:
             L.load(saved["ledger"])
@@ -500,6 +511,46 @@ class Basin:
         if "cell" in settings and self.mf6 is not None:
             self.mf6.node(*settings["cell"])  # the cell is checked now, not on the first day it's read
         self.rules.append(R.Rule(r.get("name", r["kind"]), fn, settings))
+
+    def _salt(self, cfg, sp: str, swat_dir, restart):
+        """A species' salt balance (salt.py), with its ledger's pairs and checks. What it can't carry yet is refused."""
+        from .salt import SaltBalance
+        why = [w for w, bad in (
+            ("a NextGen surface", cfg.surface != "swatplus"),
+            ("several groundwater models", len(cfg.mf6_models) > 1),
+            ("reservoirs coupled to LAK lakes ([[lakes]])", bool(cfg.lakes)),
+            ("irrigation from wells ([irrigation])", bool(cfg.irrigation)),
+            ("an exchange through SFR (needs SFT)", bool(cfg.exchange) and self.mf6 is not None
+             and package_type(self._view(cfg.exchange.get("model")), cfg.exchange.get("package", "riv")) == "sfr"),
+            ("swatplus-bmi before 0.2.0 (the exchange through routes)", not self.direct_exchange),
+        ) if bad]
+        if why:
+            raise NotImplementedError(f"[salt.{sp}] with {', '.join(why)} isn't built")
+        if sp not in self.transport or self.recharge is None:
+            raise ValueError(f"[salt.{sp}] needs the transport model gwt_{sp} and the recharge link")
+        direct: dict[str, list[str]] = {}
+        for u, _ in self.users:
+            k, name = kind(u.returns)
+            if k == "swat:point_source":
+                direct.setdefault(name, []).append(u.name)
+        saved = None
+        if restart:
+            with np.load(Path(restart) / f"salt_{sp}.npz") as z:
+                saved = {k: z[k] for k in z.files}
+        areas = S.hru_areas(swat_dir)
+        hru_area = np.array([areas[h] for h in self.sw.names(RC.PERCOLATION)])
+        s = SaltBalance(sp, cfg.salt[sp], self.sw, swat_dir, self.map, hru_area, cfg.places_of_use, direct,
+                        self.gw_soil, saved)
+        L, k = self.ledger, f"salt:{sp}:"
+        L.pair(k + "land:to_streams", k + "streams:from_land")
+        L.pair(k + "streams:losses", k + "aquifer:from_streams")
+        L.zero(k + "land:closure_share", atol=1e-9)
+        L.zero(k + "streams:closure_share", atol=1e-9)
+        L.zero(k + "closure_share", atol=1e-6)
+        if self.gw_soil is not None:
+            L.pair(k + "soil:sent", k + "soil:mapped")
+        self.salt[sp] = s
+        return s
 
     def _irrigation(self, cfg, swat_dir, wells):
         if not self.sw.has(IR.IRRIGATION):
@@ -722,12 +773,22 @@ class Basin:
             raise NotImplementedError("transport with an SFR exchange needs MODFLOW 6's SFT package for the "
                                       "streams' concentrations; not built")
         if self.exchange is not None and self.exchange.lakes is not None:
-            raise NotImplementedError("transport with [exchange] lakes needs the lakes' own concentrations for what "
-                                      "they lose to the aquifer; not built")
+            if set(self.transport) - set(self.salt):
+                raise NotImplementedError("transport with [exchange] lakes needs the lakes' own concentrations for "
+                                          "what they lose to the aquifer; built with [salt] (a lake takes its outlet "
+                                          "channel's), not with a stated concentration")
+            lp, lmap = self.exchange.lakes
+            streams.append((lp, lmap.entry_channel, lmap.channels))
+        # the packages whose entries lose stream water to the aquifer: the rivers' and the lakes' (drains only gain)
+        self._loss_packages = [x for x in streams if self.exchange is None or self.exchange.drains is None
+                               or x[0] != self.exchange.drains[0]]
         for sp, t in self.transport.items():
             if not t.takes_inflow(rp):
                 raise ValueError(f"{t.model.lower()}: the recharge package {rp!r} isn't an AUX source in SSM "
                                  "(add_transport's sources)")
+            if sp in self.salt:  # the losses' mass goes by a source the next day (salt.py)
+                self._salt_sources(sp, t)
+                continue
             if self.exchange is not None and not t.takes_inflow(self.exchange.package):
                 raise ValueError(f"{t.model.lower()}: the coupled river package {self.exchange.package!r} isn't an "
                                  "AUX source in SSM, so its losses would carry nothing")
@@ -747,10 +808,48 @@ class Basin:
             self._build_mass_links()
         rp, _, streams = self._mass_links
         for sp, t in self.transport.items():
+            if sp in self.salt:  # from the land and the streams today (salt.py)
+                self._salt_inflows(sp, t, rp, streams)
+                continue
             t.set_inflow(rp, float(self.cfg.transport[sp]["recharge"]))
             if self.exchange is not None:
                 t.set_inflow(self.exchange.package, float(self.cfg.transport[sp]["stream"]),
                              entries=self.exchange.map.entry_channel >= 0)
+
+    def _entry_nodes(self, t, package: str) -> np.ndarray:
+        """A flow package's entries' 0-based nodes as the transport model has them (-1 for none)."""
+        n = t._copy(package)
+        nb = int(t._get(f"FMI-FT{n}", "NBOUND")[0])
+        return t._get(f"FMI-FT{n}", "NODELIST")[:nb].astype(int) - 1
+
+    def _salt_sources(self, sp, t):
+        """A salted species' stream-loss source (salt.add_stream_sources): one entry on each coupled river's and lake's
+        entry, in order."""
+        from .salt import STREAM_SOURCES
+        if not self.mf6.si:
+            raise NotImplementedError(f"[salt.{sp}] in a MODFLOW 6 model in {self.mf6.units_summary()} isn't built")
+        if STREAM_SOURCES.upper() not in t.boundaries:
+            raise ValueError(f"{t.model.lower()} has no {STREAM_SOURCES!r} source (salt.add_stream_sources in the "
+                             "builder): the streams' losses carry their chloride into the aquifer by it")
+        want = np.concatenate([self._entry_nodes(t, pkg) for pkg, _, _ in self._loss_packages] or [np.zeros(0, int)])
+        nb = int(t._get(STREAM_SOURCES, "NBOUND")[0])
+        have = t._get(STREAM_SOURCES, "NODELIST")[:nb].astype(int) - 1
+        if not np.array_equal(want, have):
+            raise ValueError(f"{t.model.lower()}'s {STREAM_SOURCES!r} source must have one entry on each entry of "
+                             f"{', '.join(p for p, _, _ in self._loss_packages)}, in order ({len(have)} entries, "
+                             f"{len(want)} wanted)")
+
+    def _salt_inflows(self, sp, t, rp, streams):
+        """The recharge's concentration per entry, each cell's share of the HRUs' percolation mass; the streams'
+        losses carry none with their water, and yesterday's losses' mass enters by the stream-loss source."""
+        from .salt import STREAM_SOURCES
+        s = self.salt[sp]
+        t.set_inflow(rp, s.recharge_concentration(self._entry_nodes(t, rp)))
+        for pkg, _, _ in self._loss_packages:
+            if t.takes_inflow(pkg):
+                t.set_inflow(pkg, 0.0)
+        nb = int(t._get(STREAM_SOURCES, "NBOUND")[0])
+        self.mf6.set("SMASSRATE", STREAM_SOURCES, s.stream_sources(nb), model=t.model)
 
     def _transport_accounts(self, L):
         """Each species' mass for the day, kg: in with recharge (as sent: the stated concentration times the volume
@@ -762,7 +861,9 @@ class Basin:
             b = t.budget(rp, wells, streams)
             x = t.concentration()
             k = f"transport:{sp}:"
-            L.enter(k + "recharge:sent", float(self.cfg.transport[sp]["recharge"]) * L.today("recharge:sent"))
+            salt = self.salt.get(sp)
+            L.enter(k + "recharge:sent", salt.perc_kg if salt is not None
+                    else float(self.cfg.transport[sp]["recharge"]) * L.today("recharge:sent"))
             L.enter(k + "recharge:received", b.recharge)
             for w, m in b.wells.items():
                 L.enter(k + f"well:{w}:withdrawn", m)
@@ -770,11 +871,17 @@ class Basin:
             for c in b.to_stream:
                 L.enter(k + f"stream:{c}:to_stream", b.to_stream[c])
                 L.enter(k + f"stream:{c}:leakage_received", b.from_stream[c])
-                L.enter(k + f"stream:{c}:leakage_sent", float(self.cfg.transport[sp]["stream"]) * b.leakage_m3[c])
+                # with salt, the losses' water carries none; its mass enters by a source the next day (salt.py)
+                c_loss = 0.0 if salt is not None else float(self.cfg.transport[sp]["stream"])
+                L.enter(k + f"stream:{c}:leakage_sent", c_loss * b.leakage_m3[c])
             for p, m in b.boundary.items():
                 L.enter(k + f"boundary:{p}", m)
             L.enter(k + "storage_release", b.storage_release)
             L.enter(k + "closure_share", b.closure_share)
+            if salt is not None:
+                losses = [(t._entries(pkg, x)[0], ec, ch) for pkg, ec, ch in self._loss_packages]
+                salt.after_groundwater(L, b, self.mf6, self.gw_soil.package if self.gw_soil is not None else None, x,
+                                       losses)
         self._set_intakes()
 
     def _well_cell(self, name: str):
@@ -895,6 +1002,9 @@ class Basin:
             got = dict(zip(self.sw.names(S.GW_EXCHANGE), self.sw.get(S.GW_EXCHANGE) * DAY))
             self._exchanged = {c: got[c] for c in self.due}
 
+        for s in self.salt.values():  # the land and the streams, from SWAT+'s day (salt.py)
+            s.after_surface(L, self.start + dt.timedelta(days=d))
+
         # 5. MODFLOW 6
         if self.mf6 is not None:
             self._modflow_day(L, rt)
@@ -910,6 +1020,11 @@ class Basin:
             h = self.mf6.head()
             for n, node in self.out_heads:
                 self.series[f"head:{n}"].append(float(h[node]))
+        for sp, s in self.salt.items():
+            for c in self.out_channels:
+                self.series[f"{sp}_mg_l:{c}"].append(s.concentration(c) * 1000.0)
+                if s.s.conductance is not None:
+                    self.series[f"conductance_us_cm:{c}"].append(s.conductance(c))
         L.close_day()
         self.day += 1
 
@@ -1319,6 +1434,8 @@ class Basin:
                 np.savez(folder / "packages.npz", **{k.replace("/", "|"): v for k, v in state.items()})
             for sp, t in self.transport.items():
                 np.save(folder / f"concentration_{sp}.npy", t.concentration())
+        for sp, s in self.salt.items():
+            np.savez(folder / f"salt_{sp}.npz", **s.state())
         (folder / "basin.json").write_text(json.dumps({
             "day": self.day, "ledger": self.ledger.state(), "series": self.series,
             "rule_memory": self.rule_memory,
