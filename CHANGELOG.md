@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- Groundwater transport, stage 2 (docs/design.md, Water quality across links): nitrate and soluble phosphorus travel
+  with the water through every link between SWAT+ and MODFLOW 6, each link's mass in the ledger as sent and received
+  and every day's mass closing (`coupling/surface_mass.py`; `[transport.<species>] surface = "no3"` or `"solp"`,
+  `recharge = "swatplus"`, `stream = "swatplus"`; `examples/synthetic/nitrate.toml`):
+  - recharge carries SWAT+'s own leached mass HRU by HRU (`hru_pw:percn`, `hru_ls:lchlabp`, swatplus-bmi's reads of
+    SWAT+'s daily records), on the cells the HRU's water goes to, in the same shares; nitrate's is held to SWAT+'s own
+    aquifer recharge mass every day. Per aquifer only with `[recharge] source = "aquifer"`, with a warning; refused
+    for soluble P, which SWAT+ 62.0.1 leaves out of the aquifer's recharge;
+  - the aquifer's discharge to a channel (rivers' gains, drains) carries its cells' concentrations into SWAT+ the next
+    day with the gain; a loss takes SWAT+'s own outflow concentration, and its mass reaches the loss cells the day
+    after its water, through a mass source on the cells (`add_transport(..., stream_mass=[...])`), with whatever SWAT+
+    didn't keep of the aquifer's discharge, so the link closes exactly;
+  - the soil link's water carries its cells' concentrations into SWAT+'s soil layers, split as the water is;
+  - lakes at a fixed stage (`[exchange] lakes`) are their outlet channel's, as their water is (still refused with a
+    stated stream concentration);
+  - SWAT+ makes its daily records from the first year in a run's copy (`print.prt` nyskip 0) when a species is
+    carried, since those reads are NaN in skipped years.
+- First-order decay in the transport model (`add_transport(..., decay=, decay_sorbed=)`, d-1 [A], denitrification for
+  nitrate), no longer refused: the mass decayed is booked (`transport:<sp>:decay`) and the day still closes. Linear
+  sorption's release from the sorbed store is booked on its own (`sorbed_release`); Kd may be given by zone.
+- `Basin.transport_steady_state`: each species' steady state under a run's mean flows and inflows (advection, mixing
+  and decay; dispersion left out [A]), to start a run from (`Basin(..., concentrations=...)`).
+- Fixed: SWAT+'s aquifers sent their channels soluble P in two-way mode: SWAT+ 62.0.1 sends the day's recharge volume
+  times the aquifer's `sol_p` with no water when return flow is off. `aquifer_pass_through` sets `sol_p` to 0, and
+  a project or calibration that sets it is refused.
+- The transport solve's residual criterion is 1e-8 kg d-1 (was 1e-10): at 1e-10 round-off held the residual above it
+  on Plaster Creek's 13,215 cells (day 47) and on the synthetic grid with sorption. The ledger's closure check is
+  unchanged.
+- Every MODFLOW 6 solve is checked for non-finite heads, after each outer iteration of a day with a coupling's callback
+  and after a day solved whole, and stops at the first, naming the day and iteration (`Modflow6._check_finite`). A
+  linear solver that breaks down can return NaN for every head and still report the iteration as converged: in a
+  Rappahannock calibration, COMPLEXITY MODERATE's modified ILU (RELAXATION_FACTOR 0.97) did so for 16 of 40 prior
+  realizations, and the NaN surfaced only a day later, in the groundwater-to-soil link. The message names the IMS
+  settings that usually solve it (RELAXATION_FACTOR 0, or COMPLEXITY COMPLEX).
 - Salt (`salt.py`, `[salt.<species>]`, docs/design.md "Salt"): chloride carried through every water path of a coupled
   SWAT+ / MODFLOW 6 run, each day, as a conservative mass, since SWAT+ 62.0.1's salt module can't run with aquifers
   or point sources. A well-mixed store per HRU (deposition in precipitation, road salt on snow and ice days or a

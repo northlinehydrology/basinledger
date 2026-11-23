@@ -1,0 +1,60 @@
+name = "synthetic-nitrate"
+description = """The two-way synthetic example (two_way.toml) with nitrate and soluble phosphorus carried through every
+link between SWAT+ and MODFLOW 6 (stage 2 of the transport, coupling/surface_mass.py): SWAT+'s leached mass into the
+aquifer HRU by HRU with the recharge, the aquifer's concentration back to the channel with the river's gains and the
+drains' seepage and up into the soil with the soil link, and the channel's own concentration with the river's losses.
+Nitrate decays in the aquifer (denitrification, first order), phosphorus sorbs (linear). For the engine's tests only:
+the rates, Kd and starting concentrations are round numbers, not data."""
+
+[run]
+folder = "../../runs/synthetic-nitrate"
+
+[swatplus]
+project = "{swatplus_refdata}/Osu_1hru"
+
+[modflow6]
+builder = "model:build_small"
+# land surface 88.5 m (half a metre above the river) so the soil link moves water; drains at 87.5 m
+# porosity 0.25 [A], longitudinal dispersivity 5 m [A]
+# nitrate: starting 2 mg/L as N [A], denitrification 0.001 d-1 (a half-life of 1.9 years) [A]
+# soluble P: starting 0.02 mg/L [A], Kd 2 L/kg (2e-3 m3 kg-1) [A], bulk density 1,700 kg m-3 [A]
+builder_args = {top = 88.5, soil = "drn", drain_elevation = 87.5, transport = {nitrate = {porosity = 0.25, dispersivity = 5.0, strt = 0.002, decay = 0.001, stream_side = true}, phosphorus = {porosity = 0.25, dispersivity = 5.0, strt = 0.00002, sorption = {distcoef = 0.002, bulk_density = 1700.0}, stream_side = true}}}
+
+[recharge]
+source = "hru"
+map = "all:hru0001"
+area_rtol = 1e-6
+
+[exchange]
+package = "riv"
+map = "all:cha01"
+drains = {package = "drn", map = "all:cha01"}
+
+[groundwater_to_soil]
+rule = "drain"
+cap = "none"
+package = "soil"
+
+[transport.nitrate]
+surface = "no3"
+recharge = "swatplus"
+stream = "swatplus"
+
+[transport.phosphorus]
+surface = "solp"
+recharge = "swatplus"
+stream = "swatplus"
+
+[[wells]]
+name = "pw1"
+cell = [0, 5, 6]
+
+[[users]]
+name = "plant"
+component = "basinledger.testing:SyntheticUser"
+config = "small_user.toml"
+withdrawal = "well:pw1"
+return = "outfall:offsite"
+
+[outputs]
+heads = [{name = "pw1", cell = [0, 5, 6]}]

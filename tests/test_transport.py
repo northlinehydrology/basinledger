@@ -170,7 +170,8 @@ def test_uniform_recharge_concentration_reaches_everywhere(libmf6):
         mf.solve_day()
         assert (mf.simvals("riv") <= 0).all()  # the river only gains
         b = t.budget("rch", {"w": ("wel", 0)}, [("riv", np.zeros(10, int), ["r"])])
-        assert abs(b.closure_share) < 1e-9
+        # the transport solve's residual criterion is 1e-8 kg d-1 (add_transport), on 10 kg d-1 gross here
+        assert abs(b.closure_share) < 1e-8
     x = t.concentration()
     mf.finalize()
     np.testing.assert_allclose(x, c0, rtol=1e-8)
