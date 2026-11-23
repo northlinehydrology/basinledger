@@ -10,7 +10,8 @@ Units (no models):
 
 On the models (examples/synthetic/salt.toml; SWAT+ and libmf6):
 - every account closes every day, the land's, the streams' and the whole system's, with the links sent = received;
-- the recharge's mass is the land's, and GWT takes it whole; the gains reach the stream the next day;
+- the recharge's mass is the land's, and GWT takes it whole; the gains reach the stream the next day; lakes at a
+  fixed stage carry it through their outlet channel;
 - a pulse of road salt arrives in the stream, passes through, and the rest stays in the land and the aquifer, the
   difference from a run without it adding to the pulse every day;
 - a restart carries the salt bit for bit.
@@ -420,3 +421,20 @@ def test_config_refuses_salt_it_cant_carry(tmp_path):
         bad.write_text(change(text).replace("intake_user.toml", str(SALT.parent / "intake_user.toml")))
         with pytest.raises(ValueError, match=match):
             C.load(bad)
+
+
+def test_lakes_at_a_fixed_stage_carry_salt(swatplus):
+    """A lake at a fixed stage (the Virginia study's form) couples through its outlet channel: its gains join the
+    channel's the next day at the cells' concentration, and its losses take the channel's, by the stream-loss source's
+    entries on the lake's cells."""
+    cfg = salt_config()
+    cfg.mf6_builder_args = dict(cfg.mf6_builder_args, lake_stage=88.5)
+    cfg.exchange = dict(cfg.exchange, lakes={"package": "lakes", "map": "maps/lakes.csv"})
+    r = salt_run(cfg, "salt-lakes", 120)
+    t = r["table"]
+    k = "salt:chloride:"
+    assert np.nanmax(np.abs(t["exchange:cha01:lakes"])) > 0
+    assert np.nanmax(np.abs(t[k + "closure_share"])) < 1e-9
+    assert np.nansum(t[k + "aquifer:from_streams"]) > 0
+    np.testing.assert_allclose(t[k + "streams:losses"], t[k + "aquifer:from_streams"], rtol=1e-9, atol=1e-12)
+    assert len(r["salt"].loss_q) == 10 + 4  # the river's entries, then the lake's
