@@ -550,8 +550,9 @@ def test_config_refuses_salt_it_cant_carry(tmp_path):
             (lambda s: s.replace('timing = "fertilizer"', 'timing = "weekly"'), "timing is"),
             (lambda s: s.replace("slopes = {chloride", "slopes = {nitrate = 1.0, chloride"), "conductance slopes")):
         bad = tmp_path / "bad.toml"
-        bad.write_text(change(text).replace("intake_user.toml", str(SALT.parent / "intake_user.toml"))
-                       .replace('"maps/', f'"{SALT.parent}/maps/'))
+        # forward slashes: a Windows path's backslashes are escapes in a TOML string
+        bad.write_text(change(text).replace("intake_user.toml", (SALT.parent / "intake_user.toml").as_posix())
+                       .replace('"maps/', f'"{SALT.parent.as_posix()}/maps/'))
         with pytest.raises(ValueError, match=match):
             C.load(bad)
 
