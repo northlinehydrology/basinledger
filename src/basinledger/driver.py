@@ -874,10 +874,11 @@ class Basin:
             if s.weathering_entries is None:  # the builder's rates at full saturation and their cells, read once
                 n = int(t._get(WEATHERING, "NBOUND")[0])
                 s.weathering_entries = (t._get(WEATHERING, "SMASSRATE")[:n].astype(float),
-                                 t._get(WEATHERING, "NODELIST")[:n].astype(int) - 1)
-            m = self.mf6
-            first = lambda: start_saturation(m.head(), m.node_values("TOP", "DIS"), m.node_values("BOT", "DIS"),  # noqa: E731
-                                             m.get_model_units("ICELLTYPE", m.model, "NPF"))
+                                        t._get(WEATHERING, "NODELIST")[:n].astype(int) - 1)
+
+            def first(m=self.mf6):
+                return start_saturation(m.head(), m.node_values("TOP", "DIS"), m.node_values("BOT", "DIS"),
+                                        m.get_model_units("ICELLTYPE", m.model, "NPF"))
             self.mf6.set("SMASSRATE", WEATHERING, s.weathering_rates(*s.weathering_entries, first), model=t.model)
 
     def _transport_accounts(self, L):
