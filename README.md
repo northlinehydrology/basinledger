@@ -68,6 +68,9 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   the cells as its water is, GWT in the aquifer with weathering by zone, and a mass balance for every channel and
   reservoir upstream first; input groups scaled by multipliers a calibration can fit; specific conductance as a
   linear combination of the species, for scoring;
+- replay (`[replay] record`, `--replay`): a coupled run's flow side recorded once, compactly, and the salt run again
+  from it as often as a calibration needs, with MODFLOW 6's flow model left unsolved and no SWAT+: bit for bit from a
+  float64 record, to float32's rounding from the default; anything that would change the flow refused;
 - NextGen as the surface model: a finished NGIAB run replayed day by day, with users on its own hourly forcing;
 - MODFLOW 6 recharge from NextGen (CFE's percolation), used as interim recharge in the Plaster Creek example;
 - the ledger and the command line, with `check`: every problem an example's start-up finds, without running a day
@@ -208,7 +211,12 @@ uv run python -m basinledger run examples/synthetic/two_way.toml --restart runs/
 uv run python -m basinledger status examples/synthetic/surface.toml           # calibrated, or a screening run
 uv run python -m basinledger check examples/synthetic/sfr.toml                # every problem the start-up finds
 uv run python -m basinledger forward basin.toml parameters.csv observations.csv simulated.csv --run-folder runs
+uv run python -m basinledger run examples/synthetic/salt.toml --replay runs/flow-record   # the salt alone, from a record
 ```
+
+A run with `[replay] record = "runs/flow-record"` in its config records its flow side; `--replay` (on `run` and
+`forward`) then runs only the salt from it, with the salt's settings and parameters changed and nothing else
+(docs/design.md, Replay).
 
 `forward` is the forward model PEST++ runs. `calibration.write_pest_files(basin.toml, parameters.csv,
 observations.csv, folder)` writes the control file, the template and the instructions that call it.
@@ -325,6 +333,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Depletion | MODFLOW 6 through the coupling within 2% of Glover and Balmer (1954) for a well beside a straight river |
 | Stream temperature | each reach's heat balance closes; a return mixes at its own temperature |
 | Salt | for each of two species, the land's store, every water body and the whole system (with GWT's storage) close every day; conductance from both species; each calendar year's road salt and each source's amount applied whole, on its days; multipliers scale an input group's mass; land to streams, recharge to GWT, the streams' losses to the aquifer's source and the soil link sent = received; the precipitation's concentration (raised by evapotranspiration, as the chloride mass balance has it) and a uniform inflow concentration reached at steady state; recharge mass placed on the cells as the water is; a pulse of road salt arrives in the stream and the rest stays in the land and the aquifer, the difference from a run without it adding to the pulse every day; gains reach the stream the next day; lakes at a fixed stage carry it; restarts bit for bit |
+| Replay | from a float64 record, the coupled run's concentrations, salt, transport and user lines bit for bit every day (dry cells too); from float32, within 1e-6; a salt multiplier changes only the salt; porosity and weathering may change; a SWAT+ or MODFLOW 6 parameter, the flow model's files, the users, starting heads or too many days refused; restarts bit for bit, from a replay's state or a full run's; a recording run restarted carries its record on day for day; the forward model replays |
 | Weather | a series equal to the files' records gives the files' run bit for bit; a run's first days are written into its files, other columns kept; a change reaches SWAT+'s records from the run's first day; a case from a warm-up takes its own weather from the first day that can be set; users read the series; a series that ends early stops the run |
 | Groundwater into the soil | for each rule and cap, what leaves MODFLOW 6's cells is what SWAT+'s layers receive the next day; the whole basin closes; a restart carries what is due; a water table below every profile changes nothing, bit for bit |
 | Restarts and scenarios | saved after a warm-up and carried on, runs match unbroken runs bit for bit; a case with no change matches the baseline |
