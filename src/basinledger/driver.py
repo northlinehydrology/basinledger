@@ -125,7 +125,8 @@ class Basin:
         from .calibration import apply_parameters, merged, read_parameters
         own = read_parameters(cfg.calibration_parameters) if cfg.calibration_parameters else []
         self.parameters = merged(own, parameters or [])
-        unused = sorted({q.model for q in self.parameters} - set(cfg.models) - {"user"})
+        ours = {"user"} | ({"salt"} if cfg.salt else set())  # a user's, or salt's input multipliers
+        unused = sorted({q.model for q in self.parameters} - set(cfg.models) - ours)
         if unused:
             self._problem(ValueError(f"parameters for {', '.join(unused)}, which this example doesn't run "
                                      f"({cfg.models})"))
@@ -413,10 +414,10 @@ class Basin:
             for c in self._river_objects(cfg.rivers):
                 self.series[f"baseflow:{c}"] = []
         self.series.update({f"head:{n}": [] for n, _ in self.out_heads})
-        for sp, s in self.salt.items():  # each output channel's concentration (mg/L) and conductance (uS/cm)
+        for sp in self.salt:  # each output channel's concentration (mg/L) and conductance (uS/cm)
             self.series.update({f"{sp}_mg_l:{c}": [] for c in self.out_channels})
-            if s.s.conductance is not None:
-                self.series.update({f"conductance_us_cm:{c}": [] for c in self.out_channels})
+        if self.salt and cfg.salt_conductance is not None:
+            self.series.update({f"conductance_us_cm:{c}": [] for c in self.out_channels})
 
         if saved:
             L.load(saved["ledger"])
@@ -528,19 +529,32 @@ class Basin:
             raise NotImplementedError(f"[salt.{sp}] with {', '.join(why)} isn't built")
         if sp not in self.transport or self.recharge is None:
             raise ValueError(f"[salt.{sp}] needs the transport model gwt_{sp} and the recharge link")
-        direct: dict[str, list[str]] = {}
-        for u, _ in self.users:
+        direct: dict[str, list[tuple[str, set]]] = {}  # point source -> its direct users and what they report
+        for u, wu in self.users:
             k, name = kind(u.returns)
             if k == "swat:point_source":
-                direct.setdefault(name, []).append(u.name)
+                direct.setdefault(name, []).append((u.name, set(wu.constituents)))
         saved = None
         if restart:
             with np.load(Path(restart) / f"salt_{sp}.npz") as z:
                 saved = {k: z[k] for k in z.files}
         areas = S.hru_areas(swat_dir)
         hru_area = np.array([areas[h] for h in self.sw.names(RC.PERCOLATION)])
-        s = SaltBalance(sp, cfg.salt[sp], self.sw, swat_dir, self.map, hru_area, cfg.places_of_use, direct,
-                        self.gw_soil, saved)
+        settings = cfg.salt[sp]
+        mult = {}  # calibration's multipliers (model salt, target <species>:<group>), over the config's
+        for q in self.parameters:
+            if q.model == "salt":
+                species, _, group = q.target.partition(":")
+                if species not in cfg.salt:
+                    raise ValueError(f"parameter {q.name}: no [salt.{species}] (target <species>:<group>)")
+                if species == sp:
+                    mult[group] = q.value
+        if mult:
+            import dataclasses
+            settings.check_groups(mult, f"[salt.{sp}] calibration parameters")
+            settings = dataclasses.replace(settings, multipliers={**settings.multipliers, **mult})
+        s = SaltBalance(sp, settings, self.sw, swat_dir, self.map, hru_area, cfg.places_of_use, direct,
+                        self.gw_soil, saved, start=self.start, days=self.days)
         L, k = self.ledger, f"salt:{sp}:"
         L.pair(k + "land:to_streams", k + "streams:from_land")
         L.pair(k + "streams:losses", k + "aquifer:from_streams")
@@ -1002,8 +1016,9 @@ class Basin:
             got = dict(zip(self.sw.names(S.GW_EXCHANGE), self.sw.get(S.GW_EXCHANGE) * DAY))
             self._exchanged = {c: got[c] for c in self.due}
 
+        reads = {}  # SWAT+'s day, read once for every species
         for s in self.salt.values():  # the land and the streams, from SWAT+'s day (salt.py)
-            s.after_surface(L, self.start + dt.timedelta(days=d))
+            s.after_surface(L, self.start + dt.timedelta(days=d), reads)
 
         # 5. MODFLOW 6
         if self.mf6 is not None:
@@ -1020,11 +1035,15 @@ class Basin:
             h = self.mf6.head()
             for n, node in self.out_heads:
                 self.series[f"head:{n}"].append(float(h[node]))
-        for sp, s in self.salt.items():
+        if self.salt:
+            from .salt import conductance
+            sc = self.cfg.salt_conductance
             for c in self.out_channels:
-                self.series[f"{sp}_mg_l:{c}"].append(s.concentration(c) * 1000.0)
-                if s.s.conductance is not None:
-                    self.series[f"conductance_us_cm:{c}"].append(s.conductance(c))
+                mg_l = {sp: s.concentration(c) * 1000.0 for sp, s in self.salt.items()}
+                for sp, v in mg_l.items():
+                    self.series[f"{sp}_mg_l:{c}"].append(v)
+                if sc is not None:
+                    self.series[f"conductance_us_cm:{c}"].append(conductance(sc["base"], sc["slopes"], mg_l))
         L.close_day()
         self.day += 1
 
