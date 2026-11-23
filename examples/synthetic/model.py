@@ -53,7 +53,8 @@ LAKE_CONDUCTANCE = 10.0  # m2 d-1 per cell [A]
 def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevation: float | None = None,
                 transport: dict | None = None, top: float = 100.0, soil: str | None = None,
                 soil_conductance: float = 10.0, lake_stage: float | None = None,
-                weathering: dict | None = None, stream_sources: bool = False) -> Path:
+                weathering: dict | None = None, stream_sources: bool = False, upper: float | None = None,
+                newton: bool = False, strt: float = RIVER_STAGE) -> Path:
     """A 10 ha aquifer under Osu_1hru for the two-way exchange: 10 x 10 cells, the river along the west edge.
     Thinner and less permeable than the large grid so the river can lose water when the well pumps hard.
     ``drain_elevation``: seepage cells (a drain) along the second column at that elevation, for the coupled drains'
@@ -64,22 +65,28 @@ def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevatio
     ``lake_stage``: a lake on LAKE_CELLS at that fixed surface (m), a RIV package named "lakes", for the coupled
     lakes' tests. ``weathering``: species -> kg per m3 of aquifer a year, a mass source in every cell of its transport
     model (salt.add_weathering) [A]. ``stream_sources``: each transport model's source for the river's losses, for
-    [salt] (salt.add_stream_sources)."""
+    [salt] (salt.add_stream_sources). ``upper``: a second layer below a thin convertible top one whose bottom is at
+    that elevation (m), so the top layer is dry where the water table is below it (the river then in the second
+    layer); ``newton``: the Newton-Raphson
+    formulation, which keeps dry cells active with no water (as the Virginia study's model has them), for weathering's
+    tests in dry cells. ``strt``: the starting head (m), the river's stage unless given."""
     ws = Path(workspace)
     sim = flopy.mf6.MFSimulation(sim_name="synthetic_small", sim_ws=ws, exe_name="mf6")
     flopy.mf6.ModflowTdis(sim, time_units="days", start_date_time=start.isoformat(),
                           nper=1, perioddata=[(float(days), days, 1.0)])
     flopy.mf6.ModflowIms(sim, complexity="simple", outer_dvclose=1e-8, inner_dvclose=1e-10,
-                         rcloserecord=[1e-8, "strict"])
-    gwf = flopy.mf6.ModflowGwf(sim, modelname="gwf", save_flows=True)
-    flopy.mf6.ModflowGwfdis(gwf, length_units="meters", nlay=1, nrow=10, ncol=10, delr=SMALL_CELL, delc=SMALL_CELL,
-                            top=top, botm=70.0)
-    flopy.mf6.ModflowGwfnpf(gwf, icelltype=0, k=2.0)
+                         rcloserecord=[1e-8, "strict"], **({"linear_acceleration": "bicgstab"} if newton else {}))
+    gwf = flopy.mf6.ModflowGwf(sim, modelname="gwf", save_flows=True, **({"newtonoptions": "newton"} if newton else {}))
+    nlay = 1 if upper is None else 2
+    flopy.mf6.ModflowGwfdis(gwf, length_units="meters", nlay=nlay, nrow=10, ncol=10, delr=SMALL_CELL,
+                            delc=SMALL_CELL, top=top, botm=70.0 if upper is None else [upper, 70.0])
+    flopy.mf6.ModflowGwfnpf(gwf, icelltype=0 if upper is None else [1, 0], k=2.0)
     flopy.mf6.ModflowGwfsto(gwf, iconvert=1, sy=0.15, ss=1e-5, transient={0: True})
-    flopy.mf6.ModflowGwfic(gwf, strt=RIVER_STAGE)
+    flopy.mf6.ModflowGwfic(gwf, strt=strt)
     flopy.mf6.ModflowGwfrcha(gwf, recharge=0.0, pname="rch")
     flopy.mf6.ModflowGwfwel(gwf, stress_period_data={0: [(SMALL_WELL, 0.0)]}, pname="wel")
-    flopy.mf6.ModflowGwfriv(gwf, stress_period_data={0: [((0, r, 0), RIVER_STAGE, 20.0, RIVER_STAGE - 2.0)
+    river = 0 if upper is None else 1  # below a top layer that's dry at the river's stage
+    flopy.mf6.ModflowGwfriv(gwf, stress_period_data={0: [((river, r, 0), RIVER_STAGE, 20.0, RIVER_STAGE - 2.0)
                                                          for r in range(10)]}, pname="riv")
     if drain_elevation is not None:
         flopy.mf6.ModflowGwfdrn(gwf, stress_period_data={0: [((0, r, 1), drain_elevation, 5.0) for r in range(10)]},
