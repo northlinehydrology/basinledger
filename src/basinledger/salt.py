@@ -1215,7 +1215,8 @@ class SaltBalance:
                 frac = np.divide(cell, planned, out=np.zeros_like(cell), where=planned > 0)
                 row = gs.row_planned * frac[gs.map.node]
             self.soil_due = np.bincount(gs.map.obj, weights=row * x[gs.map.node], minlength=len(self.hrus))
-            soil_sent = -b.boundary.get(soil_package.lower(), 0.0)
+            # the transport budget books the soil link's mass on its own (MassBudget.gw_soil, out of the aquifer)
+            soil_sent = b.gw_soil
             L.enter(k + "soil:sent", soil_sent)
             L.enter(k + "soil:mapped", float(self.soil_due.sum()))
         L.enter(k + "transit:gains", float(self.gain_due.sum()))
