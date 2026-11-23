@@ -101,6 +101,12 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     stream = 0.03                       #   kg m-3 of water a coupled river loses to the aquifer [A] (with [exchange])
     # model = "gwt_chloride"            #   the GWT model's name, if not gwt_<species>
 
+    [transport.nitrate]                 # a species SWAT+ carries (coupling/surface_mass.py), stage 2:
+    surface = "no3"                     #   SWAT+'s species through swatplus-bmi: "no3" or "solp" (default the name)
+    recharge = "swatplus"               #   SWAT+'s leached mass, HRU by HRU with [recharge] source = "hru"
+    stream = "swatplus"                 #   gains, drains and the soil link carry the cells' concentrations into SWAT+,
+                                        #   losses SWAT+'s own (needs add_transport's stream_mass on rivers, drains)
+
     [rivers]                            # optional: MODFLOW 6 river cells by flowpath, for stage and base flow out
     package = "riv"
     map = "maps/river_cells.csv"        # object (flowpath or channel), layer, row, col (or layer, icell2d)
@@ -373,13 +379,31 @@ def load(path: str | Path) -> ExampleConfig:
     transport = c.get("transport", {})
     for sp, t in transport.items():
         if not isinstance(t, dict) or "recharge" not in t:
-            raise ValueError(f"{path}: [transport.{sp}] needs recharge (kg m-3)")
-        if set(t) - {"recharge", "stream", "model"}:
-            raise ValueError(f"{path}: [transport.{sp}] unknown settings {sorted(set(t) - {'recharge', 'stream'})}")
+            raise ValueError(f"{path}: [transport.{sp}] needs recharge (kg m-3, or \"swatplus\")")
+        if set(t) - {"recharge", "stream", "model", "surface"}:
+            raise ValueError(f"{path}: [transport.{sp}] unknown settings "
+                             f"{sorted(set(t) - {'recharge', 'stream', 'model', 'surface'})}")
         if "stream" in t and "exchange" not in c:
             raise ValueError(f"{path}: [transport.{sp}] stream needs the two-way [exchange]")
         if "exchange" in c and "stream" not in t:
-            raise ValueError(f"{path}: [transport.{sp}] needs stream (kg m-3): the coupled rivers' losses carry it")
+            raise ValueError(f"{path}: [transport.{sp}] needs stream (kg m-3, or \"swatplus\"): the coupled rivers' "
+                             "losses carry it")
+        for k in ("recharge", "stream"):
+            v = t.get(k)
+            if isinstance(v, str) and v != "swatplus" or isinstance(v, bool):
+                raise ValueError(f"{path}: [transport.{sp}] {k} is a concentration (kg m-3) or \"swatplus\"")
+        from_swat = "swatplus" in (t.get("recharge"), t.get("stream"))
+        if from_swat or "surface" in t:
+            t.setdefault("surface", sp)
+            from .coupling.surface_mass import SPECIES
+            if t["surface"] not in SPECIES:
+                raise ValueError(f"{path}: [transport.{sp}] surface is SWAT+'s species, one of {SPECIES} "
+                                 "(swatplus-bmi's names)")
+            if "swatplus" not in c:
+                raise ValueError(f"{path}: [transport.{sp}] carries SWAT+'s {t['surface']}: it needs [swatplus]")
+        if any(isinstance(x, dict) and x.get("surface") == t.get("surface") and o != sp and t.get("surface")
+               for o, x in transport.items()):
+            raise ValueError(f"{path}: [transport.{sp}]: two species carry SWAT+'s {t['surface']}")
     irrigation = None
     if "irrigation" in c:
         from .coupling.irrigation import read_map

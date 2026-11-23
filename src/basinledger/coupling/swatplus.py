@@ -125,11 +125,19 @@ def aquifer_pass_through(project: Path):
     """SWAT+'s aquifers keep the recharge they get and return none of it (no return flow, revap or deep recharge),
     for two-way coupling, where MODFLOW 6 handles groundwater. SWAT+ 62.0.1 (aqu_1d_control.f90) returns flow when
     the depth to water is at or above flo_min (m) and allows revap above revap_min (m), so both are set to a depth the
-    water table can't reach (-1e6 m); rchg_dp is zero."""
+    water table can't reach (-1e6 m); rchg_dp is zero.
+
+    Their soluble P too: SWAT+ 62.0.1 sends an aquifer's channels soluble P of the day's recharge volume times the
+    aquifer's concentration (``aqu_d%minp = hin%flo * aqu_dat%minp / 1000``, ``hd(1)%solp``), whether or not any
+    water flows out, so with return flow off a project with ``sol_p`` above zero (aquifer.aqu, ``aqu_dat%minp``) put
+    phosphorus in its channels with no water, and in two-way mode MODFLOW 6's base flow is where groundwater P comes
+    from. ``sol_p`` is set to zero. Its nitrate leaves only with return flow and seepage (``conc_no3 * flo``), so with
+    both off its recharge nitrate stays in the aquifer's store, as its water does."""
     path = Path(project) / "aquifer.aqu"
     lines = path.read_text().splitlines()
     cols = lines[1].split()
     i_flo, i_rev, i_dp = cols.index("flo_min"), cols.index("revap_min"), cols.index("rchg_dp")
+    i_p = AQUIFER_SOLP_COLUMN if len(cols) > AQUIFER_SOLP_COLUMN else None
     out = lines[:2]
     for l in lines[2:]:
         f = l.split()
@@ -137,12 +145,18 @@ def aquifer_pass_through(project: Path):
             continue
         f[i_flo] = f[i_rev] = "-1000000.0"
         f[i_dp] = "0.0"
+        if i_p is not None:
+            f[i_p] = "0.0"
         out.append("  ".join(f))
     path.write_text("\n".join(out) + "\n")
 
 
+# aquifer.aqu's soluble P column, by position as SWAT+ 62.0.1 reads it (aqu_read.f90 into aquifer_database: id,
+# name, init, flo, dep_bot, dep_wt, no3, minp...), whatever the header calls it (the editor writes sol_p)
+AQUIFER_SOLP_COLUMN = 7
+
 # calibration.cal parameters that would undo aquifer_pass_through once SWAT+ applies them
-PASS_THROUGH_UNDONE = ("flo_min", "revap_min", "rchg_dp", "chk")
+PASS_THROUGH_UNDONE = ("flo_min", "revap_min", "rchg_dp", "chk", "minp_init")
 
 
 def coupling_problems(project: Path, two_way: bool) -> list[str]:
@@ -168,6 +182,11 @@ def coupling_problems(project: Path, two_way: bool) -> list[str]:
         if f and (float(f[cols.index("flo_min")]) > -1e5 or float(f[cols.index("revap_min")]) > -1e5
                   or float(f[cols.index("rchg_dp")]) != 0.0):
             out.append(f"aquifer.aqu: {f[1]} doesn't pass recharge through (flo_min, revap_min, rchg_dp)")
+            break
+        if f and len(f) > AQUIFER_SOLP_COLUMN and float(f[AQUIFER_SOLP_COLUMN]) != 0.0:
+            out.append(f"aquifer.aqu: {f[1]} has soluble P ({cols[AQUIFER_SOLP_COLUMN]} "
+                       f"{f[AQUIFER_SOLP_COLUMN]}), which SWAT+ sends its channels with the recharge's volume and no "
+                       "water; in two-way mode groundwater P is MODFLOW 6's, so set it to 0")
             break
     cio = (project / "file.cio").read_text().split()
     if "calibration.cal" in cio and (project / "calibration.cal").exists():
@@ -215,6 +234,19 @@ def start_warnings(project: Path) -> list[str]:
     return [f"soil_plant.ini: {empty} of {len(used)} HRUs start with empty soils (sw_frac 0); SWAT+ fills them from "
             "the first day, which can take years, so check the warm-up's soil water (scenarios.warm_up reports it) or "
             "start the soils wetter"]
+
+
+def records_every_year(project: Path):
+    """SWAT+ makes its daily output records from the first year: ``nyskip`` (print.prt's years not summarized) set to
+    0. swatplus-bmi's reads of those records (``hru_pw:percn``, ``hru_ls:lchlabp``, ``aquifer:minp``) are NaN in the
+    years SWAT+ skips (command.f90 summarizes only after nyskip), and the transport's links read them every day. Only
+    what SWAT+ prints and sums changes (its average-annual files cover the skipped years too), not what it simulates."""
+    path = Path(project) / "print.prt"
+    lines = path.read_text().splitlines()
+    f = lines[2].split()
+    if f and f[0] != "0":
+        lines[2] = "  ".join(["0"] + f[1:])
+        path.write_text("\n".join(lines) + "\n")
 
 
 def no_transmission_loss(project: Path):
