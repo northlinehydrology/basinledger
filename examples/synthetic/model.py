@@ -201,11 +201,12 @@ def small_disv_well(refine: bool = True) -> tuple[int, int]:
 
 
 def build_small_disv(workspace: str | Path, days: int, start: dt.date, refine: bool = True,
-                     transport: dict | None = None) -> Path:
+                     transport: dict | None = None, weathering: dict | None = None,
+                     stream_sources: bool = False) -> Path:
     """``build_small`` on a vertex grid (DISV, ``small_disv_grid``), for the coupling's tests on refined grids: the
     same aquifer, area, river stage and bottom, the river's conductance per metre of river (20 m2 d-1 per 31.6 m
     cell) and the well in ``small_disv_well``. With ``refine = False`` it is ``build_small``'s grid cell for cell.
-    ``transport`` as in ``build_small``."""
+    ``transport``, ``weathering`` and ``stream_sources`` as in ``build_small``."""
     ws = Path(workspace)
     cells = small_disv_grid(refine)
     points = sorted({v for c in cells for v in c["vertices"]})
@@ -241,7 +242,7 @@ def build_small_disv(workspace: str | Path, days: int, start: dt.date, refine: b
             if (weathering or {}).get(species):
                 add_weathering(gwt, weathering[species])
             if stream_sources:
-                add_stream_sources(gwt, gwf, ["riv"] + (["lakes"] if lake_stage is not None else []))
+                add_stream_sources(gwt, gwf, ["riv"])
     sim.write_simulation(silent=True)
     return ws
 
