@@ -23,11 +23,11 @@ import warnings
 
 import numpy as np
 import pytest
+from conftest import RUNS
+from test_salt import salt_config
 
 from basinledger import replay as RP
 from basinledger.calibration import Parameter
-from conftest import RUNS
-from test_salt import salt_config
 
 DAYS = 365
 
@@ -276,8 +276,9 @@ def test_a_restarted_recording_carries_its_record_on(swatplus):
 # ---------- the forward model ----------
 
 def test_the_forward_model_replays(recorded64, tmp_path):
-    from basinledger.calibration import run_forward_model
     from test_salt import SALT
+
+    from basinledger.calibration import run_forward_model
     obs = tmp_path / "obs.csv"
     obs.write_text("name,kind,object,date,value,weight,source\n"
                    "cl1,chloride_mg_l,cha01,2010-06-01,5.0,1,test\nq1,flow,cha01,2010-06-01,0.1,1,test\n")
