@@ -6,10 +6,14 @@ Units (no models):
   chloride until melt;
 - the water bodies close every day; uniform inflow concentration reaches every body; a pulse passes downstream whole;
 - the recharge's mass is placed on the cells exactly as the water is;
+- land sources' timing (uniform, by month, the first fertilizer day of each year); an annual road salt amount spread
+  over each calendar year's snow and ice days from the weather records, whole; tables by calendar year;
 - SWAT+'s routing read from a project's files; the builder's weathering and stream-loss sources.
 
 On the models (examples/synthetic/salt.toml; SWAT+ and libmf6):
-- every account closes every day, the land's, the streams' and the whole system's, with the links sent = received;
+- every account of both species (chloride and weathering's ions) closes every day, the land's, the streams' and the
+  whole system's, with the links sent = received; conductance from both species by hand; each year's road salt and
+  potash applied whole; multipliers scale an input group's mass;
 - the recharge's mass is the land's, and GWT takes it whole; the gains reach the stream the next day; lakes at a
   fixed stage carry it through their outlet channel;
 - a pulse of road salt arrives in the stream, passes through, and the rest stays in the land and the aquifer, the
@@ -105,6 +109,86 @@ def test_road_salt_falls_on_snow_and_ice_days():
     road.series = {dt.date(2020, 1, 2): 0.03}
     np.testing.assert_array_equal(SA.application_days(w, road, dt.date(2020, 1, 2)), [0.03] * 4)
     np.testing.assert_array_equal(SA.application_days(w, road, dt.date(2020, 1, 3)), [0.0] * 4)
+
+
+def test_land_sources_timing():
+    days = [dt.date(2021, 1, 1) + dt.timedelta(days=i) for i in range(365)]
+    assert sum(SA.source_share("uniform", d) for d in days) == pytest.approx(1.0, rel=1e-12)
+    months = [0, 0, 1, 1, 0, 0, 0, 0, 2, 0, 0, 0]  # spring and fall
+    share = [SA.source_share(months, d) for d in days]
+    assert sum(share) == pytest.approx(1.0, rel=1e-12)
+    assert sum(v for d, v in zip(days, share) if d.month == 9) == pytest.approx(0.5)
+    assert all(v == 0 for d, v in zip(days, share) if d.month == 1)
+
+
+def test_fertilizer_timing_applies_the_year_once():
+    b = object.__new__(SA.SaltBalance)
+    b.hrus = ["a", "b"]
+    src = SA.LandSource("potash", 0.0, timing="fertilizer")
+    b.sources = [(src, np.array([5.0, 7.0]))]
+    b.fertilized = {"potash": (0, np.zeros(2, bool))}
+    fert = {d: np.zeros(2) for d in ("n", "p")}
+    reads = lambda v: fert["n"] if v.endswith("fertn") else fert["p"]
+    got = {}
+    for i in range(731):
+        d = dt.date(2021, 1, 1) + dt.timedelta(days=i)
+        fert["n"][:] = [1.0 if d in (dt.date(2021, 4, 10), dt.date(2021, 5, 1)) else 0.0, 0.0]
+        fert["p"][:] = [0.0, 1.0 if d == dt.date(2022, 6, 1) else 0.0]
+        out = b.sources_today(d, reads)["potash"]
+        for h in range(2):
+            if out[h]:
+                got.setdefault(h, []).append((d, out[h]))
+    # a: its first fertilizer day in 2021 (not the second), and 31 December 2022, which had none; b: 31 December 2021
+    # (none that year), then its fertilizer day in 2022
+    assert got[0] == [(dt.date(2021, 4, 10), 5.0), (dt.date(2022, 12, 31), 5.0)]
+    assert got[1] == [(dt.date(2021, 12, 31), 7.0), (dt.date(2022, 6, 1), 7.0)]
+
+
+def test_annual_road_salt_is_spread_over_each_years_days_whole():
+    start, last = dt.date(2010, 1, 1), dt.date(2011, 12, 31)
+    days = [start + dt.timedelta(days=i) for i in range((last - start).days + 1)]
+    rng = np.random.default_rng(3)
+    weather = {"s1": {}, "s2": {}}
+    for d in days:
+        cold = d.month in (12, 1, 2)
+        p = float(rng.gamma(0.5, 6.0))
+        weather["s1"][d] = (p, 2.0 if cold else 25.0, -6.0 if cold else 12.0)
+        weather["s2"][d] = (p, 20.0, 8.0)  # never cold: no snow, no ice, no frost
+    road = SA.RoadSalt(snowfall_mm=1.0, precipitation_mm=1.0, tmin_c=0.0, spread="precipitation")
+    group, weights, total, frost, unapplied = SA.road_calendar(road, ["s1", "s1", "s2"], np.array([1.0, 1.0, 1.0]),
+                                                               weather, start, last)
+    assert group.tolist() == [0, 0, 1] and set(unapplied) == {(1, 2010), (1, 2011)} and not frost
+    for y in (2010, 2011):
+        in_year = [d for d in weights if d.year == y]
+        # a calendar year's days: its January and February, and December, the next winter's first half
+        assert {d.month for d in in_year} == {1, 2, 12}
+        assert sum(weights[d][0] for d in in_year) == pytest.approx(total[(0, y)], rel=1e-12)
+        assert all(weights[d][0] == pytest.approx(weather["s1"][d][0]) for d in in_year)  # weighted by precipitation
+    # a year of only dry frost days takes its amount equally over them
+    dry = {"s1": {d: (0.0, 2.0, -3.0 if d.month == 1 else 5.0) for d in days}}
+    _, w2, t2, frost2, _ = SA.road_calendar(road, ["s1"], np.array([1.0]), dry, start, last)
+    assert set(frost2) == {(0, 2010), (0, 2011)} and t2[(0, 2010)] == 31.0
+
+
+def test_annual_tables_by_calendar_year(tmp_path):
+    (tmp_path / "t.csv").write_text("hru,year,kg_m2\nh1,2000,1.0\nh1,2001,2.0\nh1,2002,4.0\nh2,2001,8.0\n")
+    a = SA.Annual(tmp_path / "t.csv", repeat_last=2, repeat_first=1)
+    got = SA.read_annual(a, ["h1", "h2", "h3"], range(1999, 2005), "test")
+    np.testing.assert_array_equal(got[2001], [2.0, 8.0, 0.0])        # an HRU the table doesn't name: zero
+    np.testing.assert_array_equal(got[2004], [3.0, 4.0, 0.0])        # after the last: the mean of the last 2 years
+    np.testing.assert_array_equal(got[1999], [1.0, 0.0, 0.0])        # before the first: the first year
+    with pytest.raises(ValueError, match="no year 2003"):
+        SA.read_annual(SA.Annual(tmp_path / "t.csv"), ["h1", "h2"], range(2002, 2004), "test")
+    with pytest.raises(ValueError, match="doesn't have"):
+        SA.read_annual(a, ["h1"], range(2000, 2001), "test")
+    (tmp_path / "b.csv").write_text("hru,kg_m2\nh1,0.5\n")
+    (tmp_path / "f.csv").write_text("year,factor\n2000,1.0\n2001,2.0\n")
+    got = SA.read_annual(SA.Annual(tmp_path / "b.csv", tmp_path / "f.csv"), ["h1"], range(2000, 2002), "test")
+    assert got[2001][0] == 1.0
+
+
+def test_conductance_is_a_sum_over_species():
+    assert SA.conductance(20.0, {"chloride": 3.0, "weathering": 1.5}, {"chloride": 10.0, "weathering": 100.0}) == 200.0
 
 
 # ---------- the water bodies ----------
@@ -289,11 +373,11 @@ def salt_config(**changes):
     return cfg
 
 
-def salt_run(cfg, name, days, users=True, restart=None, save_at=None):
+def salt_run(cfg, name, days, users=True, restart=None, save_at=None, parameters=None):
     from basinledger.driver import Basin
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        b = Basin(cfg, run=name, days=days, users=users, restart=restart)
+        b = Basin(cfg, run=name, days=days, users=users, restart=restart, parameters=parameters)
     if save_at:
         b.run(save_at - b.day)
         b.save(b.folder / "state")
@@ -307,25 +391,67 @@ def salt_run(cfg, name, days, users=True, restart=None, save_at=None):
 
 @pytest.fixture(scope="module")
 def coupled(swatplus):
-    return salt_run(salt_config(), "salt", 365)
+    return salt_run(salt_config(), "salt", 730)  # two whole calendar years
 
 
-def test_every_account_closes_every_day(coupled):
+@pytest.mark.parametrize("sp", ["chloride", "weathering"])
+def test_every_account_closes_every_day(coupled, sp):
     t = coupled["table"]
-    k = "salt:chloride:"
+    k = f"salt:{sp}:"
     for a in ("land:closure_share", "streams:closure_share"):
         assert np.nanmax(np.abs(t[k + a])) < 1e-12
     assert np.nanmax(np.abs(t[k + "closure_share"])) < 1e-9
+    assert np.nanmax(np.abs(t[f"transport:{sp}:closure_share"])) < 1e-6
     np.testing.assert_allclose(t[k + "land:to_streams"], t[k + "streams:from_land"], rtol=1e-12, atol=1e-15)
     np.testing.assert_allclose(t[k + "streams:losses"], t[k + "aquifer:from_streams"], rtol=1e-9, atol=1e-12)
     np.testing.assert_allclose(t[k + "soil:sent"], t[k + "soil:mapped"], rtol=1e-12, atol=1e-15)
     # yesterday's soil link arrives in the land today
     np.testing.assert_allclose(t[k + "land:from_groundwater"][1:], t[k + "soil:mapped"][:-1], rtol=1e-12, atol=1e-15)
+    assert np.nansum(t[f"transport:{sp}:boundary:weathering"]) > 0
+    assert np.nansum(t[k + "streams:outlet"]) > 0
+
+
+def test_the_chloride_paths_carry_mass(coupled):
+    t = coupled["table"]
+    k = "salt:chloride:"
     # every path carried mass: road salt, rain, the soil link, recharge, runoff, the river's losses, the user's return
     for a in ("land:road_salt", "land:precipitation", "land:from_groundwater", "land:recharge", "land:to_streams",
-              "streams:losses", "streams:point_sources", "streams:outlet"):
+              "land:source:septic", "land:source:potash", "streams:losses", "streams:point_sources", "streams:outlet"):
         assert np.nansum(t[k + a]) > 0, a
-    assert np.nansum(t["transport:chloride:boundary:weathering"]) > 0
+    # weathering's ions come only from the aquifer, the user's point source and nothing on the land
+    w = "salt:weathering:"
+    for a in ("land:precipitation", "land:road_salt", "streams:precipitation"):
+        assert np.nansum(t[w + a]) == 0, a
+
+
+def test_sources_and_road_salt_applied_whole(coupled):
+    t = coupled["table"]
+    k = "salt:chloride:"
+    days = [dt.date(2010, 1, 1) + dt.timedelta(days=i) for i in range(len(t[k + "land:road_salt"]))]
+    area = 1e5  # Osu_1hru's 10 ha
+    # septic: 2e-5 kg m-2 a year by land use, evenly
+    assert np.nansum(t[k + "land:source:septic"][:365]) == pytest.approx(2e-5 * area, rel=1e-12)
+    road = np.nan_to_num(t[k + "land:road_salt"])
+    potash = np.nan_to_num(t[k + "land:source:potash"])
+    for y, kg_road, kg_potash in ((2010, 0.0039, 0.004), (2011, 0.0021, 0.003)):
+        # potash: the year's amount once, on the HRU's first fertilizer day
+        assert [p for d, p in zip(days, potash) if d.year == y and p > 0] == [pytest.approx(kg_potash * area)]
+        # road salt: each calendar year's amount over that year's days, whole
+        assert sum(r for d, r in zip(days, road) if d.year == y) == pytest.approx(kg_road * area, rel=1e-12)
+    assert all(r == 0 or d.month in (11, 12, 1, 2, 3, 4) for d, r in zip(days, road))
+
+
+def test_multipliers_scale_the_inputs_mass(swatplus):
+    from basinledger.calibration import Parameter
+    base = salt_run(salt_config(), "salt-x1", 400, users=False)["table"]
+    params = [Parameter("road", "salt", "chloride:road_salt", 3.0, 0.1, 10.0),
+              Parameter("septic", "salt", "chloride:septic", 2.0, 0.1, 10.0)]
+    scaled = salt_run(salt_config(), "salt-x2", 400, users=False, parameters=params)["table"]
+    k = "salt:chloride:"
+    np.testing.assert_allclose(scaled[k + "land:road_salt"], 3.0 * base[k + "land:road_salt"], rtol=1e-12)
+    np.testing.assert_allclose(scaled[k + "land:source:septic"], 2.0 * base[k + "land:source:septic"], rtol=1e-12)
+    np.testing.assert_array_equal(scaled[k + "land:source:potash"], base[k + "land:source:potash"])
+    assert np.nansum(base[k + "land:road_salt"]) > 0 and np.nanmax(np.abs(scaled[k + "closure_share"])) < 1e-9
 
 
 def test_the_recharges_mass_is_the_lands(coupled):
@@ -345,10 +471,11 @@ def test_the_point_source_carries_the_users_chloride(coupled):
                                atol=1e-15)
 
 
-def test_conductance_follows_chloride(coupled):
+def test_conductance_from_both_species(coupled):
     s = coupled["series"]
-    cl = np.array(s["chloride_mg_l:cha01"])
-    np.testing.assert_allclose(s["conductance_us_cm:cha01"], 60.0 + 3.0 * cl, rtol=1e-12)
+    cl, wx = np.array(s["chloride_mg_l:cha01"]), np.array(s["weathering_mg_l:cha01"])
+    assert wx.max() > 0 and cl.max() > 0
+    np.testing.assert_allclose(s["conductance_us_cm:cha01"], 20.0 + 3.0 * cl + 1.5 * wx, rtol=1e-12)
 
 
 def test_gains_reach_the_stream_the_next_day(swatplus):
@@ -370,8 +497,8 @@ def test_a_pulse_of_road_salt_arrives_and_passes_through(swatplus):
     base = salt_config()
     base.salt["chloride"].road_salt = None
     pulse = salt_config()
-    rs = pulse.salt["chloride"].road_salt
     start = dt.date(2010, 1, 1)
+    rs = pulse.salt["chloride"].road_salt = SA.RoadSalt(share=0.05)
     rs.series = {start + dt.timedelta(days=on): 50.0 / pulse_road_m2(rs)}
     a = salt_run(base, "salt-no-pulse", days, users=False)["table"]
     b = salt_run(pulse, "salt-pulse", days, users=False)["table"]
@@ -416,9 +543,15 @@ def test_config_refuses_salt_it_cant_carry(tmp_path):
             (lambda s: s.replace('source = "hru"', 'source = "aquifer"'), "source = \"hru\""),
             (lambda s: s.replace("[transport.chloride]", "[transport.chloride]\nrecharge = 0.01"), "come from"),
             (lambda s: s.replace("precipitation = 0.0003", "precip = 0.0003"), "unknown settings"),
-            (lambda s: s.replace("road_salt = {rate = 0.002, ", "road_salt = {"), "road_salt needs")):
+            (lambda s: s.replace('spread = "precipitation"', 'share = 0.05'), "annual amount is per m2"),
+            (lambda s: s.replace('annual = "maps/salt_road_annual.csv", repeat_last = 3, ', "rate = 0.002, "),
+             "needs share"),
+            (lambda s: s.replace("septic = 1.0, point_sources", "sewage = 1.0, point_sources"), "no input group"),
+            (lambda s: s.replace('timing = "fertilizer"', 'timing = "weekly"'), "timing is"),
+            (lambda s: s.replace("slopes = {chloride", "slopes = {nitrate = 1.0, chloride"), "conductance slopes")):
         bad = tmp_path / "bad.toml"
-        bad.write_text(change(text).replace("intake_user.toml", str(SALT.parent / "intake_user.toml")))
+        bad.write_text(change(text).replace("intake_user.toml", str(SALT.parent / "intake_user.toml"))
+                       .replace('"maps/', f'"{SALT.parent}/maps/'))
         with pytest.raises(ValueError, match=match):
             C.load(bad)
 
