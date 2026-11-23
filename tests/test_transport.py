@@ -322,3 +322,21 @@ def test_driver_refuses_what_it_cannot_book(swatplus):
     cfg.users[0].inputs = {"water_user_intake_water_chloride__mass_concentration": 0.012}
     with pytest.raises(ValueError, match="set from the aquifer"):
         Basin(cfg, run="transport-constant-intake", days=5)
+
+
+def test_dispersion_choices(tmp_path):
+    """XT3D by default; ``xt3d=False`` turns it off (DSP's XT3D_OFF); no dispersivity and no diffusion, no DSP."""
+    import flopy
+
+    from basinledger.coupling.transport import add_transport
+    sim = flopy.mf6.MFSimulation(sim_ws=str(tmp_path))
+    flopy.mf6.ModflowTdis(sim)
+    flopy.mf6.ModflowIms(sim)
+    gwf = flopy.mf6.ModflowGwf(sim, modelname="gwf")
+    flopy.mf6.ModflowGwfdis(gwf, nrow=2, ncol=2)
+    full = add_transport(sim, gwf, "a", 0.3, 5.0)
+    off = add_transport(sim, gwf, "b", 0.3, 5.0, xt3d=False)
+    none = add_transport(sim, gwf, "c", 0.3, None)
+    assert not full.get_package("dsp").xt3d_off.get_data()
+    assert off.get_package("dsp").xt3d_off.get_data()
+    assert none.get_package("dsp") is None
