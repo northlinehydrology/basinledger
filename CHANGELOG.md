@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Weathering by each cell's water: `[salt]` scales each weathering entry (`salt.add_weathering`, written at full
+  saturation) every day by its cell's saturated share at the start of the day (MODFLOW 6's saturation at the end of
+  the day before; on the first day from the starting heads, `salt.start_saturation`), so a dry cell weathers nothing
+  and a partly saturated one in proportion. The static rate put the full source into the Virginia study's dry
+  layer-1 cells and its weathering solve diverged on day 0. The saturation is saved with the salt state, so a
+  restart carries it. `build_small` takes `upper` (a thin convertible top layer), `newton` and `strt` for the test.
 - Salt (`salt.py`, `[salt.<species>]`, docs/design.md "Salt"): chloride carried through every water path of a coupled
   SWAT+ / MODFLOW 6 run, each day, as a conservative mass, since SWAT+ 62.0.1's salt module can't run with aquifers
   or point sources. A well-mixed store per HRU (deposition in precipitation, road salt on snow and ice days or a

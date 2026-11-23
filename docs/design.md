@@ -1036,8 +1036,15 @@ kg per m3 of aquifer a year) [A], chosen over a background recharge concentratio
 with the water's time in the rock, which a source in the aquifer's volume carries and a recharge concentration
 doesn't: a recharge background would put as much into a wet year's recharge as a dry year's, and none into slow, old
 groundwater. For chloride it is usually small (crystalline Piedmont and Blue Ridge rock holds little chloride); the
-major ions that weathering does add are the second species, `[salt.weathering]`, with their own source by zone. Wells as built (the user's
-intake follows the aquifer at its well).
+major ions that weathering does add are the second species, `[salt.weathering]`, with their own source by zone. The
+rate is per m3 of saturated aquifer: the builder writes each cell's rate at full saturation, and each day Basin Ledger
+sets each entry to that times its cell's saturated share at the start of the day [A] (MODFLOW 6's NPF saturation at
+the end of the day before, kept in the salt state for restarts; on a run's first day, from the starting heads:
+`(min(h, top) - bot) / (top - bot)` in a convertible cell, 1 in a confined one). A dry cell weathers nothing. The
+static rate put the full source into the Virginia study's dry layer-1 cells (24,842 of 111,897 dry at its steady
+start, kept active with no water by Newton) and the weathering solve diverged on day 0 (Nov 22, 2026). The share is
+the day before's because the flow is solved after the transport's sources are set, the same one-day lag as the
+streams' losses. Wells as built (the user's intake follows the aquifer at its well).
 
 **3. Streams: a mass balance by water body, upstream first.** Each SWAT+ channel and reservoir is a well-mixed store
 (kg), in the order `chandeg.con` and `reservoir.con` route them:
