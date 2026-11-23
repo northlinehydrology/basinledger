@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 22, 2026, release 0.10.1). Built and tested on synthetic examples:
+Status (Nov 23, 2026, release 0.11.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -22,8 +22,10 @@ Status (Nov 22, 2026, release 0.10.1). Built and tested on synthetic examples:
 - the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
 - scenarios from a shared warm-up, and restarts;
 - stream temperature as a reach heat balance, with users' returns carrying their heat;
-- water quality's first stage: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users'
-  intake concentrations from the aquifer;
+- water quality: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users' intake
+  concentrations from the aquifer; nitrate and soluble phosphorus across every SWAT+-MODFLOW 6 link with decay and
+  sorption (Water quality across links, stage 2; a user's returned loads still to come); dispersion with or without
+  XT3D's cross terms;
 - salt through land, aquifer and streams, and its replay from a recorded flow run (Replay), for calibration;
 - weather written into SWAT+'s gage records from a run's first day, from a series or a scenario's change
   (`[weather]`, swatplus-bmi 0.7.0);
