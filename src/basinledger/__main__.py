@@ -1,10 +1,11 @@
 """The command line.
 
     python -m basinledger run basin.toml [--run NAME] [--days N] [--baseline] [--out DIR]
-                                         [--save-at DAY --save DIR] [--restart DIR]
+                                         [--save-at DAY --save DIR] [--restart DIR] [--replay RECORD]
     python -m basinledger status basin.toml
     python -m basinledger check basin.toml [--baseline]
     python -m basinledger forward basin.toml parameters.csv observations.csv simulated.csv [--run-folder DIR]
+                                                                                          [--replay RECORD]
 
 ``run`` steps the example's models through its period (or ``--days``), checking the ledger every day, and writes
 ledger.csv, series.csv and summary.json to the run's outputs folder. ``--baseline`` runs it without its water users.
@@ -14,7 +15,9 @@ running a day, prints MODFLOW 6's units and the factors that convert them at eve
 with what Basin Ledger takes over in each and what it leaves as the model's (coupling/existing.py), and lists every
 problem its start-up finds (``Basin.check``); it exits with 1 if there are any. ``forward`` is the forward model PEST++
 runs (calibration.py): the parameter set applied, the example run, and its value at each observation written;
-``--run-folder`` puts the run's files there instead of the example's run folder.
+``--run-folder`` puts the run's files there instead of the example's run folder. ``--replay`` (``run`` and
+``forward``) runs only the salt, from a record of the flow made by a run with ``[replay] record`` (replay.py); the
+parameters may then be salt's only, and anything that would change the flow is refused.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ def main(argv=None) -> int:
     r.add_argument("--save-at", type=int, default=None, help="stop after this many days and save the state")
     r.add_argument("--save", default=None, help="folder for the saved state")
     r.add_argument("--restart", default=None, help="carry on from a saved state")
+    r.add_argument("--replay", default=None, help="run only the salt, from this record of the flow (replay.py)")
     s = sub.add_parser("status", help="calibrated or screening run")
     s.add_argument("config")
     k = sub.add_parser("check", help="every problem the start-up finds, without running a day")
@@ -48,6 +52,7 @@ def main(argv=None) -> int:
     for name in ("config", "parameters", "observations", "out"):
         f.add_argument(name)
     f.add_argument("--run-folder", default=None, help="where the run's files go (default: the example's)")
+    f.add_argument("--replay", default=None, help="run only the salt, from this record of the flow (replay.py)")
     a = ap.parse_args(argv)
 
     if a.cmd == "check":
@@ -73,7 +78,7 @@ def main(argv=None) -> int:
 
     if a.cmd == "forward":
         from .calibration import run_forward_model
-        run_forward_model(a.config, a.parameters, a.observations, a.out, run_folder=a.run_folder)
+        run_forward_model(a.config, a.parameters, a.observations, a.out, run_folder=a.run_folder, replay=a.replay)
         return 0
 
     if a.cmd == "status":
@@ -83,8 +88,12 @@ def main(argv=None) -> int:
 
     if (a.save_at is None) != (a.save is None):
         ap.error("--save-at and --save go together")
-    run = a.run or ("baseline" if a.baseline else "base")
-    b = Basin.from_config(a.config, run=run, users=not a.baseline, days=a.days, restart=a.restart)
+    if a.replay:
+        b = Basin(C.load(a.config), run=a.run or "replay", users=False if a.baseline else None, days=a.days,
+                  restart=a.restart, replay=a.replay)
+    else:
+        run = a.run or ("baseline" if a.baseline else "base")
+        b = Basin.from_config(a.config, run=run, users=not a.baseline, days=a.days, restart=a.restart)
     try:
         if a.save_at is not None:
             b.run(a.save_at - b.day)
