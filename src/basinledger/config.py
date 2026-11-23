@@ -101,6 +101,14 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     stream = 0.03                       #   kg m-3 of water a coupled river loses to the aquifer [A] (with [exchange])
     # model = "gwt_chloride"            #   the GWT model's name, if not gwt_<species>
 
+    [salt.chloride]                     # optional: chloride through the land, the aquifer's [transport.chloride] (its
+    precipitation = 0.0003              #   recharge and stream then come from here) and the streams, each day (salt.py);
+    road_salt = {rate = 0.01, share = 0.05}  # kg m-3 in precipitation [A]; road salt, kg m-2 of road on snow and ice
+    point_sources = {wwtp = 0.08}       #   days, share a number or a CSV (hru, share) [A]; a point source's
+    soil_start = 0.002                  #   concentration [A]; starting concentrations, kg m-3 [A]; specific
+    stream_start = 0.002                #   conductance from chloride, per study [A]. Needs SWAT+, MODFLOW 6,
+    conductance = {background = 60.0, slope = 3.0}  # [recharge] source = "hru" and the two-way [exchange]
+
     [rivers]                            # optional: MODFLOW 6 river cells by flowpath, for stage and base flow out
     package = "riv"
     map = "maps/river_cells.csv"        # object (flowpath or channel), layer, row, col (or layer, icell2d)
@@ -267,6 +275,7 @@ class ExampleConfig:
     rivers: dict | None = None
     mf6_builder_args: dict = field(default_factory=dict)
     transport: dict[str, dict] = field(default_factory=dict)  # species -> recharge, stream (kg m-3) [A], model
+    salt: dict = field(default_factory=dict)  # species -> salt.Settings: chloride through land, aquifer and streams
     recharge_source: str = "aquifer"   # or "hru"
     recharge_add: bool = False          # a recharge package Basin Ledger adds, for a model without one
     weather: dict | None = None        # kind -> CSV path, and change (weather.py)
@@ -318,7 +327,7 @@ def load(path: str | Path) -> ExampleConfig:
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
              "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather",
-             "groundwater_to_soil", "irrigation", "lakes"}
+             "groundwater_to_soil", "irrigation", "lakes", "salt"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -371,7 +380,21 @@ def load(path: str | Path) -> ExampleConfig:
             raise ValueError(f"{path}: [groundwater_to_soil] needs SWAT+, MODFLOW 6, [recharge] source = \"hru\" (the "
                              "HRU map) and the two-way [exchange] (SWAT+'s aquifers passing recharge through)")
     transport = c.get("transport", {})
+    salt = {}
+    for sp, st in c.get("salt", {}).items():
+        from .salt import Settings
+        if sp not in transport:
+            raise ValueError(f"{path}: [salt.{sp}] carries {sp} through the aquifer's transport model: it needs "
+                             f"[transport.{sp}]")
+        if set(transport[sp]) & {"recharge", "stream"}:
+            raise ValueError(f"{path}: [transport.{sp}]'s recharge and stream come from [salt.{sp}]; remove them")
+        if "swatplus" not in c or "modflow6" not in c or rch.get("source") != "hru" or "exchange" not in c:
+            raise ValueError(f"{path}: [salt.{sp}] needs SWAT+, MODFLOW 6, [recharge] source = \"hru\" (the "
+                             "recharge's mass is placed HRU by HRU) and the two-way [exchange]")
+        salt[sp] = Settings.from_config(sp, st, base)
     for sp, t in transport.items():
+        if sp in salt:
+            continue
         if not isinstance(t, dict) or "recharge" not in t:
             raise ValueError(f"{path}: [transport.{sp}] needs recharge (kg m-3)")
         if set(t) - {"recharge", "stream", "model"}:
@@ -457,6 +480,7 @@ def load(path: str | Path) -> ExampleConfig:
         mf6_length_units=mf.get("length_units"),
         mf6_time_units=mf.get("time_units"),
         transport={sp: dict(t) for sp, t in transport.items()},
+        salt=salt,
         recharge_source=rch.get("source", "aquifer"),
         weather=weather,
         groundwater_to_soil=dict(gs) if gs is not None else None,
