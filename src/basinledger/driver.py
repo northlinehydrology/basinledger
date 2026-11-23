@@ -856,7 +856,7 @@ class Basin:
     def _salt_inflows(self, sp, t, rp, streams):
         """The recharge's concentration per entry, each cell's share of the HRUs' percolation mass; the streams'
         losses carry none with their water, and yesterday's losses' mass enters by the stream-loss source."""
-        from .salt import STREAM_SOURCES
+        from .salt import STREAM_SOURCES, WEATHERING, start_saturation
         s = self.salt[sp]
         t.set_inflow(rp, s.recharge_concentration(self._entry_nodes(t, rp)))
         for pkg, _, _ in self._loss_packages:
@@ -864,6 +864,15 @@ class Basin:
                 t.set_inflow(pkg, 0.0)
         nb = int(t._get(STREAM_SOURCES, "NBOUND")[0])
         self.mf6.set("SMASSRATE", STREAM_SOURCES, s.stream_sources(nb), model=t.model)
+        if WEATHERING.upper() in t.boundaries:  # weathering by each cell's water at the start of the day (salt.py)
+            if s.weathering_entries is None:  # the builder's rates at full saturation and their cells, read once
+                n = int(t._get(WEATHERING, "NBOUND")[0])
+                s.weathering_entries = (t._get(WEATHERING, "SMASSRATE")[:n].astype(float),
+                                 t._get(WEATHERING, "NODELIST")[:n].astype(int) - 1)
+            m = self.mf6
+            first = lambda: start_saturation(m.head(), m.node_values("TOP", "DIS"), m.node_values("BOT", "DIS"),  # noqa: E731
+                                             m.get_model_units("ICELLTYPE", m.model, "NPF"))
+            self.mf6.set("SMASSRATE", WEATHERING, s.weathering_rates(*s.weathering_entries, first), model=t.model)
 
     def _transport_accounts(self, L):
         """Each species' mass for the day, kg: in with recharge (as sent: the stated concentration times the volume

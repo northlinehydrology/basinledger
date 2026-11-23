@@ -743,10 +743,18 @@ def routing(swat: Path, hrus: list[str], channels: list[str], reservoirs: list[s
 
 # ---------- weathering in the aquifer ----------
 
-def add_weathering(gwt, rate, zones=None, pname: str = "weathering"):
+WEATHERING = "weathering"  # the GWT source weathering's mass enters by (add_weathering)
+
+
+def add_weathering(gwt, rate, zones=None, pname: str = WEATHERING):
     """Weathering as a mass source in a GWT model (an SRC package, ``pname``): ``rate`` kg per m3 of aquifer (the
     cell's bulk volume) a year [A], one value, or {zone: rate} with ``zones`` a zone number per cell in the grid's
-    shape (layers first). Zero-rate cells get no entry. Call from an example's builder, after ``add_transport``."""
+    shape (layers first). Zero-rate cells get no entry. Call from an example's builder, after ``add_transport``.
+
+    The rates written are the cells' at full saturation. In a run with ``[salt]`` Basin Ledger scales each entry every
+    day by its cell's saturated share at the start of the day (``start_saturation``, then MODFLOW 6's own), so a dry
+    cell weathers nothing and a partly saturated one in proportion to its water: a convertible layer above the water
+    table took the full rate into almost no water and the transport solve diverged (the Virginia study, Nov 22)."""
     import flopy
     dis = gwt.get_package("dis") or gwt.get_package("disv")
     top = np.asarray(dis.top.get_data(), float)
@@ -774,6 +782,17 @@ def add_weathering(gwt, rate, zones=None, pname: str = "weathering"):
     spd = [(*map(int, c), float(kg_d[tuple(c)])) for c in cells]
     return flopy.mf6.ModflowGwtsrc(gwt, pname=pname, filename=f"{gwt.name}.{pname}.src",
                                    stress_period_data={0: [((*c[:-1],), c[-1]) for c in spd]})
+
+
+def start_saturation(heads, top, bot, icelltype) -> np.ndarray:
+    """Each cell's saturated share from its heads, where MODFLOW 6 hasn't solved a day yet (a run's first day, or a
+    restart without it saved): 1 in a confined cell (ICELLTYPE 0), else (min(h, top) - bot) / (top - bot) clipped to
+    0..1 (MODFLOW 6's own without Newton's smoothing [A]), 0 in a dry cell (MODFLOW 6's HDRY head, -1e30)."""
+    h, top, bot = (np.asarray(v, float) for v in (heads, top, bot))
+    thick = top - bot
+    s = np.divide(np.minimum(h, top) - bot, thick, out=np.zeros_like(h), where=thick > 0)
+    s = np.clip(s, 0.0, 1.0)
+    return np.where(np.asarray(icelltype) == 0, 1.0, s)
 
 
 STREAM_SOURCES = "stream_losses"  # the GWT source the streams' losses enter by
@@ -897,6 +916,8 @@ class SaltBalance:
             self.loss_q = np.asarray(saved["loss_q"], float)
             self.loss_body = np.asarray(saved["loss_body"], int)
             self.soil_due = np.asarray(saved["soil_due"], float)
+            # each cell's saturated share at the end of the day saved, for weathering (saved since Nov 22, 2026)
+            self.saturation = np.asarray(saved["saturation"], float) if "saturation" in saved else None
             self.total = float(saved["total"][0])
             self.fertilized = {src.name: (int(saved[f"fertilized_year_{src.name}"][0]),
                                           np.asarray(saved[f"fertilized_{src.name}"], bool))
@@ -915,6 +936,8 @@ class SaltBalance:
             # a source timed by fertilizer: the year, and the HRUs that have had it that year
             self.fertilized = {src.name: (0, np.zeros(len(self.hrus), bool))
                                for src, _ in self.sources if src.timing == "fertilizer"}
+            self.saturation = None  # each cell's saturated share at the end of the day just solved (weathering)
+        self.weathering_entries = None  # (rate at full saturation, kg d-1; node) per weathering entry, read on day 1
         self.c_body = np.zeros(nb)
         self.c_cell = None
         self.perc_kg = 0.0
@@ -924,6 +947,8 @@ class SaltBalance:
         out = {"m_soil": self.m_soil, "m_surface": self.m_surface, "m_body": self.m_body, "gain_due": self.gain_due,
                "loss_q": self.loss_q, "loss_body": self.loss_body, "soil_due": self.soil_due,
                "total": np.array([self._outside()])}
+        if self.saturation is not None:
+            out["saturation"] = self.saturation
         for name, (year, done) in self.fertilized.items():
             out[f"fertilized_year_{name}"] = np.array([year])
             out[f"fertilized_{name}"] = done
@@ -1141,6 +1166,17 @@ class SaltBalance:
             raise ValueError(f"salt: {len(self.src_rates)} stream-loss rates for {n} source entries")
         return self.src_rates
 
+    def weathering_rates(self, base: np.ndarray, nodes: np.ndarray, first) -> np.ndarray:
+        """Today's rate (kg d-1) for each weathering entry (``add_weathering``): its rate at full saturation, the
+        builder's, times its cell's saturated share at the start of the day [A]: yesterday's at the end of its solve
+        (MODFLOW 6's NPF saturation, kept by ``after_groundwater``) or, on a run's first day, ``first()`` (from the
+        starting heads, ``start_saturation``). A dry cell weathers nothing. The day's own saturation isn't known
+        until the flow is solved, which is after the transport's sources are set: a one-day lag, as the streams'
+        losses have."""
+        if self.saturation is None:
+            self.saturation = np.asarray(first(), float)
+        return np.asarray(base, float) * self.saturation[np.asarray(nodes, int)]
+
     # ---------- after MODFLOW 6's day ----------
     def after_groundwater(self, L, b, mf6=None, soil_package: str | None = None, x: np.ndarray | None = None,
                           losses: list[tuple[np.ndarray, np.ndarray, list[str]]] = ()):
@@ -1150,6 +1186,8 @@ class SaltBalance:
         aquifer (its mass the aquifer's source tomorrow), the soil's water due to the land, and the system's
         closure."""
         k = self.k
+        if mf6 is not None:  # each cell's saturated share at the end of the day, for tomorrow's weathering
+            self.saturation = mf6.get("SAT", mf6.model, "NPF").astype(float)
         for c, m in b.to_stream.items():
             self.gain_due[self.ch_index[c]] += m
         qq, bb = [], []
