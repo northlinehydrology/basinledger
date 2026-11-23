@@ -47,7 +47,7 @@ from . import config as C
 
 FORMAT = 1
 DHDRY = -1e30  # MODFLOW 6's head in a dry cell
-CHUNK_BYTES = 64 * 2 ** 20  # raw bytes of a chunk of days, about
+CHUNK_BYTES = 256 * 2 ** 20  # raw bytes of a chunk of days, about (its first day stored whole, the rest XORed)
 LEVEL = 6  # zlib
 
 
@@ -190,7 +190,7 @@ def gwf_inputs(ws: Path, model: str) -> str:
                     _file_lines(ws / w[1].strip("'\""), ws, h, seen)
         elif name == "SOLUTIONGROUP":
             for w in lines:
-                if model in (x.upper() for x in w[2:]) and not set(x.upper() for x in w[2:]) & gwt:
+                if model in (x.upper() for x in w[2:]) and not {x.upper() for x in w[2:]} & gwt:
                     _file_lines(ws / w[1].strip("'\""), ws, h, seen)
     return h.hexdigest()
 
@@ -377,7 +377,7 @@ class _Gwf:
         from .coupling.existing import flow_packages
         self.api, self.m = mf6.api, mf6.model
         names = set(self.api.get_input_var_names()) | set(self.api.get_output_var_names())
-        self.has = lambda v: f"{self.m}/{v}" in names  # noqa: E731
+        self.has = lambda v: f"{self.m}/{v}" in names
         ia = self.api.get_value(f"{self.m}/CON/IA").astype(np.int64) - 1
         ja = self.api.get_value(f"{self.m}/CON/JA").astype(np.int64) - 1
         isym = self.api.get_value(f"{self.m}/CON/ISYM").astype(np.int64) - 1
@@ -519,7 +519,8 @@ class Recorder:
             (self.folder / "days").mkdir(parents=True)
             self.meta = {"format": FORMAT, "start": basin.start.isoformat(), "days_total": basin.days, "days": 0,
                          "identity": self.ident, "modflow6": gwf_inputs(basin.mf6.ws, cfg.mf6_model),
-                         "precision": cfg.replay_precision, "mantissa_bits": self.cast.bits, "chunk_days": None, "bytes": 0, "seconds": 0.0,
+                         "precision": cfg.replay_precision, "mantissa_bits": self.cast.bits, "chunk_days": None,
+                         "bytes": 0, "seconds": 0.0,
                          "nodes": self.gwf.nodes, "nja": self.gwf.nja, "structure": self.gwf.structure}
             self._initial = self._start_state(basin)
             copy_swatplus_files(basin.folder / "swatplus", self.folder / "swatplus")
@@ -561,7 +562,8 @@ class Recorder:
                 "users": [], "exchange": None, "gw_soil": None}
 
         def link(pkg, cmap):
-            return {"package": pkg, "channels": list(cmap.channels), "entry_channel": np.asarray(cmap.entry_channel).tolist()}
+            return {"package": pkg, "channels": list(cmap.channels),
+                    "entry_channel": np.asarray(cmap.entry_channel).tolist()}
         if ex is not None:
             if ex.kind != "riv" or getattr(ex, "parts", None):
                 raise ValueError("[replay] records a stream exchange through one river (RIV) package")
@@ -727,7 +729,7 @@ class _RecordedUser:
 
 # ---------- replaying ----------
 
-from .driver import Basin  # noqa: E402  (driver imports this module lazily)
+from .driver import Basin  # (driver imports this module lazily, so no cycle)
 
 
 class ReplayBasin(Basin):
