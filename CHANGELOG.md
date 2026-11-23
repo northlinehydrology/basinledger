@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- Salt (`salt.py`, `[salt.<species>]`, docs/design.md "Salt"): chloride carried through every water path of a coupled
+  SWAT+ / MODFLOW 6 run, each day, as a conservative mass, since SWAT+ 62.0.1's salt module can't run with aquifers
+  or point sources. A well-mixed store per HRU (deposition in precipitation, road salt on snow and ice days or a
+  stated series, groundwater up into the soil; out with runoff, lateral and tile flow and percolation, read through
+  swatplus-bmi's printed daily columns), optionally behind a snowpack and road store that sends its melt's chloride
+  to the stream fast; GWT's recharge concentration each cell's share of the HRUs' percolation mass, placed by the
+  recharge map; weathering as a GWT mass source by zone (`salt.add_weathering`); and a mass balance for every SWAT+
+  channel and reservoir, upstream first, through SWAT+'s routing units (the land, rain, point sources at a user's
+  returned mass or a stated concentration, the aquifer's gains a day after GWT gives them, withdrawals, seepage and
+  the outlet). The streams' losses enter the aquifer with no chloride and their mass follows the next day, at the
+  channel's mixed concentration, through a GWT source on the river and lake cells (`salt.add_stream_sources`), so
+  the stream gives up and the aquifer takes the same mass: setting the channel's concentration on the river package
+  instead left the channel short of 46% of the losses' mass the next day in the synthetic run. The land, the streams
+  and the whole system (with GWT's storage) close every day, to about 1e-12. Specific conductance from chloride by a
+  study's relation, per output channel (`series.csv`). Lakes at a fixed stage (`[exchange] lakes`) now take
+  transport when salt carries the species (a lake loses at its outlet channel's concentration). Refused at start-up:
+  `[[lakes]]` (LAK), `[irrigation]`, SFR, several groundwater models, NextGen, a model not in meters and days.
+  Example `examples/synthetic/salt.toml`; its builder (`build_small`) takes `weathering` and `stream_sources`.
+  Cost on the synthetic example: 2.2-2.7 ms a simulated day on 8.4-8.6 ms (one HRU); the land and stream kernels
+  take 5 ms a day at the Virginia study's size (33,525 HRUs, 1,192 channels and reservoirs), before the BMI reads.
+
 ## 0.10.1 (2026-11-22)
 
 - A map from pixels reads in seconds: `AreaMap.from_csv` finds each object by name in a table and each distinct cell's

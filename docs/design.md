@@ -1012,16 +1012,20 @@ intake follows the aquifer at its well).
   returned mass where its component reports the species, the rest of the point source's water at a stated
   concentration [A] (a sewer plant's effluent, say); and the groundwater's gains (rivers, drains and lakes at a fixed
   stage), each at its cell's concentration from GWT, arriving with their water the next day.
-- **Out:** the losses to the aquifer, the mass GWT took in the day before (the water's one-day lag, below); the
-  outflow downstream (or out of the basin at the outlet), withdrawals (SWAT+ places of use) and a reservoir's own
-  seepage, each at the mixed concentration, over SWAT+'s end-of-day volume plus those outflows. Evaporation takes
-  no mass.
-- **The losses' concentration.** A losing reach's water enters the aquifer at the channel's mixed concentration that
-  day (set on the river package's auxiliary before MODFLOW 6 solves; a lake at a fixed stage takes its outlet
-  channel's [A]). SWAT+ takes that water from the channel the next day, so the stream gives up exactly that mass the
-  next day. If the channel has less mass than that (its concentration fell sharply overnight), what it couldn't give
-  is booked as a shortfall (`streams:loss_shortfall`), mass from outside, like the water's shortfall; it should be
-  small.
+- **Out,** at the mixed concentration over SWAT+'s end-of-day volume plus the outflows: the outflow downstream (or
+  out of the basin at the outlet), withdrawals (SWAT+ places of use), a reservoir's own seepage, and the water the
+  aquifer took the day before through the channel's rivers and lakes (which SWAT+ takes from the channel today, the
+  exchange's one-day lag). Evaporation takes no mass.
+- **The losses' mass crosses the next day, exactly.** MODFLOW 6 takes a losing reach's water on day d, before the
+  stream's day d+1 is known; SWAT+ takes that water from the channel on day d+1. A concentration set on the river
+  package on day d (the channel's that day) would put mass into the aquifer that the channel must give up on day
+  d+1 at whatever concentration it has then: in the synthetic run, where a pumped well makes the river lose most of
+  its flow, the channel was short of that mass by 46% of the losses' mass. So the water enters the aquifer with no
+  chloride (the river's and lakes' auxiliary set to zero), and its mass, each entry's water at its channel's mixed
+  concentration on day d+1, enters the same cells on day d+1 through a GWT mass source with one entry per river and
+  lake entry (`salt.add_stream_sources`, `stream_losses`, built by the example's builder). The stream gives up and
+  the aquifer takes the same mass the same day; the aquifer's cells get it a day after the water, the same lag the
+  gains have the other way. A lake at a fixed stage takes its outlet channel's concentration [A].
 - A dry body keeps its mass until water returns. Conservative, no reactions.
 
 **4. Conductance.** Specific conductance (uS/cm) = a background + a slope x chloride (mg/L), fitted per study [A] (r2
@@ -1029,22 +1033,26 @@ intake follows the aquifer at its well).
 
 **5. Ledger and checks (kg).** Every source, store, link (sent and received) and outflow, as basin totals:
 `salt:<sp>:land:*` (precipitation, road salt, from groundwater, to streams, recharge, storage), `salt:<sp>:streams:*`
-(from land, precipitation, point sources, gains received, losses taken, the shortfall, withdrawn, outlet, reservoir
-seepage, storage), the links in transit overnight (`transit:gains`, `transit:losses`, `transit:soil`), and
-GWT's own accounts (`transport:<sp>:*`, whose recharge and leakage sent are now the land's and the streams' masses).
+(from land, precipitation, point sources, gains, losses, withdrawn, outlet, reservoir seepage, storage),
+`salt:<sp>:aquifer:from_streams` (the stream-loss source), the links in transit overnight (`transit:gains`,
+`transit:soil`; `transit:losses_m3`, the lost water whose mass follows), and GWT's own accounts
+(`transport:<sp>:*`, whose recharge sent is now the land's mass, and whose leakage carries none).
 Held every day:
 - the land's and the streams' closure, each a share of the day's gross mass, within 1e-9;
-- land to streams sent = received, recharge sent = GWT's received (the existing pair), the soil link's mass out of GWT
-  = the HRUs' share of it;
+- land to streams sent = received, recharge sent = GWT's received (the existing pair), the streams' losses = the
+  stream-loss source's mass, the soil link's mass out of GWT = the HRUs' share of it;
 - the whole system: land + streams + in transit + the aquifer (from GWT's storage release) change by the sources
-  (deposition, road salt, point sources, GWT's boundaries and weathering, the shortfall) less the sinks (the outlet,
-  withdrawals, wells, reservoir seepage), within 1e-6 of the day's gross mass flow, as water is held.
+  (deposition, road salt, point sources, GWT's boundaries and weathering) less the sinks (the outlet, withdrawals,
+  wells, reservoir seepage), within 1e-6 of the day's gross mass flow, as water is held.
 
 Per channel, the concentration (mg/L) and conductance are series in `series.csv` for `[outputs] channels`.
 
-**Not built:** reservoirs coupled to LAK lakes (`[[lakes]]`), irrigation from wells (`[irrigation]`), several
-groundwater models, an SFR exchange (needs SFT), NextGen, SWAT+ water allocation other than Basin Ledger's places of
-use, and a user's intake from a channel. Each is refused at start-up.
+**Not built,** each refused at start-up: reservoirs coupled to LAK lakes (`[[lakes]]`), irrigation from wells
+(`[irrigation]`), several groundwater models, an SFR exchange (needs SFT), NextGen, a MODFLOW 6 model not in meters
+and days, SWAT+ water allocation other than Basin Ledger's places of use, and routing to anything but channels,
+reservoirs and routing units (runon to HRUs). Not refused but not built: a user's intake concentration from a
+channel (its withdrawal leaves the stream at the stream's concentration, booked as withdrawn; the user isn't told
+it).
 
 ## Calibration
 

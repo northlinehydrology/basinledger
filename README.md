@@ -61,6 +61,11 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - stream temperature as a reach heat balance, with groundwater inflow and users' returns at their own temperatures;
 - groundwater transport (MODFLOW 6 GWT): each species' mass in the ledger every day, and a user's intake
   concentration from the aquifer at its well;
+- salt (`[salt.chloride]`): chloride through every water path of a coupled run, each day, its mass closed: a store per
+  HRU (deposition, road salt on snow and ice days, groundwater up into the soil; out with runoff, lateral flow and
+  percolation), the recharge's mass placed on the cells as its water is, GWT in the aquifer with weathering, and a
+  mass balance for every channel and reservoir upstream first (the land, point sources, the aquifer's gains and
+  losses); specific conductance from chloride by a study's relation, for scoring;
 - NextGen as the surface model: a finished NGIAB run replayed day by day, with users on its own hourly forcing;
 - MODFLOW 6 recharge from NextGen (CFE's percolation), used as interim recharge in the Plaster Creek example;
 - the ledger and the command line, with `check`: every problem an example's start-up finds, without running a day
@@ -317,6 +322,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Capture | a well's pumping equals the extra release from storage, the water the streams lose and the extra boundary inflow, every day |
 | Depletion | MODFLOW 6 through the coupling within 2% of Glover and Balmer (1954) for a well beside a straight river |
 | Stream temperature | each reach's heat balance closes; a return mixes at its own temperature |
+| Salt | the land's store, every water body and the whole system (with GWT's storage) close every day; land to streams, recharge to GWT, the streams' losses to the aquifer's source and the soil link sent = received; the precipitation's concentration (raised by evapotranspiration, as the chloride mass balance has it) and a uniform inflow concentration reached at steady state; recharge mass placed on the cells as the water is; a pulse of road salt arrives in the stream and the rest stays in the land and the aquifer, the difference from a run without it adding to the pulse every day; gains reach the stream the next day; restarts bit for bit |
 | Weather | a series equal to the files' records gives the files' run bit for bit; a run's first days are written into its files, other columns kept; a change reaches SWAT+'s records from the run's first day; a case from a warm-up takes its own weather from the first day that can be set; users read the series; a series that ends early stops the run |
 | Groundwater into the soil | for each rule and cap, what leaves MODFLOW 6's cells is what SWAT+'s layers receive the next day; the whole basin closes; a restart carries what is due; a water table below every profile changes nothing, bit for bit |
 | Restarts and scenarios | saved after a warm-up and carried on, runs match unbroken runs bit for bit; a case with no change matches the baseline |
