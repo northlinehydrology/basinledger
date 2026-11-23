@@ -711,8 +711,9 @@ The ledger enters, every day, each transfer as sent and as received, plus each c
   - temperature is carried as heat (volume × temperature) and becomes a temperature only at the receiving water.
   - Built: intake concentrations as an input to user components
     (`water_user_intake_water_<species>__mass_concentration`), set each day from the aquifer at a user's well, and a
-    return's heat booked at its point source (`route:<point source>:heat_m3C`). Still
-    needed: point source loads settable through swatplus-bmi (`docs/requests.md`; Water quality across links, stage 2).
+    return's heat booked at its point source (`route:<point source>:heat_m3C`). Nitrate and soluble P cross every
+    SWAT+-MODFLOW 6 link with their mass (Water quality across links, stage 2). Still needed: a return's loads to its
+    point source (swatplus-bmi has `point_source_water_<sp>__mass_flow_rate`; the routing isn't built).
 - **Whole basin.** For each example, a basin-wide check closes over the run:
   - precipitation = evapotranspiration + streamflow out + change in soil, aquifer and channel storage + net user
     consumption + transfers out of the basin;
@@ -877,10 +878,10 @@ groundwater. Transport settles over decades, not the year a flow warm-up takes, 
   cell's concentration at the end of the day, as MODFLOW 6's implicit step has it.
 - **Refused at start-up:** a transport model with no `[transport]` section, a recharge or coupled river package
   that isn't an AUX source in SSM, a coupled exchange with no stated stream concentration, a constant intake the
-  aquifer would replace, SSM's AUXMIXED and file sources, and decay (not yet in the ledger).
+  aquifer would replace, SSM's AUXMIXED and file sources, and decay (not yet in the ledger; built in stage 2).
 - **Restarts** save and restore each species' concentrations with the heads, bit for bit.
 - **Not yet:** the steady-state start (the tests start from a stated concentration), concentrations at the river and
-  drain cells reported per channel for stage 2, and the stage 2 links below.
+  drain cells reported per channel for stage 2, and the stage 2 links below (all built in stage 2, Nov 22).
 
 **What stage 2 needs of swatplus-bmi** (SWAT+ 62.0.1's own variables; names to be settled there):
 - recharge mass per aquifer, readable: each salt ion's `obcs(icmd)%hin(1)%salt(m)` (kg a day, kept as
@@ -925,6 +926,93 @@ Nitrate and soluble P can go through SWAT+ once 0.5.0 is released. Two more find
   kept (its design.md, item 11).
 - In 0.4.0, a groundwater gain in a project with any constituent on (a pesticide included) hangs SWAT+, because the
   transfer's constituent arrays are never allocated; fixed in 0.5.0.
+
+**Stage 2, built (Nov 22, 2026): nitrate and soluble P through every link.** `coupling/surface_mass.py`, on
+swatplus-bmi 0.13.1 as released (no new variable was needed), `[transport.<species>] surface/recharge/stream`, and
+`examples/synthetic/nitrate.toml` (both species, HRU recharge, rivers that gain and lose, drains, the soil link, a
+well). Phosphorus and nitrate take the same wiring; P sorbs (linear, Kd [A], by zone if given), nitrate decays (first
+order [A]).
+- **Recharge, HRU by HRU.** Each HRU's mass leached below its profile on the day just done, read through
+  swatplus-bmi's generated reads of SWAT+'s own daily records: nitrate `hru_pw:percn` (`percn(j)`, the bottom
+  layer's percolate in nut_nlch.f90, which hru_hyds.f90 also puts in the HRU's recharge hydrograph, `hd(2)%no3`) and
+  soluble P `hru_ls:lchlabp` (`hls_d%lchlabp`, nut_solp.f90). Both kg ha-1. The mass goes over the cells by the same
+  conserving map as the water, so a cell's recharge concentration is the mix of the mass and water its HRUs send it.
+  Ledger: `recharge:made` (SWAT+'s leached mass) = `recharge:sent` (on cells with water) + `recharge:no_water` (a
+  recharge package can't carry mass without water; zero on the synthetic run), sent = received; nitrate's made is
+  held to SWAT+'s own aquifer recharge mass (`aquifer_water_no3__recharge_mass_rate`) every day, as the water is.
+  With `[recharge] source = "aquifer"` nitrate's mass is per aquifer, every cell under it at one concentration, and a
+  warning says so (`AquiferRechargeMass`). Soluble P has no aquifer path: SWAT+ 62.0.1 leaves leached P out of the
+  recharge hydrograph (it leaves the model in SWAT+ alone), so it needs HRU recharge and is refused otherwise.
+- **The reads are NaN in print.prt's skipped years** (swatplus-bmi's `out_made`: SWAT+ makes its daily records only
+  after `nyskip`). A run with a species SWAT+ carries sets nyskip to 0 in the run's copy
+  (`swatplus.records_every_year`): only what SWAT+ prints and sums changes, not what it simulates.
+- **The aquifer to the streams.** A coupled channel's rivers' gains and drains discharge at their cells' concentrations
+  (GWT's outflow). Where the channel's net water for tomorrow is a gain, the gain's mass set in SWAT+ tomorrow
+  (`channel_water_<sp>__groundwater_mass_exchange_rate`, with the water) is that discharge less what the channel's
+  losing entries took the same day at SWAT+'s outflow concentration for the day just run, not below zero: SWAT+ gets
+  the net, as it gets the net water.
+- **The streams to the aquifer.** swatplus-bmi takes a loss's mass itself, at the day's outflow concentration
+  (`exch_channel`: `rto * ht2%no3`), and refuses a mass set with a loss. The loss's water is solved in MODFLOW 6 the
+  day before SWAT+ applies it, so a concentration set on the river's auxiliary that day can't be what SWAT+ later
+  takes, and the link wouldn't close. So the loss's water enters at no concentration, and the next day, once SWAT+
+  has applied the exchange, what it reports it received (negative where its loss took mass) is set against what the
+  aquifer sent the channel the day before; the difference goes into the aquifer through a mass source on the
+  channel's cells (GWT SRC, `src_<package>`, added by `add_transport(..., stream_mass=[...])` on the rivers' and
+  drains' cells, entry for entry), on the entries that lost water, by the volume each lost (on those that
+  discharged, by their mass, if none lost). Ledger per channel: `stream:<c>:due` (what the aquifer sent yesterday)
+  = `in_swat` (what SWAT+ reports it kept) + `returned` (back into the aquifer), and returned = `returned_received`
+  (GWT's mass source), every day, exactly. The loss's mass reaches its cells a day after its water [A], the
+  exchange's own lag; a loss that takes the whole of a day's outflow takes all its mass. The channel's outflow
+  concentration is booked (`stream:<c>:concentration`).
+- **Lakes at a fixed stage** (`[exchange] lakes`): with the stream side a lake is its outlet channel's, as its water
+  is: its gains carry the cells' concentrations into the channel, its losses the channel's mass back, through the
+  lake package's own mass sources. Still refused with a stated stream concentration (stage 1's refusal).
+- **Into the soil.** The soil link's water leaves each cell at the cell's concentration (GWT's outflow), is split among
+  the HRUs' layers as the water is (`GroundwaterToSoil.mass_split`, the same rows and depths), and is set in SWAT+
+  the next day with the water (`soil_layer_water_<sp>__groundwater_inflow_mass_rate`). Ledger: `gw_soil:sent` (GWT)
+  = `split`, and `due` = `received` (SWAT+'s read-back).
+- **SWAT+'s aquifers.** In two-way mode they pass recharge through. Their nitrate leaves only with return flow and
+  seepage (`conc_no3 * flo`), both off, so the recharge nitrate stays in their store as the water does. Their soluble
+  P didn't: SWAT+ 62.0.1 sends the channels `aqu_d%minp = hin%flo * aqu_dat%minp / 1000` (`hd(1)%solp`,
+  aqu_1d_control.f90) whether or not water flows, so with `sol_p` above zero (aquifer.aqu) P reached the channels with
+  no water, in every two-way run so far, transport or not. `aquifer_pass_through` now sets `sol_p` to 0, and a
+  project or `calibration.cal` (`minp_init`) that sets it is refused. The ledger holds both outflows at zero every day
+  with the stream side on (`swatplus:aquifer_no3_outflow`, `swatplus:aquifer_solp_outflow`, from `aquifer:no3_lat`
+  and `aquifer:minp`). Groundwater P therefore comes only from MODFLOW 6's GWT, and no SWAT+ aquifer P path runs beside
+  it.
+- **Decay** (`add_transport(..., decay=, decay_sorbed=)`, MST first order, d-1 [A]): booked as `transport:<sp>:decay`
+  (MODFLOW 6's RATEDCY and RATEDCYS), and the closure includes it. Zero-order decay is refused. Tested: the decay
+  booked is the rate times the day's end dissolved and sorbed mass, and the day closes.
+- **Sorption** (linear, MST): the sorbed store's release is booked on its own (`sorbed_release`, RATESRB) inside the
+  storage release. Tested on steady flow: the change in what the cells hold dissolved (porosity x volume x C) and
+  sorbed (bulk density x Kd x volume x C) is the storage release, and the sorbed part the sorbed release, every day.
+  With transient flow MODFLOW 6 moves the mobile store's volume with the flow model's storage, so there the closure is
+  what's checked.
+- **The steady-state start** (`Basin.transport_steady_state(cfg, days, heads)`): a coupled run, its flows between
+  cells and its inflows' water and mass per cell averaged over it (`Transport.track`), and each cell's concentration
+  at steady state under them: c = mass in / (water in + decay coefficient), the decay coefficient the rate times the
+  cell's dissolved and sorbed capacity. Advection, mixing and decay, no dispersion [A], solved by sweeps from the
+  highest head down. With SWAT+'s mass the start is under the run's own flow-weighted mean recharge concentration.
+  Tested: uniform recharge gives its concentration everywhere, and with decay it is the transport model's own answer
+  after 22 turnovers (upstream advection, no dispersion), to 1e-6. Start a run from it with `Basin(...,
+  concentrations=...)`. Checking it against public well samples is the study's.
+- **The transport solve's residual criterion** is 1e-8 kg d-1 (1e-10 in stage 1): at 1e-10 round-off held the
+  residual above it for good on Plaster Creek's 13,215 cells (day 47) and on the synthetic grid with sorption.
+- **What it costs** (Nov 22, on a machine running a 10-core calibration beside it, load 15-20 on 14 cores, so read
+  these as upper bounds). The synthetic run (100 cells, one HRU, one channel; 730 days, best of two): 4.9 ms a day
+  without transport, 9.1 with nitrate, 9.0 with soluble P, 12.6 with both; there the added time is Basin Ledger's
+  bookkeeping and the BMI reads (about 2 ms per species a day: the budget's 60-odd reads of MODFLOW 6's memory, the
+  day's concentrations and mass sources, SWAT+'s reads and sets), not the solve. Plaster Creek's screening
+  groundwater model (13,215 active cells in 3 layers, NextGen replayed, stage 1's stated concentrations; 365 days):
+  50 ms a day without transport, 272 with nitrate (decay), 251 with soluble P (sorption), 449 with both: about 200
+  ms per species a day, all but 1.3 ms of it in MODFLOW 6's transport solve (TVD advection, the solver's settings in
+  `add_transport`). Sorption costs no more than decay. On a large basin each species is a second groundwater solve
+  a day; the solver's settings (`ims`) and the advection scheme are the levers.
+- **Not in stage 2:** a user's return loads to SWAT+'s point sources (`point_source_water_<sp>__mass_flow_rate` is
+  there; the routing isn't built); nitrate or P in irrigation pumped from wells (its mass leaves the aquifer with the
+  well and isn't put on the HRU: swatplus-bmi has no way to set it); SFR, several groundwater models and
+  multi-aquifer wells with transport (refused, as in stage 1); SWAT+'s reservoirs coupled to MODFLOW 6's lakes
+  (`[[lakes]]`: LAK's exchange with the aquifer is booked as a boundary, its mass not carried to the reservoir); the salt ions (SWAT+'s salt module can't run with aquifers, above).
 
 ## Stream temperature: a reach heat balance (built Nov 6, 2026)
 
