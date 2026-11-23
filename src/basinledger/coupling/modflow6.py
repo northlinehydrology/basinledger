@@ -384,6 +384,7 @@ class Modflow6:
         flow's: ``do_time_step`` solves them all, and with a callback they are solved here once the flow is done."""
         if callback is None:
             self.api.do_time_step()
+            self._check_finite("the day's solve")
         else:
             mx = self.outer_maximum(1)
             self.api.prepare_solve(1)
@@ -394,6 +395,7 @@ class Modflow6:
                                        f"outer_maximum ({mx} outer iterations)")
                 converged = self.api.solve(1)
                 iterations += 1
+                self._check_finite(f"outer iteration {iterations}")
                 changed = moving and callback()
                 if converged and not changed:
                     break
@@ -406,6 +408,17 @@ class Modflow6:
                 self._solve(sol)
         self.api.finalize_time_step()
         self.day += 1
+
+    def _check_finite(self, where: str):
+        """Stop at the first non-finite head. A linear solver that breaks down (a modified ILU preconditioner, IMS
+        RELAXATION_FACTOR near 1, on a stiff matrix) can return NaN for every head and still report the iteration as
+        converged, and the NaN would otherwise surface later in whatever link reads the heads."""
+        h = self.head()
+        if not np.isfinite(h).all():
+            raise FloatingPointError(
+                f"MODFLOW 6 returned {int((~np.isfinite(h)).sum()):,} non-finite heads on day {self.day} ({where}): "
+                "its linear solver broke down. A modified ILU (IMS RELAXATION_FACTOR near 1, as COMPLEXITY MODERATE "
+                "sets) can do this on a stiff matrix; RELAXATION_FACTOR 0 or COMPLEXITY COMPLEX usually solves it")
 
     def outer_maximum(self, sol: int) -> int:
         """Solution ``sol``'s outer_maximum (IMS), the most outer iterations MODFLOW 6 takes in a time step."""
