@@ -74,7 +74,10 @@ DIMENSION = {
     ("lak", "TELEV"): L, ("lak", "BELEV"): L, ("lak", "SAREA"): A, ("lak", "LAKEBOT"): L, ("lak", "LAKETOP"): L,
     ("lak", "STRT"): L, ("maw", "QSTO"): Q,
     ("gwt", "X"): C, ("gwt", "SIMVALS"): MT, ("gwt", "FLOW"): Q, ("gwt", "AUXVAR"): C,
-    ("gwt", "RATESTO"): MT, ("gwt", "RATESRB"): MT,
+    ("gwt", "RATESTO"): MT, ("gwt", "RATESRB"): MT, ("gwt", "RATEDCY"): MT, ("gwt", "RATEDCYS"): MT,
+    ("gwt", "SMASSRATE"): MT, ("gwt", "GWFFLOWJA"): Q, ("gwt", "GWFSAT"): ONE, ("gwt", "AREA"): A, ("gwt", "TOP"): L,
+    ("gwt", "BOT"): L, ("gwt", "POROSITY"): ONE, ("gwt", "BULK_DENSITY"): (-3, 0), ("gwt", "DISTCOEF"): (3, 0),
+    ("gwt", "DECAY"): (0, -1), ("gwt", "DECAY_SORBED"): (0, -1), ("gwt", "GWFHEAD"): L,
 }
 
 
