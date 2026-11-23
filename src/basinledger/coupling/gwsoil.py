@@ -266,6 +266,14 @@ class GroundwaterToSoil:
             frac = np.divide(cell, planned, out=np.zeros_like(cell), where=planned > 0)
             row = self.row_planned * frac[self.map.node]
             head = self.h0
-        vol, at_bottom = to_layers(row, (self.top - head)[self.map.node], self.map, self.layer_hru, self.bottom)
+        self.rows, self.row_depth = row, (self.top - head)[self.map.node]  # for the mass with this water
+        vol, at_bottom = to_layers(row, self.row_depth, self.map, self.layer_hru, self.bottom)
         self.due = layer_rates(vol, self.layer_hru, self.hru_area, DAY)
         return float(out.sum()), at_bottom
+
+    def mass_split(self, x: np.ndarray) -> np.ndarray:
+        """The mass (kg) the day's water just solved carried out of each cell at its concentration ``x`` (kg m-3 per
+        node, the transport model's at the end of the day, as its outflow carries it), split among the HRUs' layers as
+        the water was (``to_layers``, at the same depths): kg per layer, for SWAT+'s next day."""
+        mass, _ = to_layers(self.rows * x[self.map.node], self.row_depth, self.map, self.layer_hru, self.bottom)
+        return mass

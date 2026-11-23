@@ -60,7 +60,11 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   factors and shifts);
 - stream temperature as a reach heat balance, with groundwater inflow and users' returns at their own temperatures;
 - groundwater transport (MODFLOW 6 GWT): each species' mass in the ledger every day, and a user's intake
-  concentration from the aquifer at its well;
+  concentration from the aquifer at its well; nitrate and soluble phosphorus carried with the water through every
+  link between SWAT+ and MODFLOW 6 (SWAT+'s leached mass into the aquifer HRU by HRU, the aquifer's concentration
+  back to the channels with gains, drains and the soil link, the channel's own with its losses), first-order decay
+  (denitrification) and linear sorption (phosphorus) in the ledger, and a steady-state start
+  (`Basin.transport_steady_state`);
 - salt (`[salt.<species>]`): conservative species (chloride, weathering's ions) through every water path of a
   coupled run, each day, each one's mass closed: a store per HRU (deposition, road salt by rate or by an annual
   amount per calendar year over its snow and ice days, land sources such as septic and potash by HRU, land use or
@@ -327,6 +331,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Lakes at a fixed stage | the lake gains and loses; MODFLOW 6's lake term is the ledger's every day and reaches SWAT+ the next day in its outlet channel's exchange; the whole basin closes; no more taken than the channel has, with RIV and with SFR; refusals at start-up; a lake that exchanges nothing leaves the plain run bit for bit; restarts bit for bit |
 | Through SFR | a channel's water in at its top reach; no reach loses more than it carries; MODFLOW 6's budget closes and its SFR term is the exchange; reaches between channels, other units and storage refused; restarts bit for bit |
 | Groundwater transport | each species' mass closes every day; uniform recharge concentration reaches every cell at steady state; a column matches Ogata and Banks (1961) within 1% of C0; a well's user takes in the aquifer's concentration a day later |
+| Nitrate and phosphorus across links | with SWAT+ two-way, mass closes every day with decay and with sorption; the sorbed store's change is the ledger's sorbed release; each link's mass as sent and received, every day: recharge is SWAT+'s leached mass (and, for nitrate, its own aquifer recharge mass), placed on the cells its water goes to in the same shares; a gain's mass arrives in the channel; a loss takes the channel's own concentration and its mass reaches the aquifer; the soil link's mass is what left the cells; SWAT+'s aquifers send no nitrate or P; the steady start matches the transport model's own long run; restarts bit for bit |
 | Conservation across links | recharge keeps the surface model's volume; a channel never loses more than it carries; water from outside and the release from storage booked; wrong coupling settings refused at start-up |
 | The whole basin | SWAT+'s land, channel and lake budgets, the links and MODFLOW 6's close together over a run |
 | Capture | a well's pumping equals the extra release from storage, the water the streams lose and the extra boundary inflow, every day |

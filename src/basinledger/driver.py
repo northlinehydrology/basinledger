@@ -87,12 +87,14 @@ def _example_function(cfg: C.ExampleConfig, spec: str, default: str):
 class Basin:
     def __init__(self, cfg: C.ExampleConfig, run: str = "base", users: bool = True, days: int | None = None,
                  restart: str | Path | None = None, prepare=None, heads: np.ndarray | None = None,
-                 wrap_surface=None, parameters: list | None = None, _problems: list | None = None):
+                 wrap_surface=None, parameters: list | None = None, _problems: list | None = None,
+                 concentrations: dict | None = None):
         """See ``_start``. A start-up that stops finalizes the models it started, so libmf6 and SWAT+ can be started
         again in the same process (a second start of libmf6 over one left running ends the process)."""
         try:
             self._start(cfg, run=run, users=users, days=days, restart=restart, prepare=prepare, heads=heads,
-                        wrap_surface=wrap_surface, parameters=parameters, _problems=_problems)
+                        wrap_surface=wrap_surface, parameters=parameters, _problems=_problems,
+                        concentrations=concentrations)
         except BaseException:
             self._finalize_started()
             raise
@@ -110,7 +112,8 @@ class Basin:
 
     def _start(self, cfg: C.ExampleConfig, run: str = "base", users: bool = True, days: int | None = None,
                restart: str | Path | None = None, prepare=None, heads: np.ndarray | None = None,
-               wrap_surface=None, parameters: list | None = None, _problems: list | None = None):
+               wrap_surface=None, parameters: list | None = None, _problems: list | None = None,
+               concentrations: dict | None = None):
         """``prepare(model, folder)``, if given, is called on the run's copy of each model's files ("swatplus",
         "modflow6") before that model starts, after the parameter set is written into them: the example's own
         (``[calibration] parameters``) with ``parameters``' values in place of any it names (calibration.py's
@@ -118,7 +121,8 @@ class Basin:
         starting heads (per reduced node), in place of its input's, as from ``spin_up``. ``wrap_surface(model)``,
         if given, returns what the driver steps in place of the surface model once it has started: a study's way to
         hold or replace one of its values through BMI each day (a process substitution), with everything else
-        passed through."""
+        passed through. ``concentrations``: each transport species' starting concentrations (per reduced node), in
+        place of its input's, as from ``transport_steady_state``."""
         self.cfg = cfg
         self._problems = _problems  # a check (Basin.check): problems listed here, each part carrying on
         self.status = cfg.calibration_status  # 'screening' unless the example's record says 'calibrated'
@@ -172,6 +176,8 @@ class Basin:
             if cfg.salt or cfg.replay_record:  # salt reads SWAT+'s daily records, made only after print.prt's nyskip
                 print_daily(swat_dir, [])     # years (salt.py), and a record keeps them for a replay's salt (replay.py)
             prepare("swatplus", swat_dir)
+            if any(t.get("surface") for t in cfg.transport.values()):
+                S.records_every_year(swat_dir)  # the leached mass is read from SWAT+'s daily records
             problems = S.coupling_problems(swat_dir, two_way=bool(ex))
             if problems:
                 self._problem(ValueError("SWAT+ isn't set up to be coupled:\n- " + "\n- ".join(problems)))
@@ -309,6 +315,11 @@ class Basin:
             for sp, t in self.transport.items():
                 if saved:
                     t.set_concentration(np.load(Path(restart) / f"concentration_{sp}.npy"))
+                elif concentrations and sp in concentrations:
+                    t.set_concentration(np.asarray(concentrations[sp], float))
+            if concentrations and set(concentrations) - set(self.transport):
+                self._problem(ValueError(f"starting concentrations for {sorted(set(concentrations) - set(self.transport))}"
+                                         ", which aren't transported"))
         self.rivers = None  # built on the first day, once MODFLOW 6's river package has its entries
         if cfg.rivers and cfg.rivers.get("stage", "fixed") not in ("fixed", "surface_depth", "nextgen_depth"):
             self._problem(ValueError("[rivers] stage must be fixed or surface_depth"))
@@ -324,6 +335,13 @@ class Basin:
         self.recharge = None
         if self.mf6 is not None:
             self._part("[recharge]", lambda: self._recharge(cfg, swat_dir, saved))
+        self.surface = {}  # species -> SurfaceMass, for species SWAT+ carries (coupling/surface_mass.py)
+        self._track_transport = False  # transport_steady_state's mean flows
+        self.swat_aquifer_ha = ({a: v / 1e4 for a, v in S.aquifer_areas(swat_dir).items()}
+                                if swat_dir is not None and (swat_dir / "aquifer.con").exists() else {})
+        for sp, t in self.transport.items():
+            if cfg.transport[sp].get("surface"):
+                self._part(f"[transport.{sp}]", lambda sp=sp: self._surface_mass(cfg, sp, saved))
         wells = {}
         self._wells_left_out = set()  # a check's wells with a problem: listed once, not again by the users on them
         for w in cfg.wells:
@@ -769,6 +787,23 @@ class Basin:
             raise ValueError(f"MODFLOW 6 has transport models with no [transport] section: {sorted(extra)}")
         return out
 
+    def _surface_mass(self, cfg, sp, saved):
+        """A species SWAT+ carries: its links' mass through swatplus-bmi (coupling/surface_mass.py)."""
+        from .coupling.surface_mass import SurfaceMass
+        t = cfg.transport[sp]
+        if self.recharge is None and t["recharge"] == "swatplus":
+            raise ValueError(f"[transport.{sp}] recharge = \"swatplus\" needs the [recharge] link")
+        if t.get("stream") == "swatplus" and not self.direct_exchange:
+            raise ValueError(f"[transport.{sp}] stream = \"swatplus\" sets the gain's mass with the gain "
+                             "(swatplus-bmi 0.2.0's direct exchange)")
+        sm = SurfaceMass(self.sw, self.transport[sp], t["surface"], recharge=t["recharge"] == "swatplus",
+                         stream=t.get("stream") == "swatplus", soil=self.gw_soil is not None,
+                         source=cfg.recharge_source,
+                         source_area=self.recharge.source_area if self.recharge is not None else None)
+        if saved and saved.get("surface_mass", {}).get(sp):
+            sm.load(saved["surface_mass"][sp])
+        self.surface[sp] = sm
+
     def _set_intakes(self):
         """Each intake user's concentration for the coming day: the aquifer's at its well now."""
         self.intake = {}
@@ -793,10 +828,14 @@ class Basin:
             raise NotImplementedError("transport with an SFR exchange needs MODFLOW 6's SFT package for the "
                                       "streams' concentrations; not built")
         if self.exchange is not None and self.exchange.lakes is not None:
-            if set(self.transport) - set(self.salt):
+            stated = [sp for sp in self.transport if sp not in self.salt and not self._stream_side(sp)]
+            if stated:
                 raise NotImplementedError("transport with [exchange] lakes needs the lakes' own concentrations for "
-                                          "what they lose to the aquifer; built with [salt] (a lake takes its outlet "
-                                          "channel's), not with a stated concentration")
+                                          f"what they lose to the aquifer; not built for a stated stream concentration "
+                                          f"({stated}). With stream = \"swatplus\" or [salt] a lake's loss takes its "
+                                          "outlet channel's mass, as its water is its outlet channel's")
+            # with the stream side or [salt], a lake at a fixed stage is its outlet channel's, as its water is: its
+            # gains carry the cells' concentrations into the channel, its losses the channel's mass back
             lp, lmap = self.exchange.lakes
             streams.append((lp, lmap.entry_channel, lmap.channels))
         # the packages whose entries lose stream water to the aquifer: the rivers' and the lakes' (drains only gain)
@@ -812,29 +851,93 @@ class Basin:
             if self.exchange is not None and not t.takes_inflow(self.exchange.package):
                 raise ValueError(f"{t.model.lower()}: the coupled river package {self.exchange.package!r} isn't an "
                                  "AUX source in SSM, so its losses would carry nothing")
+            if self._stream_side(sp):
+                missing = [p for p, _, _ in streams if not t.has_stream_mass(p)]
+                if missing:
+                    raise ValueError(f"{t.model.lower()}: stream = \"swatplus\" puts a loss's mass back through a "
+                                     f"mass source on the coupled packages' cells; {missing} have none "
+                                     "(add_transport's stream_mass)")
         self._mass_links = (rp, wells, streams)
         L = self.ledger
+        channels = self.exchange.map.channels if self.exchange is not None else []
+        if self.exchange is not None and self.exchange.drains is not None:
+            channels = list(dict.fromkeys(channels + self.exchange.drains[1].channels))
         for sp in self.transport:
             k = f"transport:{sp}:"
             L.pair(k + "recharge:sent", k + "recharge:received")
-            for c in (self.exchange.map.channels if self.exchange is not None else []):
-                L.pair(k + f"stream:{c}:leakage_sent", k + f"stream:{c}:leakage_received")
+            if sp in self.surface and self.surface[sp].recharge:
+                L.pair(k + "recharge:made", [k + "recharge:sent", k + "recharge:no_water"])
+                if self.surface[sp].x == "no3" and self.cfg.recharge_source == "hru" and \
+                        self.sw.has("aquifer_water_no3__recharge_mass_rate"):
+                    # SWAT+'s own aquifer recharge mass, the same leached nitrate summed by aquifer (hru_hyds.f90)
+                    L.pair(k + "recharge:made", k + "recharge:swat_aquifers", rtol=RC.AQUIFER_RTOL,
+                           bound=k + "recharge:precision")
+            for c in channels:
+                if self._stream_side(sp):
+                    L.pair(k + f"stream:{c}:due", [k + f"stream:{c}:in_swat", k + f"stream:{c}:returned"])
+                    L.pair(k + f"stream:{c}:returned", k + f"stream:{c}:returned_received")
+                else:
+                    L.pair(k + f"stream:{c}:leakage_sent", k + f"stream:{c}:leakage_received")
+            if self.gw_soil is not None:
+                if sp in self.surface:
+                    L.pair(k + "gw_soil:sent", k + "gw_soil:split")
+                    L.pair(k + "gw_soil:due", k + "gw_soil:received", rtol=FLOAT32)
             L.zero(k + "closure_share", atol=1e-6)
+        if self.exchange is not None and any(sm.stream for sm in self.surface.values()):
+            # SWAT+'s aquifers pass recharge through, and with it their nitrate and soluble P: none of it leaves
+            # them (aquifer_pass_through; their soluble P outflow is recharge water x sol_p, set to zero)
+            for x in ("no3", "solp"):
+                L.zero(f"swatplus:aquifer_{x}_outflow", atol=1e-9)
 
-    def _transport_day(self):
-        """The day's inflow concentrations, after MODFLOW 6 prepares the day [A]. The couplings are found on the first
-        day, once the packages have their entries."""
+    def _stream_side(self, sp) -> bool:
+        return sp in self.surface and self.surface[sp].stream
+
+    def _transport_day(self, L):
+        """The day's inflow concentrations and mass sources, after MODFLOW 6 prepares the day and the recharge is set:
+        the recharge's (stated [A], or SWAT+'s leached mass over the water, cell by cell), the coupled rivers' losses'
+        (stated [A], or none: with the stream side, a loss's mass comes the next day, as SWAT+ gave it, through the
+        mass sources on its cells, with what SWAT+ didn't keep of the aquifer's discharge). The couplings are found on
+        the first day, once the packages have their entries."""
         if not hasattr(self, "_mass_links"):
             self._build_mass_links()
         rp, _, streams = self._mass_links
+        self._recharge_mass = {}
         for sp, t in self.transport.items():
             if sp in self.salt:  # from the land and the streams today (salt.py)
                 self._salt_inflows(sp, t, rp, streams)
                 continue
-            t.set_inflow(rp, float(self.cfg.transport[sp]["recharge"]))
-            if self.exchange is not None:
-                t.set_inflow(self.exchange.package, float(self.cfg.transport[sp]["stream"]),
-                             entries=self.exchange.map.entry_channel >= 0)
+            k = f"transport:{sp}:"
+            tc = self.cfg.transport[sp]
+            sm = self.surface.get(sp)
+            if tc["recharge"] == "swatplus":
+                c, made, sent, dry = sm.recharge_mass(self.recharge, self.mf6)
+                t.set_inflow(rp, c)
+                L.enter(k + "recharge:made", made)
+                L.enter(k + "recharge:sent", sent)
+                L.enter(k + "recharge:no_water", dry)
+                if self.aquifer_check is not None and sm.x == "no3" and \
+                        self.sw.has("aquifer_water_no3__recharge_mass_rate"):
+                    L.enter(k + "recharge:swat_aquifers",
+                            float(np.sum(self.sw.get("aquifer_water_no3__recharge_mass_rate")) * DAY))
+                    # the precision bound of the water's pair, at the day's leached concentration
+                    L.enter(k + "recharge:precision", L.today("recharge:precision") * made
+                            / max(L.today("recharge:made"), 1e-30))
+            else:
+                t.set_inflow(rp, float(tc["recharge"]))
+                L.enter(k + "recharge:sent", float(tc["recharge"]) * L.today("recharge:sent"))
+            if self.exchange is None:
+                continue
+            if self._stream_side(sp):
+                t.set_inflow(self.exchange.package, 0.0, entries=self.exchange.map.entry_channel >= 0)
+                due = dict(sm.sent)
+                for c in self.due:  # SWAT+'s outflow concentration for the day just run, its losses' today
+                    L.enter(k + f"stream:{c}:concentration", sm.c_out.get(c, 0.0))
+                for c, back in sm.put_back(streams).items():
+                    L.enter(k + f"stream:{c}:due", due.get(c, 0.0))         # what the aquifer sent yesterday
+                    L.enter(k + f"stream:{c}:in_swat", sm.in_swat.get(c, 0.0))  # of it, what SWAT+ kept today
+                    L.enter(k + f"stream:{c}:returned", back)                # the rest, back into the aquifer
+            else:
+                t.set_inflow(self.exchange.package, float(tc["stream"]), entries=self.exchange.map.entry_channel >= 0)
 
     def _entry_nodes(self, t, package: str) -> np.ndarray:
         """A flow package's entries' 0-based nodes as the transport model has them (-1 for none)."""
@@ -883,35 +986,64 @@ class Basin:
 
     def _transport_accounts(self, L):
         """Each species' mass for the day, kg: in with recharge (as sent: the stated concentration times the volume
-        sent; as received: what the transport model took in), out with each well, to and from each coupled channel,
-        across the boundaries not coupled (net, positive into the aquifer), the release from storage, and the
-        closure share, checked every day. Then the wells' concentrations, for tomorrow's intakes."""
+        sent, or SWAT+'s leached mass on cells with water; as received: what the transport model took in), out with
+        each well, to and from each coupled channel, up into the soil, across the boundaries not coupled (net,
+        positive into the aquifer), the release from storage (of it, from sorbed storage), the loss to decay, and the
+        closure share, checked every day. With the stream side, the gains' mass due in SWAT+ tomorrow and the soil
+        link's split. Then the wells' concentrations, for tomorrow's intakes."""
         rp, wells, streams = self._mass_links
+        gs = self.gw_soil.package if self.gw_soil is not None else None
         for sp, t in self.transport.items():
-            b = t.budget(rp, wells, streams)
+            b = t.budget(rp, wells, streams, gw_soil=gs)
             x = t.concentration()
             k = f"transport:{sp}:"
             salt = self.salt.get(sp)
-            L.enter(k + "recharge:sent", salt.perc_kg if salt is not None
-                    else float(self.cfg.transport[sp]["recharge"]) * L.today("recharge:sent"))
+            sm = self.surface.get(sp)
+            if salt is not None:  # the HRUs' percolation mass (salt.py); other species book theirs with the inflows
+                L.enter(k + "recharge:sent", salt.perc_kg)
             L.enter(k + "recharge:received", b.recharge)
             for w, m in b.wells.items():
                 L.enter(k + f"well:{w}:withdrawn", m)
                 L.enter(k + f"well:{w}:concentration", float(x[self.mf6.node(*self._well_cell(w))]))
             for c in b.to_stream:
                 L.enter(k + f"stream:{c}:to_stream", b.to_stream[c])
-                L.enter(k + f"stream:{c}:leakage_received", b.from_stream[c])
-                # with salt, the losses' water carries none; its mass enters by a source the next day (salt.py)
-                c_loss = 0.0 if salt is not None else float(self.cfg.transport[sp]["stream"])
-                L.enter(k + f"stream:{c}:leakage_sent", c_loss * b.leakage_m3[c])
+                if salt is not None:
+                    # with salt, the losses' water carries none; its mass enters by a source the next day (salt.py)
+                    L.enter(k + f"stream:{c}:leakage_received", b.from_stream[c])
+                    L.enter(k + f"stream:{c}:leakage_sent", 0.0 * b.leakage_m3[c])
+                elif self._stream_side(sp):
+                    L.enter(k + f"stream:{c}:returned_received", b.returned.get(c, 0.0))
+                else:
+                    L.enter(k + f"stream:{c}:leakage_received", b.from_stream[c])
+                    L.enter(k + f"stream:{c}:leakage_sent", float(self.cfg.transport[sp]["stream"]) * b.leakage_m3[c])
+            if self._stream_side(sp):
+                for c, m in sm.after_solve(streams, self.due, b).items():
+                    L.enter(k + f"stream:{c}:mass_due", m)  # the gain's mass, in SWAT+ tomorrow
+            if gs is not None:
+                L.enter(k + "gw_soil:sent", b.gw_soil)
+                if sm is not None:
+                    L.enter(k + "gw_soil:split", sm.soil_after_solve(self.gw_soil, x))
+                elif salt is None:  # a species neither SWAT+ nor salt.py carries: it leaves with the water
+                    L.enter(k + "gw_soil:not_carried", b.gw_soil)
+                # a salted species' soil link is salt.py's (after_groundwater: soil:sent, soil:mapped)
             for p, m in b.boundary.items():
                 L.enter(k + f"boundary:{p}", m)
             L.enter(k + "storage_release", b.storage_release)
+            if t.sorbs:
+                L.enter(k + "sorbed_release", b.sorbed_release)
+            if t.decays:
+                L.enter(k + "decay", b.decay)
             L.enter(k + "closure_share", b.closure_share)
             if salt is not None:
                 losses = [(t._entries(pkg, x)[0], ec, ch) for pkg, ec, ch in self._loss_packages]
-                salt.after_groundwater(L, b, self.mf6, self.gw_soil.package if self.gw_soil is not None else None, x,
-                                       losses)
+                salt.after_groundwater(L, b, self.mf6, gs, x, losses)
+            if self._track_transport:
+                t.track()
+        if self.exchange is not None and any(sm.stream for sm in self.surface.values()):
+            area = {a: self.swat_aquifer_ha.get(a, 0.0) for a in self.sw.names("aquifer:no3_lat")}
+            L.enter("swatplus:aquifer_no3_outflow",
+                    float(np.nansum(self.sw.get("aquifer:no3_lat") * np.array(list(area.values())))))
+            L.enter("swatplus:aquifer_solp_outflow", float(np.nansum(self.sw.get("aquifer:minp"))))
         self._set_intakes()
 
     def _well_cell(self, name: str):
@@ -1020,6 +1152,12 @@ class Basin:
             self.sw.set(S.GW_EXCHANGE, np.array([self.due.get(c, 0.0) / DAY for c in names]))
         if self.lakes is not None:  # yesterday's lake leakage, on the reservoirs today
             self.lakes.before_swat()
+        for sp, sm in self.surface.items():  # the mass with yesterday's gains and groundwater into the soil
+            mass, soil = sm.before_swat(self.due if self.direct_exchange else {})
+            for c, m in mass.items():
+                L.enter(f"transport:{sp}:stream:{c}:mass_set", m)
+            if gw_soil is not None:
+                L.enter(f"transport:{sp}:gw_soil:due", soil)
         self.swat.update()
         rt.read_swat()
         if self.lakes is not None:
@@ -1028,6 +1166,10 @@ class Basin:
             self._irrigate(L, rt)
         if gw_soil is not None:
             L.enter("gw_soil:received", gw_soil.received())
+        for sp, sm in self.surface.items():
+            soil = sm.after_swat(list(self.due))
+            if gw_soil is not None:
+                L.enter(f"transport:{sp}:gw_soil:received", soil)
         if self.direct_exchange:
             got = dict(zip(self.sw.names(S.GW_EXCHANGE), self.sw.get(S.GW_EXCHANGE) * DAY))
             self._exchanged = {c: got[c] for c in self.due}
@@ -1073,8 +1215,6 @@ class Basin:
                 self.exchange.set_limit_state(self._saved_limit)  # where a restart's first day's limit starts
         if not hasattr(self, "_gw_packages"):
             self._start_takeover()
-        if self.transport:
-            self._transport_day()
         sent = self.recharge.transfer()
         L.enter("recharge:sent", sent)
         L.enter("recharge:made", self.recharge.made)
@@ -1082,6 +1222,8 @@ class Basin:
         if self.aquifer_check is not None:
             L.enter("recharge:swat_aquifers", float(np.sum(self.sw.get(RC.RECHARGE) * DAY * self.aquifer_check)))
             L.enter("recharge:precision", float(np.sum(np.abs(self.sw.get(RC.PERCOLATION)) * DAY * self.aquifer_bound)))
+        if self.transport:
+            self._transport_day(L)
         rt.apply_wells()
         if self.lakes is not None:
             self.lakes.before_solve()
@@ -1480,6 +1622,7 @@ class Basin:
             "limit_lowered": self.exchange.limit_state() if self.exchange is not None else None,
             "lakes_due": self.lakes.due if self.lakes is not None else None,
             "gw_soil_due": self.gw_soil.due.tolist() if getattr(self, "gw_soil", None) is not None else None,
+            "surface_mass": {sp: sm.state() for sp, sm in self.surface.items()},
         }))
 
     # ---------- outputs ----------
@@ -1605,6 +1748,29 @@ class Basin:
             if rch and abs(rel / rch) < tol:
                 break
         return heads, report
+
+    @classmethod
+    def transport_steady_state(cls, cfg: C.ExampleConfig, days: int = 365, run: str = "steady-transport",
+                               users: bool = False, prepare=None, heads: np.ndarray | None = None
+                               ) -> tuple[dict[str, np.ndarray], dict]:
+        """Each transport species' steady state (docs/design.md, Starting concentrations): the coupled run for
+        ``days``, its flows and its inflows' water and mass (recharge at its concentration, the streams' losses,
+        everything that brings mass in) averaged over them, and the concentrations each cell settles at under those
+        means with its decay (``Transport.steady_state``; dispersion left out [A]). So with SWAT+'s leached mass, the
+        start is under the run's own mean recharge concentration, flow-weighted. Run it on a year or more after the
+        flow's warm-up (``spin_up``'s heads), then start the run from it: ``Basin(cfg, concentrations=...)``.
+        Returns the concentrations and, per species, the mean recharge concentration (kg m-3) it was under."""
+        b = cls(cfg, run=run, users=users, days=days, prepare=prepare, heads=heads)
+        try:
+            b._track_transport = True
+            b.run()
+            t = b.ledger.totals()
+            out = {sp: tr.steady_state() for sp, tr in b.transport.items()}
+            mean = {sp: t.get(f"transport:{sp}:recharge:received", 0.0) / max(t.get("recharge:received", 0.0), 1e-30)
+                    for sp in b.transport}
+        finally:
+            b.finalize()
+        return out, mean
 
     @classmethod
     def from_config(cls, path, run: str = "base", users: bool = True, days: int | None = None,
