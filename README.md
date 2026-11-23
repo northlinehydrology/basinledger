@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.10.1).** Built and tested:
+**Status: early (0.11.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -40,7 +40,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   streamflow routing (SFR) packages, with SFR's reaches built from SWAT+'s channel lines, and lakes at a fixed stage
   coupled through their outlet channels;
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site): maps, wells,
-  head outputs and rules name cells as `layer, row, col` or `layer, icell2d`;
+  head outputs and rules name cells as `layer, row, col` or `layer, icell2d`; every solve checked for non-finite
+  heads, a run stopping at the first with the day, the iteration and the solver settings that usually fix it;
 - an existing MODFLOW 6 model taken as given (docs/design.md, "Extending an existing MODFLOW 6 model"): what Basin
   Ledger takes over listed at start-up, maps onto its grid, its own units and stress periods, an SFR network a study
   brought lined up with SWAT+'s channels and its mover cut, users' wells added or on its MAW wells, storage for a
@@ -63,8 +64,9 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   concentration from the aquifer at its well; nitrate and soluble phosphorus carried with the water through every
   link between SWAT+ and MODFLOW 6 (SWAT+'s leached mass into the aquifer HRU by HRU, the aquifer's concentration
   back to the channels with gains, drains and the soil link, the channel's own with its losses), first-order decay
-  (denitrification) and linear sorption (phosphorus) in the ledger, and a steady-state start
-  (`Basin.transport_steady_state`);
+  (denitrification) and linear sorption (phosphorus) in the ledger, a steady-state start
+  (`Basin.transport_steady_state`), and dispersion with or without XT3D's cross terms, or none
+  (`add_transport(..., xt3d=False)`);
 - salt (`[salt.<species>]`): conservative species (chloride, weathering's ions) through every water path of a
   coupled run, each day, each one's mass closed: a store per HRU (deposition, road salt by rate or by an annual
   amount per calendar year over its snow and ice days, land sources such as septic and potash by HRU, land use or
@@ -94,7 +96,8 @@ Examples:
 
 Still to come ([docs/design.md](docs/design.md)):
 
-- water quality through SWAT+'s streams (stage 2), on swatplus-bmi 0.5.0's species variables;
+- a user's returned loads into SWAT+'s point sources, the rest of water quality's stage 2 (swatplus-bmi's
+  `point_source_water_<species>__mass_flow_rate`);
 - SWAT+ built on the NextGen hydrofabric, for water quality on the same catchments;
 - AORC forcing;
 - USGS groundwater levels as observations.
@@ -316,7 +319,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | Any component plugs in | a renamed component with other units, and `CoolingWaterBmi`, mapped by role |
 | Area maps | volume kept exactly; over-covered cells and mismatched areas refused |
 | Vertex grids | maps, wells, heads and rules by `layer, icell2d`; a cell in the other grid's form, outside the grid or inactive refused; a refined grid's budget closes every day and matches the ledger, with transport's mass closing; a uniform DISV grid gives the structured grid's run |
-| MODFLOW 6 control | values set between prepare and solve are the ones MODFLOW 6 uses; daily steps enforced |
+| MODFLOW 6 control | values set between prepare and solve are the ones MODFLOW 6 uses; daily steps enforced; a solve that returns non-finite heads stops the run at once |
 | Recharge | sent = received every day, against MODFLOW 6's budget file and SWAT+'s own printed recharge |
 | Recharge by HRU | pixels split exactly among cells; each HRU's percolation × its SWAT+ area reaches its own cells and no other, every day; the total equals SWAT+'s own aquifer recharge every day |
 | Wells | pumped = requested = the user's withdrawal, every day |

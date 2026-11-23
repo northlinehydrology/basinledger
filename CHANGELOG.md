@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 (2026-11-23)
 
 - Groundwater transport, stage 2 (docs/design.md, Water quality across links): nitrate and soluble phosphorus travel
   with the water through every link between SWAT+ and MODFLOW 6, each link's mass in the ledger as sent and received
