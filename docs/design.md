@@ -24,6 +24,7 @@ Status (Nov 22, 2026, release 0.10.1). Built and tested on synthetic examples:
 - stream temperature as a reach heat balance, with users' returns carrying their heat;
 - water quality's first stage: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users'
   intake concentrations from the aquifer;
+- salt through land, aquifer and streams, and its replay from a recorded flow run (Replay), for calibration;
 - weather written into SWAT+'s gage records from a run's first day, from a series or a scenario's change
   (`[weather]`, swatplus-bmi 0.7.0);
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site), with maps,
@@ -1124,8 +1125,15 @@ kg per m3 of aquifer a year) [A], chosen over a background recharge concentratio
 with the water's time in the rock, which a source in the aquifer's volume carries and a recharge concentration
 doesn't: a recharge background would put as much into a wet year's recharge as a dry year's, and none into slow, old
 groundwater. For chloride it is usually small (crystalline Piedmont and Blue Ridge rock holds little chloride); the
-major ions that weathering does add are the second species, `[salt.weathering]`, with their own source by zone. Wells as built (the user's
-intake follows the aquifer at its well).
+major ions that weathering does add are the second species, `[salt.weathering]`, with their own source by zone. The
+rate is per m3 of saturated aquifer: the builder writes each cell's rate at full saturation, and each day Basin Ledger
+sets each entry to that times its cell's saturated share at the start of the day [A] (MODFLOW 6's NPF saturation at
+the end of the day before, kept in the salt state for restarts; on a run's first day, from the starting heads:
+`(min(h, top) - bot) / (top - bot)` in a convertible cell, 1 in a confined one). A dry cell weathers nothing. The
+static rate put the full source into the Virginia study's dry layer-1 cells (24,842 of 111,897 dry at its steady
+start, kept active with no water by Newton) and the weathering solve diverged on day 0 (Nov 22, 2026). The share is
+the day before's because the flow is solved after the transport's sources are set, the same one-day lag as the
+streams' losses. Wells as built (the user's intake follows the aquifer at its well).
 
 **3. Streams: a mass balance by water body, upstream first.** Each SWAT+ channel and reservoir is a well-mixed store
 (kg), in the order `chandeg.con` and `reservoir.con` route them:
@@ -1179,6 +1187,173 @@ and days, SWAT+ water allocation other than Basin Ledger's places of use, and ro
 reservoirs and routing units (runon to HRUs). Not refused but not built: a user's intake concentration from a
 channel (its withdrawal leaves the stream at the stream's concentration, booked as withdrawn; the user isn't told
 it).
+
+## Replay: the salt again from a recorded flow run (designed and built Nov 22, 2026)
+
+A salt calibration changes only salt: input multipliers, sources, weathering rates, porosity, dispersivity, starting
+concentrations. None of them changes the flow: MODFLOW 6 solves flow before transport and never reads it back, and
+salt sends nothing to SWAT+ (Salt, above). So the flow side of a long, heavy run can be recorded once and the salt run
+again from the record as often as a calibration needs, cheaply and in parallel, without SWAT+ or MODFLOW 6's flow
+model. `replay.py` does it.
+
+**Recording.** A normal run with `[replay] record = "<folder>"` saves, after each day, what transport and the salt
+balances read from the flow side, and nothing else:
+
+| What | Per day | Why |
+|---|---|---|
+| MODFLOW 6's face flows (FLOWJA) | the upper triangle, one value per connection; the lower is its negative, checked every day | GWT's advection, and which cells rewet |
+| each cell's saturation (NPF SAT) | one per cell | GWT's water volume, dispersion's dry cells, weathering's share |
+| specific discharge (NPF SPDIS) | three per cell, unless `specific_discharge = false` | dispersion's tensor (its only use) |
+| storage (STO STRGSS + STRGSY) | their sum, one per cell (both in float64) | GWT's old water volume reads only the sum |
+| the cells MODFLOW 6 made dry | their numbers | GWT inactivates a cell at HDRY |
+| every flow package's flow by entry | SIMVALS (and SIMTOMVR with a mover); each package's entry count and a CRC of its cells, checked in a replay | GWT's sources and sinks: recharge, the coupled rivers, drains and lakes, the soil link, wells, the model's own |
+| SWAT+'s day as salt reads it | the `hru_wb` columns, `hru_pw:tmn`, percolation, channel and reservoir volume, outflow, rain and seepage, point sources, withdrawals, fertilizer | the land's and the streams' balances, and the road salt's day rule |
+| the soil link's plan by map row | gwflow's rule only | the soil link's split |
+| ledger lines and controls | `recharge:sent`, every `user:` line, each user's controls | the salt's point sources, a stated recharge concentration, the users run again |
+| the flow, base flow and head series | | outputs and observations |
+
+Once: the run's identity (below), the flow model's memory before the first day, the starting heads, the recharge
+and soil maps, the exchange's entries by channel, the users and what they take in, and the SWAT+ files the salt reads
+at start-up (routing, HRU data, snow, the stations' precipitation and temperature records). A restarted run carries
+on the record it was saved from (the run's identity checked, its flow model's files rebuilt for the record's whole
+period and compared), so a long record can be made in pieces.
+
+**Storage.** Each array of a chunk of days (about 256 MB raw) is XORed with the day before, its bytes shuffled (each
+value's first bytes together), and compressed with zlib. MODFLOW 6's values are float32 by default, float64 with
+`precision = "float64"` (bit for bit), or float32 with `mantissa_bits` fewer than its 23 [A]; SWAT+'s are float32 as
+SWAT+ holds them, so exact. Compressors were compared on the Rappahannock's flows: lzma, bz2 and a bit shuffle gave
+nothing over zlib on shuffled bytes (within 2%); without the XOR, the face flows and specific discharge took
+about 24% more.
+
+Measured on the Virginia study's Rappahannock grid (3 layers, 335,691 active cells, Newton, upstream advection; 8
+transient days under recharge varied each day and cell, MODFLOW 6 only), bytes per active cell per simulated day:
+
+| precision | with specific discharge | without | 11 years (4,018 days) |
+|---|---|---|---|
+| float32 (default) | 20.0 | 12.1 | 27.0 GB / 16.3 GB |
+| float32, 16-bit mantissa (within 7.6e-6) | 14.1 | 8.6 | 19.0 GB / 11.6 GB |
+| float32, 12-bit mantissa (within 1.2e-4) | 10.5 | 6.5 | 14.1 GB / 8.7 GB |
+| float64 | 46 | | 62 GB |
+
+Of float32's 20.0: face flows 6.9, specific discharge 7.9, storage about 3.1, recharge 1.1, saturation 0.7, the
+seepage drains 0.2. SWAT+'s part is an estimate, not measured [A]: 16 float32 columns for 33,525 HRUs are 2.1 MB a
+day raw, 8.6 GB over 11 years at most, likely 3 to 4.5 GB compressed (MODFLOW 6's float32 flows compressed 1.9
+times). MODFLOW 6's own budget file at daily resolution would be about 80 GB (estimated for this grid). A study on this disk records with the
+16-bit mantissa, or without specific discharge if it runs without dispersion: 15 to 23 GB. Reading back costs 44 ms a
+day on this grid; recording, about 0.5 s a day (the compression).
+
+**Replaying** (`Basin(cfg, replay="<folder>")`, `basinledger run --replay`, `basinledger forward --replay` for
+PEST++). The run's MODFLOW 6 simulation is built as the recorded run's was, its flow model's input checked against
+the record's, and the flow model left in it, unsolved: each day, once MODFLOW 6 has prepared the day, the flow
+model's memory is set from the record (face flows, saturation, specific discharge, storage, dry cells, every
+package's SIMVALS), and only the transport solutions are solved. The transport models read those arrays through the
+GWF-GWT exchange exactly as in the coupled run. The flow model's output control and observations are left out of
+the replay's copy.
+
+Two other ways were looked at and set aside (MODFLOW 6 6.8.2's source):
+
+- **A transport-only simulation reading a budget file (FMI).** The whole daily budget file is the size problem. A
+  file of one time step is reused for every step (`advance_bfr`), and the arrays could then be set through the API;
+  but reusing sets `IFLOWSUPDATED` to 0, so DSP's coefficients would never be recomputed. Writing the file as the
+  replay goes, or streaming it through a pipe, fails: the reader rewinds and peeks ahead. And a file is read as the
+  step is prepared, so the transport model would take the day's flows for its dry cells and dispersion where the
+  coupled run takes the day before's (below): not the same run.
+- **The transport models' FMI arrays set directly.** With the GWF-GWT exchange they are the flow model's own memory,
+  so setting the flow model's is the same thing, with the flow model's own checks and package structure kept.
+
+**Bit for bit.** In the coupled run the transport model prepares its day before the flow is solved: it inactivates
+dry cells and works out dispersion from the flow model's memory as the day before left it (HDRY heads, saturation,
+specific discharge, face flows), and solves with the day's. A replay sets the day's arrays after MODFLOW 6 prepares
+the day, so the same holds; before its first day it sets the memory the record holds for the day before (or the
+start). So a replay from a float64 record reproduces the coupled run's concentrations, masses and ledger lines bit
+for bit, every day (`test_float64_replay_is_the_full_run_bit_for_bit`, 365 days of the synthetic salt example, both
+species, every salt, transport and user line). From float32, concentrations agree to 3e-9 relative on the synthetic
+example and 1.1e-7 on the Rappahannock grid (the test's tolerance is 1e-6: float32 keeps each flow within 6e-8, and
+transport is linear in the flows); masses to 1e-6 of each account's largest day. Every account closes every day in a
+replay as in a run: the transport's mass budget is the solved equation's, so float32 flows don't open it.
+
+**Speed.** On the Rappahannock grid (one species, upstream advection, 6 days, the machine loaded by a calibration on
+10 of its 14 cores), MODFLOW 6's flow took 4.1 to 4.2 s a day:
+
+| dispersion | full run (MODFLOW 6: flow + transport) | replay |
+|---|---|---|
+| XT3D (MODFLOW 6's default) | 7.68 s | 3.64 s |
+| XT3D off (`add_transport(xt3d=False)`) | 4.52 s | 0.37 s |
+| none (`dispersivity=None`) | 4.39 s | 0.24 s |
+
+The full run also steps SWAT+ (33,525 HRUs), which a replay doesn't, so a replay without XT3D is 12 to 18 times
+cheaper than the coupled day before SWAT+ is counted. With XT3D, half of MODFLOW 6's time is the transport models'
+formulate and budget, and a replay saves only the flow's half. On the synthetic salt example (one HRU, 100 cells, two
+species) a day takes 17.7 ms coupled and 6.9 ms replayed.
+
+Transport's convergence on this grid (the study's coupled model timed over 10 days, Nov 22): TVD for nitrate and soluble P
+didn't reach `outer_dvclose` 1e-9 kg m-3 in 50 outer iterations on day 2; upstream with XT3D took 12.4 s a day,
+without XT3D 5.75, with no DSP 5.08 (flow alone 3.9). `add_transport`'s default `outer_dvclose`, 1e-10 kg m-3, is
+1e-7 mg/L, absolute: far below any lab's reporting limit and far tighter, relative to the species, for a trace
+species than for chloride. Recommended, not yet changed [A]: a closure relative to the species' concentrations
+(about 1e-6 of the largest starting or source concentration, 5e-8 kg m-3 for chloride at 50 mg/L, 5e-9 for nitrate
+at 5 mg/L), keeping `rcloserecord` strict, since the mass closure checked every day follows the residual, not the
+concentration change; and upstream advection without XT3D on coarse grids, where upstream's numerical dispersion
+(about half a 200 m cell) is as large as the physical one [A].
+
+**What may change, and what is refused.** The run's identity is hashed when it is recorded and compared in a
+replay (`identity`, `gwf_inputs`):
+
+- the config's flow side: every field but `[salt]`, `[transport]`, `[outputs]`, `[replay]`, the run's folder and
+  length, and the builder's arguments (which are checked through the files the builder writes);
+- every file it names, by content: the SWAT+ project, maps, users' configs, weather series, zones, pilot points, the
+  builder's module;
+- the parameters of every model but salt's;
+- whether the users run, and the starting heads;
+- MODFLOW 6's flow model's inputs: the simulation's options and time, the flow model's name file and every package
+  file (with what they read), its solution's settings, any GWF-GWF exchange, comments left out. The transport models,
+  their solutions and their exchanges are left out, so they may change.
+
+So a replay may change `[salt.<species>]` (multipliers, sources, road salt, point sources, starting stores), salt's
+calibration parameters, `[transport.<species>]` (a stated concentration), and the transport models: porosity,
+sorption, dispersivity, XT3D, advection scheme, solver, starting concentrations, weathering rates; and it may add a
+species. Refused: anything in the list above that differs; more days than the record holds; `heads` and
+`wrap_surface`; a record of another format; a day on which a flow package's entries aren't where they were; a
+transport model with dispersion from a record without specific discharge; a transport model correcting for the
+flow's imbalance (FMI's FLOW_IMBALANCE_CORRECTION, which reads FLOWJA's diagonal) unless the record has it. A record
+is refused for several groundwater models, a NextGen surface, and an exchange other than one RIV package (SFR,
+several parts).
+
+**Users.** A user who takes in the aquifer's water through a configured well is run again in a replay, with the
+recorded controls: its intake follows the replayed aquifer, so its returned chloride does too. Its water is checked
+against the record every day (to 1e-12) and a difference stops the replay: that user's water depends on what it
+takes in, so changing the salt would change the flow. A user with forcing who takes in the aquifer's water isn't
+built. Every other user's lines are the record's.
+
+**Restarts.** A replay saves its concentrations, salt state, ledger and series (`save`) and restarts from them bit
+for bit. A replay can also restart from a full run's saved state, and is then the unbroken full run: the flow
+model's memory before the restart day comes from the record, where a restarted full run starts its transport from
+the flow model's initial memory (a full run's own restart differs from its unbroken run there, by its first day's
+dispersion). Weathering's saturation is in the salt state (Salt), so both carry it.
+
+**What a study config needs.** To record: `[replay] record = "<folder>"` (and `mantissa_bits = 16` or
+`specific_discharge = false` on a big grid) on the run whose flow is to be reused, run with `basinledger run`; it
+must start from day 0 (a restart carries on its record), with `[salt]` or not (the SWAT+ columns salt reads are
+printed and recorded either way). `forward` and `Basin.spin_up` never record. To replay: the same config, with only
+the salt side changed, `basinledger forward basin.toml salt_parameters.csv observations.csv out.csv --replay <folder>
+--run-folder <worker>` for each PEST++ worker (observations of kind `chloride_mg_l`, `weathering_mg_l` or
+`conductance_us_cm` at an output channel, and the recorded flow and heads), or `Basin(cfg, replay=folder)`.
+
+[A], in one place: float32 flows (or fewer mantissa bits) stand in for MODFLOW 6's float64; the SWAT+ files the salt
+reads are the run's at its start; a user who doesn't take in the aquifer's water returns what it reported in the
+recorded run; MODFLOW 6's flow model is prepared each day in a replay but not solved, and nothing it would write is
+kept; SWAT+'s part of a record's size is estimated.
+
+**Not built: a nutrient replay.** Nitrate and soluble P do feed back into SWAT+ (the stream and soil sides of the
+nitrate-transport branch), so SWAT+ can't be replayed for them. What could be replayed is MODFLOW 6's flow: SWAT+
+live, MODFLOW 6's flow from the record, its transport solved. It would take: (1) the record's flow side as now, plus
+what MODFLOW 6 sends SWAT+ each day (each channel's exchange, the soil link by layer, the lakes' leakage), set in
+SWAT+ from the record in place of the solved flow's; (2) SWAT+'s water checked against the record every day
+(percolation by HRU, channel flows): nutrient parameters can change the water through plant growth (nutrient stress
+limits growth, so leaf area, evapotranspiration and soil water), and a replay that changes the water must stop, or
+run with SWAT+'s nutrient stress off; (3) the nitrate branch's surface-mass links driven from the replayed flows. It
+saves only MODFLOW 6's flow solve (3.9 to 4.2 s a day on the Rappahannock grid; SWAT+ and the transport remain),
+against salt's nearly all. Not before the nitrate branch is merged.
 
 ## Calibration
 

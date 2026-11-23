@@ -3,7 +3,8 @@
 **Building.** ``add_transport`` is called by an example's builder, after the flow model is made and before the
 simulation is written. For each species it adds a GWT model named ``gwt_<species>`` with its own IMS (MODFLOW 6
 solves flow first, then each transport model, every time step), the GWF6-GWT6 exchange, and the packages: mobile
-storage with porosity and optional sorption (MST), advection (ADV), dispersion (DSP), starting concentrations (IC),
+storage with porosity and optional sorption (MST), advection (ADV), dispersion (DSP, optional, with or without
+XT3D), starting concentrations (IC),
 sources and sinks (SSM) and output control (OC). Each flow package that brings water in with a concentration is named
 in ``sources`` with its auxiliary variable, which is added to the flow package (zero) if it lacks it. Water leaving
 the aquifer through any package leaves at its cell's concentration. Water entering through a flow package not named
@@ -92,7 +93,7 @@ def _by_zone(value, zones, what: str):
 def add_transport(sim, gwf, species: str, porosity, dispersivity, sorption: dict | None = None, strt=0.0,
                   sources: list[tuple[str, str]] = (), scheme: str = "tvd", diffusion: float = 0.0,
                   ims: dict | None = None, save: str = "LAST", decay: float | None = None,
-                  decay_sorbed: float | None = None, stream_mass: list[str] = ()):
+                  decay_sorbed: float | None = None, stream_mass: list[str] = (), xt3d: bool = True):
     """A GWT model ``gwt_<species>`` on ``gwf``'s grid (DIS or DISV), linked to it and solved after it.
 
     porosity: effective porosity [A] (scalar or per cell). dispersivity: m [A], see ``_dispersivities``.
@@ -106,7 +107,13 @@ def add_transport(sim, gwf, species: str, porosity, dispersivity, sorption: dict
     ``decay_sorbed`` (d-1 [A]) is the sorbed mass's, the dissolved rate unless given. stream_mass: flow packages
     (the coupled rivers and drains) whose cells get a mass source of their own, ``src_<package>``, one entry per the
     package's entry (its first stress period's cells), through which Basin Ledger puts back the mass a stream's
-    losses carry (coupling/transport.py, the stream side)."""
+    losses carry (coupling/transport.py, the stream side).
+
+    Dispersion: ``xt3d`` (MODFLOW 6's default) keeps the full dispersion tensor; ``xt3d=False`` (DSP's XT3D_OFF) drops
+    its cross terms, which on the Virginia study's grid (335,691 cells) took the transport day from 12.4 s to 5.75 s,
+    XT3D being most of the GWT models' formulate and budget time (Nov 22, 2026). ``dispersivity=None`` with no
+    diffusion leaves DSP out (5.08 s there): on coarse cells upstream advection's own numerical dispersion (about
+    half a cell) may exceed the physical one [A], a study's choice to state."""
     import flopy
 
     name = f"gwt_{species}"
@@ -150,7 +157,9 @@ def add_transport(sim, gwf, species: str, porosity, dispersivity, sorption: dict
         raise ValueError("decay_sorbed needs decay")
     flopy.mf6.ModflowGwtmst(gwt, **mst)
     flopy.mf6.ModflowGwtadv(gwt, scheme=scheme)
-    flopy.mf6.ModflowGwtdsp(gwt, diffc=diffusion, **_dispersivities(dispersivity))
+    if dispersivity is not None or diffusion:
+        flopy.mf6.ModflowGwtdsp(gwt, diffc=diffusion, xt3d_off=not xt3d,
+                                **(_dispersivities(dispersivity) if dispersivity is not None else {}))
     flopy.mf6.ModflowGwtic(gwt, strt=strt)
     src = []
     for pname, aux in sources:

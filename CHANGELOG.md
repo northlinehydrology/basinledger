@@ -36,6 +36,28 @@
   Rappahannock calibration, COMPLEXITY MODERATE's modified ILU (RELAXATION_FACTOR 0.97) did so for 16 of 40 prior
   realizations, and the NaN surfaced only a day later, in the groundwater-to-soil link. The message names the IMS
   settings that usually solve it (RELAXATION_FACTOR 0, or COMPLEXITY COMPLEX).
+- Replay (`replay.py`, `[replay] record`, `Basin(cfg, replay=folder)`, `--replay` on `run` and `forward`;
+  docs/design.md "Replay"): a coupled run records, each day, what transport and the salt balances read from the flow
+  side (MODFLOW 6's face flows, saturation, specific discharge, storage, dry cells and every package's flows by
+  entry; SWAT+'s columns the salt reads; the users' lines and controls), and a replay runs only the transport models
+  and the salt from it, with MODFLOW 6's flow model in the simulation but unsolved, its memory set from the record
+  each day. From a float64 record the coupled run is reproduced bit for bit; from float32 (the default) to 1.1e-7.
+  Salt settings, salt parameters, porosity, dispersion, weathering, advection and solver may change; anything that
+  would change the flow is refused (the config's flow side, the files it names and the flow model's input, hashed).
+  Users who take in the aquifer's water are run again, their water checked against the record. Record size on the
+  Virginia study's Rappahannock grid (335,691 cells): 20.0 bytes per cell-day in float32, 14.1 with
+  `mantissa_bits = 16`, 12.1 and 8.6 with `specific_discharge = false`; 11.6 to 27 GB for 11 years, against about
+  80 GB for MODFLOW 6's daily budget file. A replayed day there: 3.64 s with XT3D, 0.37 s without, 0.24 s with no
+  dispersion, against 7.68, 4.52 and 4.39 s for MODFLOW 6's flow and transport, before SWAT+.
+- `add_transport(xt3d=False)` turns XT3D off; `dispersivity=None` with no diffusion leaves DSP out (on the Virginia
+  grid XT3D was most of the transport's time).
+- Observations of salt: kinds `<species>_mg_l` and `conductance_us_cm` at an output channel.
+- Weathering by each cell's water: `[salt]` scales each weathering entry (`salt.add_weathering`, written at full
+  saturation) every day by its cell's saturated share at the start of the day (MODFLOW 6's saturation at the end of
+  the day before; on the first day from the starting heads, `salt.start_saturation`), so a dry cell weathers nothing
+  and a partly saturated one in proportion. The static rate put the full source into the Virginia study's dry
+  layer-1 cells and its weathering solve diverged on day 0. The saturation is saved with the salt state, so a
+  restart carries it. `build_small` takes `upper` (a thin convertible top layer), `newton` and `strt` for the test.
 - Salt (`salt.py`, `[salt.<species>]`, docs/design.md "Salt"): chloride carried through every water path of a coupled
   SWAT+ / MODFLOW 6 run, each day, as a conservative mass, since SWAT+ 62.0.1's salt module can't run with aquifers
   or point sources. A well-mixed store per HRU (deposition in precipitation, road salt on snow and ice days or a

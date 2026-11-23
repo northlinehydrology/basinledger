@@ -130,6 +130,14 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     base = 20.0
     slopes = {chloride = 3.0, weathering = 1.5}
 
+    [replay]                            # optional: record what transport and the salt balances read from the flow
+    record = "../../runs/flow-record"   #   side each day, so the salt can be run again from it without SWAT+ or
+    precision = "float32"               #   MODFLOW 6's flow (replay.py; Basin(cfg, replay=folder)). precision of
+    # mantissa_bits = 16                #   MODFLOW 6's flows in it: float32 (default) or float64 (bit for bit);
+                                        #   mantissa_bits rounds float32's 23 to fewer, for a smaller record [A]
+    # specific_discharge = false        # leave it out (dispersion's only use, 38% of a record): replays without
+                                        #   dispersion (add_transport's dispersivity None) only
+
     [rivers]                            # optional: MODFLOW 6 river cells by flowpath, for stage and base flow out
     package = "riv"
     map = "maps/river_cells.csv"        # object (flowpath or channel), layer, row, col (or layer, icell2d)
@@ -308,6 +316,10 @@ class ExampleConfig:
     mf6_storage: dict | None = None  # sy, ss (per meter), iconvert: storage for a model handed over steady
     irrigation: dict[str, list[tuple[str, float]]] | None = None  # HRU -> its wells and shares (coupling/irrigation.py)
     lakes: list = field(default_factory=list)  # LakeConfig: a SWAT+ reservoir coupled to a LAK lake (coupling/lakes.py)
+    replay_record: Path | None = None   # [replay] record: the folder a run records its flow side into (replay.py)
+    replay_precision: str = "float32"   # of MODFLOW 6's flows in the record: float32 or float64
+    replay_mantissa_bits: int | None = None  # float32's mantissa rounded to these bits (replay.Precision)
+    replay_specific_discharge: bool = True  # recorded, for dispersion
 
     @property
     def surface(self) -> str:
@@ -349,7 +361,7 @@ def load(path: str | Path) -> ExampleConfig:
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
              "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather",
-             "groundwater_to_soil", "irrigation", "lakes", "salt"}
+             "groundwater_to_soil", "irrigation", "lakes", "salt", "replay"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -484,6 +496,17 @@ def load(path: str | Path) -> ExampleConfig:
                 raise ValueError(f"{path}: [[lakes]] {lk['reservoir']}: form is one of {', '.join(FORMS)}")
             lakes.append(LakeConfig(lk["reservoir"], lk["package"], int(lk.get("lake", 1)), lk.get("form", "active"),
                                     lk.get("model")))
+    rp = c.get("replay", {})
+    if set(rp) - {"record", "precision", "mantissa_bits", "specific_discharge"} or ("replay" in c and "record" not in rp):
+        raise ValueError(f"{path}: [replay] takes record (a folder), precision (float32 or float64), mantissa_bits "
+                         "and specific_discharge")
+    if "mantissa_bits" in rp and (rp.get("precision", "float32") != "float32"
+                                  or not isinstance(rp["mantissa_bits"], int) or not 8 <= rp["mantissa_bits"] <= 23):
+        raise ValueError(f"{path}: [replay] mantissa_bits (8 to 23) rounds float32's mantissa")
+    if rp.get("precision", "float32") not in ("float32", "float64"):
+        raise ValueError(f"{path}: [replay] precision is \"float32\" or \"float64\"")
+    if rp and ("swatplus" not in c or "modflow6" not in c):
+        raise ValueError(f"{path}: [replay] records a coupled SWAT+ and MODFLOW 6 run; it needs both")
     ex_lakes = c.get("exchange", {}).get("lakes")
     if ex_lakes is not None and (not isinstance(ex_lakes, dict) or set(ex_lakes) != {"package", "map"}):
         raise ValueError(f"{path}: [exchange] lakes is {{package = \"<a RIV package>\", map = \"<a map>\"}}")
@@ -540,4 +563,8 @@ def load(path: str | Path) -> ExampleConfig:
         groundwater_to_soil=dict(gs) if gs is not None else None,
         irrigation=irrigation,
         lakes=lakes,
+        replay_record=_path(base, rp["record"]) if rp.get("record") else None,
+        replay_precision=rp.get("precision", "float32"),
+        replay_mantissa_bits=rp.get("mantissa_bits"),
+        replay_specific_discharge=_flag(path, "[replay] specific_discharge", rp.get("specific_discharge", True)),
     )

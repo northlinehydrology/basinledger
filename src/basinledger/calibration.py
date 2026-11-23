@@ -40,7 +40,8 @@ Tables:
                       multiply the array there; a layer without points of the set is unchanged.
     observations.csv  name, kind, object, date, value, weight, source
                       kind: flow (m3 s-1, object = channel or hydrofabric id) | head (m, object = a named head
-                      output); date ISO; source: e.g. "USGS 04119055 dv"
+                      output) | <species>_mg_l, conductance_us_cm (salt, object = an output channel); date ISO;
+                      source: e.g. "USGS 04119055 dv"
 """
 
 from __future__ import annotations
@@ -118,7 +119,7 @@ class Parameter:
 @dataclass
 class Observation:
     name: str
-    kind: str       # flow | head
+    kind: str       # flow | head | <species>_mg_l | conductance_us_cm
     object: str     # channel (or hydrofabric id) for flow; named head output for head
     date: str
     value: float
@@ -137,8 +138,8 @@ def read_observations(path: Path) -> list[Observation]:
         obs = [Observation(r["name"], r["kind"], r["object"], r["date"], float(r["value"]),
                            float(r.get("weight") or 1.0), r.get("source", "")) for r in csv.DictReader(f)]
     for o in obs:
-        if o.kind not in ("flow", "head"):
-            raise ValueError(f"observation {o.name}: kind must be flow or head")
+        if o.kind not in ("flow", "head", "conductance_us_cm") and not o.kind.endswith("_mg_l"):
+            raise ValueError(f"observation {o.name}: kind must be flow, head, <species>_mg_l or conductance_us_cm")
     return obs
 
 
@@ -423,19 +424,24 @@ def statistics(observations: list[Observation], sim: np.ndarray) -> dict[str, di
 
 
 def run_forward_model(config: str | Path, parameters: Path | None, observations: Path, out: Path,
-                      run: str = "calibration", run_folder: str | Path | None = None) -> Path:
+                      run: str = "calibration", run_folder: str | Path | None = None,
+                      replay: str | Path | None = None) -> Path:
     """The forward model PEST++ calls: apply a parameter set (the example's own, with these values in place of any
     it names), run the example, and write the simulated value at every observation (name, simulated) to ``out``.
-    ``run_folder``: where the run's files go, instead of the example's, so parallel workers don't share one."""
+    ``run_folder``: where the run's files go, instead of the example's, so parallel workers don't share one.
+    ``replay``: a record of the flow (replay.py), to run only the salt from it; the parameters may then be salt's
+    only. A forward run never records ([replay] record is for ``basinledger run``): its workers would overwrite one
+    record."""
     from . import config as C
     from .driver import Basin
 
     cfg = C.load(config)
+    cfg.replay_record = None
     if run_folder is not None:
         cfg.run_folder = Path(run_folder).resolve()
     obs = read_observations(observations)
     params = read_parameters(parameters) if parameters else []
-    b = Basin(cfg, run=run, parameters=params)
+    b = Basin(cfg, run=run, parameters=params, **({"replay": replay} if replay is not None else {}))
     try:
         b.run()
         sim = simulated(b.series, b.dates(), obs)
