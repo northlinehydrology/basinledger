@@ -533,6 +533,49 @@ def test_restart_carries_the_salt(swatplus):
     np.testing.assert_array_equal(a["x"], b["x"])
 
 
+def test_start_saturation_from_heads():
+    top, bot = np.array([90.0, 90.0, 90.0, 90.0, 88.0]), np.array([88.0, 88.0, 88.0, 88.0, 70.0])
+    h = np.array([89.0, 91.0, 87.0, -1e30, 50.0])
+    np.testing.assert_array_equal(SA.start_saturation(h, top, bot, [1, 1, 1, 1, 0]), [0.5, 1.0, 0.0, 0.0, 1.0])
+
+
+def test_weathering_follows_the_cells_water(swatplus):
+    """Weathering in a convertible layer that dries and wets again (Newton keeps its dry cells active with no water,
+    as the Virginia study's model does): each entry's rate each day is its rate at full saturation times its cell's
+    saturated share at the start of the day, the first day's from the starting heads, so a dry cell weathers nothing;
+    the mass booked is the rates', and everything closes."""
+    from basinledger.driver import Basin
+    cfg = salt_config()
+    cfg.mf6_builder_args = dict(cfg.mf6_builder_args, top=90.0, upper=88.2, newton=True, strt=88.6)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        b = Basin(cfg, run="salt-dry", days=160, users=False)
+    try:
+        s = b.salt["weathering"]
+        dry_days = 0
+        for d in range(160):
+            before = None if s.saturation is None else s.saturation.copy()
+            b.step()
+            base, nodes = s.weathering_entries
+            if before is None:  # the first day: from the starting heads, 0.4 m saturated of the top layer's 1.8
+                before = np.where(np.arange(len(s.saturation)) < 100, 0.4 / 1.8, 1.0)
+            rate = b.mf6.get("SMASSRATE", "gwt_weathering", "WEATHERING")[: len(base)]
+            np.testing.assert_allclose(rate, base * before[nodes], rtol=1e-12, atol=0.0)
+            dry = before[nodes] == 0.0
+            if dry.any():
+                dry_days += 1
+                assert np.all(rate[dry] == 0.0)
+            booked = b.ledger.table()["transport:weathering:boundary:weathering"][-1]
+            assert booked == pytest.approx(rate.sum(), rel=1e-12)
+        assert dry_days > 30  # the top layer's cells by the river dry within weeks and wet again by day 140
+        assert np.isfinite(b.transport["weathering"].concentration()).all()
+        t = b.ledger.table()
+        assert np.nanmax(np.abs(t["salt:weathering:closure_share"])) < 1e-9
+        assert np.nanmax(np.abs(t["transport:weathering:closure_share"])) < 1e-6
+    finally:
+        b.finalize()
+
+
 # ---------- the config ----------
 
 def test_config_refuses_salt_it_cant_carry(tmp_path):
