@@ -36,6 +36,42 @@
   Rappahannock calibration, COMPLEXITY MODERATE's modified ILU (RELAXATION_FACTOR 0.97) did so for 16 of 40 prior
   realizations, and the NaN surfaced only a day later, in the groundwater-to-soil link. The message names the IMS
   settings that usually solve it (RELAXATION_FACTOR 0, or COMPLEXITY COMPLEX).
+- Salt (`salt.py`, `[salt.<species>]`, docs/design.md "Salt"): chloride carried through every water path of a coupled
+  SWAT+ / MODFLOW 6 run, each day, as a conservative mass, since SWAT+ 62.0.1's salt module can't run with aquifers
+  or point sources. A well-mixed store per HRU (deposition in precipitation, road salt on snow and ice days or a
+  stated series, groundwater up into the soil; out with runoff, lateral and tile flow and percolation, read through
+  swatplus-bmi's printed daily columns), optionally behind a snowpack and road store that sends its melt's chloride
+  to the stream fast; GWT's recharge concentration each cell's share of the HRUs' percolation mass, placed by the
+  recharge map; weathering as a GWT mass source by zone (`salt.add_weathering`); and a mass balance for every SWAT+
+  channel and reservoir, upstream first, through SWAT+'s routing units (the land, rain, point sources at a user's
+  returned mass or a stated concentration, the aquifer's gains a day after GWT gives them, withdrawals, seepage and
+  the outlet). The streams' losses enter the aquifer with no chloride and their mass follows the next day, at the
+  channel's mixed concentration, through a GWT source on the river and lake cells (`salt.add_stream_sources`), so
+  the stream gives up and the aquifer takes the same mass: setting the channel's concentration on the river package
+  instead left the channel short of 46% of the losses' mass the next day in the synthetic run. The land, the streams
+  and the whole system (with GWT's storage) close every day, to about 1e-12. Specific conductance from chloride by a
+  study's relation, per output channel (`series.csv`). Lakes at a fixed stage (`[exchange] lakes`) now take
+  transport when salt carries the species (a lake loses at its outlet channel's concentration). Refused at start-up:
+  `[[lakes]]` (LAK), `[irrigation]`, SFR, several groundwater models, NextGen, a model not in meters and days.
+  Example `examples/synthetic/salt.toml`; its builder (`build_small`) takes `weathering` and `stream_sources`.
+  Cost on the synthetic example: 2.2-2.7 ms a simulated day on 8.4-8.6 ms (one HRU); the land and stream kernels
+  take 5 ms a day at the Virginia study's size (33,525 HRUs, 1,192 channels and reservoirs), before the BMI reads.
+- Salt runs any number of conservative species together, each with its own GWT model, ledger and closure, sharing
+  the day's SWAT+ reads: weathering's ions (`[salt.weathering]`, no rain or road salt, from GWT's weathering source
+  by zone) beside chloride. Specific conductance is a constant plus each species' slope times its mg/L
+  (`[salt.conductance] base, slopes`), replacing chloride's own `conductance`.
+- Land sources (`sources = [{name, rate, by, timing, group}]`): kg per m2 of the HRU a year as a number, by HRU, by
+  SWAT+ land use or by calendar year (`hru, year, kg_m2`), timed evenly, by 12 monthly weights or on the HRU's first
+  fertilizer day of each year (swatplus-bmi's `hru_nb:fertn`, `fertp`), each with its own ledger line.
+- Road salt by an annual amount per calendar year (`road_salt = {annual = "hru, year, kg_m2" CSV}`, the USGS grid's
+  form), spread over that year's snow and ice days, worked out at start-up from the stations' weather records, in
+  proportion to each day's precipitation (or equally); years outside the table take the mean of its last or first
+  N years (`repeat_last`, `repeat_first`).
+- Multipliers on each input group's mass (`multipliers`; calibration parameters of model `salt`, target
+  `<species>:<group>`), applied where the mass enters, so the ledger books the scaled mass.
+- A point source's water from a user that doesn't report the species takes the stated concentration (it had counted
+  as carrying none). The synthetic example runs with the surface store on. Cost on it with two species and the land
+  sources: 15 ms a simulated day.
 
 ## 0.10.1 (2026-11-22)
 

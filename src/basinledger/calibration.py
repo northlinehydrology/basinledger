@@ -21,7 +21,10 @@ Not built yet (docs/design.md, Calibration):
 Tables:
 
     parameters.csv    name, model, target, value, lower, upper, transform
-                      model: swatplus | modflow6 | user; transform: none | log; target: what the value changes
+                      model: swatplus | modflow6 | user | salt; transform: none | log; target: what the value
+                      changes
+                      salt: <species>:<group>, a multiplier on that input group's mass (salt.Settings), e.g.
+                        chloride:road_salt
                       swatplus: <calibration.cal name>:<change>[:objects=1,2,...][:layers=1-2][:<condition>=<value>]
                         change absval | abschg | pctchg | relchg; conditions hsg, texture, landuse (HRUs only);
                         e.g. cn2:pctchg, awc:absval:layers=1-2, cn2:pctchg:hsg=D
@@ -106,8 +109,8 @@ class Parameter:
     transform: str = "none"
 
     def __post_init__(self):
-        if self.model not in ("swatplus", "modflow6", "user"):
-            raise ValueError(f"parameter {self.name}: model must be swatplus, modflow6 or user")
+        if self.model not in ("swatplus", "modflow6", "user", "salt"):
+            raise ValueError(f"parameter {self.name}: model must be swatplus, modflow6, user or salt")
         if not self.lower <= self.value <= self.upper:
             raise ValueError(f"parameter {self.name}: {self.value} outside [{self.lower}, {self.upper}]")
 

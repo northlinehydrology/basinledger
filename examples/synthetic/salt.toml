@@ -1,0 +1,80 @@
+name = "synthetic-salt"
+description = """The two-way synthetic example with chloride and weathering's ions through every water path:
+Osu_1hru's one HRU recharging the 10 ha aquifer HRU by HRU, groundwater up into its soil, a MODFLOW 6 transport model
+for each species with weathering by zone, and the river's gains and losses carrying both between the aquifer and the
+channel. Chloride: an annual road salt amount spread over each calendar year's snow and ice days, behind a snowpack and road
+store (as a snowy basin runs), chloride in precipitation, septic effluent and potash on the HRU's first fertilizer
+day, and a user on a well returning its water, and its chloride, through a sewer plant's point source. Specific
+conductance from both species. For the engine's tests only: every rate is a round number, not data."""
+
+[run]
+folder = "../../runs/synthetic-salt"
+
+[swatplus]
+project = "{swatplus_refdata}/Osu_1hru"
+point_sources = [{name = "wwtp", channel = "cha01"}]
+
+[modflow6]
+builder = "model:build_small"
+# land at 88.5 m, the soil drain on every cell; porosity 0.25 [A], dispersivity 5 m [A], starting at 0.01 kg m-3 of
+# chloride and 0.1 of weathering's ions [A]; weathering 0.002 kg of ions and 1e-6 of chloride per m3 of aquifer a year
+# [A]; each transport model's source for the river's losses
+builder_args = {top = 88.5, soil = "drn", transport = {chloride = {porosity = 0.25, dispersivity = 5.0, strt = 0.01}, weathering = {porosity = 0.25, dispersivity = 5.0, strt = 0.1}}, weathering = {chloride = 1e-6, weathering = 0.002}, stream_sources = true}
+
+[recharge]
+source = "hru"
+map = "all:hru0001"
+area_rtol = 1e-6
+
+[groundwater_to_soil]
+rule = "drain"
+cap = "none"
+package = "soil"
+
+[exchange]
+package = "riv"
+map = "all:cha01"
+
+[transport.chloride]       # recharge and the river's losses carry the land's and the channel's ([salt])
+[transport.weathering]
+
+[salt.chloride]
+precipitation = 0.0003     # kg m-3 (0.3 mg/L) [A]
+# kg m-2 of the HRU each calendar year (as the USGS grid gives it), spread over that year's snow and ice days by their
+# precipitation; after the table's last year (2012), the mean of its last 3 [A]
+road_salt = {annual = "maps/salt_road_annual.csv", repeat_last = 3, spread = "precipitation"}
+sources = [
+    # kg m-2 a year by land use, evenly through the year [A]
+    {name = "septic", rate = "maps/salt_septic_landuse.csv", by = "landuse", timing = "uniform"},
+    # kg m-2 by calendar year, on the HRU's first fertilizer day of each year; the agricultural group [A]
+    {name = "potash", rate = "maps/salt_potash.csv", timing = "fertilizer", group = "agricultural", repeat_last = 2},
+]
+surface_store = true       # snowfall's and road salt's chloride held in the snowpack, to the stream with the melt
+point_sources = {wwtp = 0.08}  # kg m-3 (80 mg/L), for water no user reports [A]
+multipliers = {road_salt = 1.0, agricultural = 1.0, septic = 1.0, point_sources = 1.0}  # calibration sets these
+soil_start = 0.005         # kg m-3 [A]
+stream_start = 0.01        # kg m-3 [A]
+
+[salt.weathering]          # weathering's ions (Ca, Mg, HCO3, SO4 as one mass): from the aquifer's source only
+precipitation = 0.0
+point_sources = {wwtp = 0.15}  # kg m-3 [A]: the user reports no weathering ions
+soil_start = 0.0
+stream_start = 0.05
+
+[salt.conductance]         # uS/cm = base + each species' slope x its mg/L [A]
+base = 20.0
+slopes = {chloride = 3.0, weathering = 1.5}
+
+[[wells]]
+name = "pw1"
+cell = [0, 5, 6]
+
+[[users]]                  # takes in the aquifer's chloride at its well and returns it to the sewer plant's outfall
+name = "plant"
+component = "basinledger.testing:SyntheticUser"
+config = "intake_user.toml"
+withdrawal = "well:pw1"
+return = "swat:point_source:wwtp"
+
+[outputs]
+channels = ["cha01"]

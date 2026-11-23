@@ -52,7 +52,8 @@ LAKE_CONDUCTANCE = 10.0  # m2 d-1 per cell [A]
 
 def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevation: float | None = None,
                 transport: dict | None = None, top: float = 100.0, soil: str | None = None,
-                soil_conductance: float = 10.0, lake_stage: float | None = None) -> Path:
+                soil_conductance: float = 10.0, lake_stage: float | None = None,
+                weathering: dict | None = None, stream_sources: bool = False) -> Path:
     """A 10 ha aquifer under Osu_1hru for the two-way exchange: 10 x 10 cells, the river along the west edge.
     Thinner and less permeable than the large grid so the river can lose water when the well pumps hard.
     ``drain_elevation``: seepage cells (a drain) along the second column at that elevation, for the coupled drains'
@@ -62,7 +63,9 @@ def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevatio
     package named "soil" on every cell for groundwater up into the soil, a drain ("drn", conductance
     ``soil_conductance`` m2 d-1 [A], elevation set by Basin Ledger each day) or a well ("wel", gwflow's rule).
     ``lake_stage``: a lake on LAKE_CELLS at that fixed surface (m), a RIV package named "lakes", for the coupled
-    lakes' tests."""
+    lakes' tests. ``weathering``: species -> kg per m3 of aquifer a year, a mass source in every cell of its transport
+    model (salt.add_weathering) [A]. ``stream_sources``: each transport model's source for the river's losses, for
+    [salt] (salt.add_stream_sources)."""
     ws = Path(workspace)
     sim = flopy.mf6.MFSimulation(sim_name="synthetic_small", sim_ws=ws, exe_name="mf6")
     flopy.mf6.ModflowTdis(sim, time_units="days", start_date_time=start.isoformat(),
@@ -97,12 +100,17 @@ def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevatio
                            saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")], printrecord=[("BUDGET", "ALL")])
     if transport:
         from basinledger.coupling.transport import add_transport
+        from basinledger.salt import add_stream_sources, add_weathering
         for species, settings in transport.items():
             settings = dict(settings)
             if settings.pop("stream_side", False):  # mass sources on the river's cells (stage 2)
                 settings["stream_mass"] = (["riv"] + (["drn"] if drain_elevation is not None else [])
                                            + (["lakes"] if lake_stage is not None else []))
-            add_transport(sim, gwf, species, sources=[("rch", species), ("riv", species)], **settings)
+            gwt = add_transport(sim, gwf, species, sources=[("rch", species), ("riv", species)], **settings)
+            if (weathering or {}).get(species):
+                add_weathering(gwt, weathering[species])
+            if stream_sources:
+                add_stream_sources(gwt, gwf, ["riv"] + (["lakes"] if lake_stage is not None else []))
     sim.write_simulation(silent=True)
     return ws
 
@@ -193,11 +201,12 @@ def small_disv_well(refine: bool = True) -> tuple[int, int]:
 
 
 def build_small_disv(workspace: str | Path, days: int, start: dt.date, refine: bool = True,
-                     transport: dict | None = None) -> Path:
+                     transport: dict | None = None, weathering: dict | None = None,
+                     stream_sources: bool = False) -> Path:
     """``build_small`` on a vertex grid (DISV, ``small_disv_grid``), for the coupling's tests on refined grids: the
     same aquifer, area, river stage and bottom, the river's conductance per metre of river (20 m2 d-1 per 31.6 m
     cell) and the well in ``small_disv_well``. With ``refine = False`` it is ``build_small``'s grid cell for cell.
-    ``transport`` as in ``build_small``."""
+    ``transport``, ``weathering`` and ``stream_sources`` as in ``build_small``."""
     ws = Path(workspace)
     cells = small_disv_grid(refine)
     points = sorted({v for c in cells for v in c["vertices"]})
@@ -224,11 +233,16 @@ def build_small_disv(workspace: str | Path, days: int, start: dt.date, refine: b
                            saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")], printrecord=[("BUDGET", "ALL")])
     if transport:
         from basinledger.coupling.transport import add_transport
+        from basinledger.salt import add_stream_sources, add_weathering
         for species, settings in transport.items():
             settings = dict(settings)
             if settings.pop("stream_side", False):  # mass sources on the river's cells (stage 2)
                 settings["stream_mass"] = ["riv"]
-            add_transport(sim, gwf, species, sources=[("rch", species), ("riv", species)], **settings)
+            gwt = add_transport(sim, gwf, species, sources=[("rch", species), ("riv", species)], **settings)
+            if (weathering or {}).get(species):
+                add_weathering(gwt, weathering[species])
+            if stream_sources:
+                add_stream_sources(gwt, gwf, ["riv"])
     sim.write_simulation(silent=True)
     return ws
 

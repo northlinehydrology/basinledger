@@ -107,6 +107,29 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     stream = "swatplus"                 #   gains, drains and the soil link carry the cells' concentrations into SWAT+,
                                         #   losses SWAT+'s own (needs add_transport's stream_mass on rivers, drains)
 
+    [salt.chloride]                     # optional: a conservative species through the land, the aquifer's
+    precipitation = 0.0003              #   [transport.<species>] (its recharge and stream then come from here) and the
+                                        #   streams, each day (salt.py; needs SWAT+, MODFLOW 6 in meters, [recharge]
+                                        #   source = "hru" and the two-way [exchange]); kg m-3 in precipitation [A]
+    road_salt = {annual = "road_salt_hru.csv", repeat_last = 5, repeat_first = 1}  # kg m-2 of the HRU by calendar
+                                        #   year (hru, year, kg_m2) over the year's snow and ice days [A]; or rate and
+                                        #   share, or series and share
+    sources = [{name = "septic", rate = "septic.csv", timing = "uniform"},          # land sources, kg m-2 a year:
+               {name = "potash", rate = "potash.csv", timing = "fertilizer", group = "agricultural"}]  # a number,
+                                        #   hru, year, kg_m2, hru, kg_m2_yr or (by = "landuse") landuse, kg_m2_yr;
+                                        #   timing uniform, fertilizer or 12 monthly weights [A]
+    point_sources = {wwtp = 0.08}       # a point source's concentration, for water no user reports [A]
+    multipliers = {road_salt = 1.0, agricultural = 1.0}  # on each input group's mass (calibration: model salt,
+                                        #   target <species>:<group>)
+    surface_store = true                # a snowpack and road store in front of the soil's [A]
+    soil_start = 0.002                  # starting concentrations, kg m-3 [A]
+    stream_start = 0.002
+    [salt.weathering]                   # a second species: weathering's ions, from GWT's weathering source by zone
+    precipitation = 0.0
+    [salt.conductance]                  # specific conductance (uS/cm) from the species' mg/L, per study [A]
+    base = 20.0
+    slopes = {chloride = 3.0, weathering = 1.5}
+
     [rivers]                            # optional: MODFLOW 6 river cells by flowpath, for stage and base flow out
     package = "riv"
     map = "maps/river_cells.csv"        # object (flowpath or channel), layer, row, col (or layer, icell2d)
@@ -273,6 +296,8 @@ class ExampleConfig:
     rivers: dict | None = None
     mf6_builder_args: dict = field(default_factory=dict)
     transport: dict[str, dict] = field(default_factory=dict)  # species -> recharge, stream (kg m-3) [A], model
+    salt: dict = field(default_factory=dict)  # species -> salt.Settings: chloride through land, aquifer and streams
+    salt_conductance: dict | None = None  # {base, slopes: {species: uS/cm per mg/L}} (salt.conductance)
     recharge_source: str = "aquifer"   # or "hru"
     recharge_add: bool = False          # a recharge package Basin Ledger adds, for a model without one
     weather: dict | None = None        # kind -> CSV path, and change (weather.py)
@@ -324,7 +349,7 @@ def load(path: str | Path) -> ExampleConfig:
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
              "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather",
-             "groundwater_to_soil", "irrigation", "lakes"}
+             "groundwater_to_soil", "irrigation", "lakes", "salt"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -377,7 +402,34 @@ def load(path: str | Path) -> ExampleConfig:
             raise ValueError(f"{path}: [groundwater_to_soil] needs SWAT+, MODFLOW 6, [recharge] source = \"hru\" (the "
                              "HRU map) and the two-way [exchange] (SWAT+'s aquifers passing recharge through)")
     transport = c.get("transport", {})
+    salt = {}
+    salt_conductance = None
+    for sp, st in c.get("salt", {}).items():
+        from .salt import Settings
+        if sp == "conductance":
+            salt_conductance = st
+            continue
+        if sp not in transport:
+            raise ValueError(f"{path}: [salt.{sp}] carries {sp} through the aquifer's transport model: it needs "
+                             f"[transport.{sp}]")
+        if set(transport[sp]) & {"recharge", "stream"}:
+            raise ValueError(f"{path}: [transport.{sp}]'s recharge and stream come from [salt.{sp}]; remove them")
+        if "swatplus" not in c or "modflow6" not in c or rch.get("source") != "hru" or "exchange" not in c:
+            raise ValueError(f"{path}: [salt.{sp}] needs SWAT+, MODFLOW 6, [recharge] source = \"hru\" (the "
+                             "recharge's mass is placed HRU by HRU) and the two-way [exchange]")
+        salt[sp] = Settings.from_config(sp, st, base)
+    if salt_conductance is not None:
+        if not isinstance(salt_conductance, dict) or set(salt_conductance) != {"base", "slopes"} \
+                or not isinstance(salt_conductance["slopes"], dict):
+            raise ValueError(f"{path}: [salt] conductance is {{base = uS/cm, slopes = {{<species> = uS/cm per mg/L}}}}")
+        unknown = sorted(set(salt_conductance["slopes"]) - set(salt))
+        if unknown or not salt_conductance["slopes"]:
+            raise ValueError(f"{path}: [salt] conductance slopes name species with no [salt.<species>]: {unknown}")
+        salt_conductance = {"base": float(salt_conductance["base"]),
+                            "slopes": {k: float(v) for k, v in salt_conductance["slopes"].items()}}
     for sp, t in transport.items():
+        if sp in salt:
+            continue
         if not isinstance(t, dict) or "recharge" not in t:
             raise ValueError(f"{path}: [transport.{sp}] needs recharge (kg m-3, or \"swatplus\")")
         if set(t) - {"recharge", "stream", "model", "surface"}:
@@ -481,6 +533,8 @@ def load(path: str | Path) -> ExampleConfig:
         mf6_length_units=mf.get("length_units"),
         mf6_time_units=mf.get("time_units"),
         transport={sp: dict(t) for sp, t in transport.items()},
+        salt=salt,
+        salt_conductance=salt_conductance,
         recharge_source=rch.get("source", "aquifer"),
         weather=weather,
         groundwater_to_soil=dict(gs) if gs is not None else None,
