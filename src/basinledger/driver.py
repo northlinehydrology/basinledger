@@ -169,8 +169,8 @@ class Basin:
                 print_daily(swat_dir, ["lsunit_wb", "channel_sd"])
             if cfg.outputs.get("balance"):      # the whole-basin balance reads SWAT+'s daily land budget
                 print_daily(swat_dir, ["basin_wb", "channel_sd", "reservoir"])
-            if cfg.salt:  # salt reads SWAT+'s daily records, made only after print.prt's nyskip years (salt.py)
-                print_daily(swat_dir, [])
+            if cfg.salt or cfg.replay_record:  # salt reads SWAT+'s daily records, made only after print.prt's nyskip
+                print_daily(swat_dir, [])     # years (salt.py), and a record keeps them for a replay's salt (replay.py)
             prepare("swatplus", swat_dir)
             problems = S.coupling_problems(swat_dir, two_way=bool(ex))
             if problems:
@@ -425,6 +425,12 @@ class Basin:
             self.rule_memory = saved["rule_memory"]
             for _, wu in self.users:
                 wu.fast_forward(self.day)
+
+        # the record of the flow side, for replays of the salt (replay.py; [replay] record)
+        self.recorder = None
+        if cfg.replay_record is not None and _problems is None:
+            from .replay import Recorder
+            self.recorder = Recorder(self, restart, users=users, heads=heads, prepare=prepare)
 
     # ---------- start-up, and checks ----------
     def _problem(self, e: Exception):
@@ -1053,6 +1059,8 @@ class Basin:
                     self.series[f"{sp}_mg_l:{c}"].append(v)
                 if sc is not None:
                     self.series[f"conductance_us_cm:{c}"].append(conductance(sc["base"], sc["slopes"], mg_l))
+        if self.recorder is not None:  # the day's flow side, for replays (replay.py)
+            self.recorder.day(self)
         L.close_day()
         self.day += 1
 
@@ -1516,6 +1524,8 @@ class Basin:
         return out
 
     def finalize(self):
+        if getattr(self, "recorder", None) is not None:
+            self.recorder.close()
         for _, wu in self.users:
             wu.finalize()
         if self.mf6 is not None:
@@ -1578,6 +1588,8 @@ class Basin:
         the coupling drains or fills storage over the run (a study basin's first coupled run drained 49 million m3,
         15% of its recharge). Returns the heads and each cycle's storage release and recharge, m3."""
         report = []
+        import dataclasses
+        cfg = dataclasses.replace(cfg, replay_record=None)  # a warm-up's cycles are no record (replay.py)
         for i in range(cycles):
             b = cls(cfg, run=f"{run}-{i}", users=users, days=days, prepare=prepare, heads=heads)
             try:
@@ -1599,3 +1611,12 @@ class Basin:
         """``users=False`` runs the example without its water users (the baseline); ``days`` shortens the run;
         ``restart`` carries on from a folder written by ``save``."""
         return cls(C.load(path), run, users, days, restart, prepare)
+
+    def __new__(cls, *args, replay: str | Path | None = None, **kwargs):
+        """``Basin(cfg, ..., replay=folder)``: a replay of the salt from a recorded flow run (replay.ReplayBasin)."""
+        if replay is not None and cls is Basin:
+            from .replay import ReplayBasin
+            return super().__new__(ReplayBasin)
+        if replay is not None:
+            raise TypeError(f"{cls.__name__} takes no replay")
+        return super().__new__(cls)
