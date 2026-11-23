@@ -30,6 +30,12 @@
 - The transport solve's residual criterion is 1e-8 kg d-1 (was 1e-10): at 1e-10 round-off held the residual above it
   on Plaster Creek's 13,215 cells (day 47) and on the synthetic grid with sorption. The ledger's closure check is
   unchanged.
+- Every MODFLOW 6 solve is checked for non-finite heads, after each outer iteration of a day with a coupling's callback
+  and after a day solved whole, and stops at the first, naming the day and iteration (`Modflow6._check_finite`). A
+  linear solver that breaks down can return NaN for every head and still report the iteration as converged: in a
+  Rappahannock calibration, COMPLEXITY MODERATE's modified ILU (RELAXATION_FACTOR 0.97) did so for 16 of 40 prior
+  realizations, and the NaN surfaced only a day later, in the groundwater-to-soil link. The message names the IMS
+  settings that usually solve it (RELAXATION_FACTOR 0, or COMPLEXITY COMPLEX).
 
 ## 0.10.1 (2026-11-22)
 
