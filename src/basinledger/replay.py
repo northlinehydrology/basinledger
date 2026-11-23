@@ -846,6 +846,8 @@ class ReplayBasin(Basin):
         self.exchange = None if ex is None else SimpleNamespace(
             kind=ex["kind"], package=ex["package"], map=link(ex)[1], drains=link(ex["drains"]), lakes=link(ex["lakes"]))
         self.due, self.lakes, self.irrigation, self.rivers, self.rules = {}, None, None, None, []
+        # the stage-2 species' state (coupling/surface_mass.py): none in a replay, which carries salt only
+        self.surface, self._track_transport, self.swat_aquifer_ha = {}, False, {}
         self.rule_memory = saved["rule_memory"] if saved else {}
         self._wells_left_out = set()
         wells = {w.name: (w.package, self._well_node(w)) for w in cfg.wells}
@@ -944,8 +946,10 @@ class ReplayBasin(Basin):
         if today != j["structure"]:
             bad = sorted(p for p in today if today[p] != j["structure"].get(p))
             raise ReplayRefused(f"replay day {d}: the flow model's entries in {bad} aren't where the recorded run had them")
+        # the recharge's water as the recorded run sent it, before the transport's inflows read it (driver's order)
+        L.enter("recharge:sent", j["ledger"].get("recharge:sent", 0.0))
         if self.transport:
-            self._transport_day()
+            self._transport_day(L)
         self.gwf.put(day, self.x0)
         gs = self.gw_soil
         if gs is not None and gs.rule == "gwflow":
@@ -956,7 +960,6 @@ class ReplayBasin(Basin):
             self.mf6._solve(sol)
         api.finalize_time_step()
         self.mf6.day += 1
-        L.enter("recharge:sent", j["ledger"].get("recharge:sent", 0.0))
         if self.transport:
             self._transport_accounts(L)
         t3 = time.perf_counter()
