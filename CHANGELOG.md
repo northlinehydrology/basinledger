@@ -22,6 +22,22 @@
   Example `examples/synthetic/salt.toml`; its builder (`build_small`) takes `weathering` and `stream_sources`.
   Cost on the synthetic example: 2.2-2.7 ms a simulated day on 8.4-8.6 ms (one HRU); the land and stream kernels
   take 5 ms a day at the Virginia study's size (33,525 HRUs, 1,192 channels and reservoirs), before the BMI reads.
+- Salt runs any number of conservative species together, each with its own GWT model, ledger and closure, sharing
+  the day's SWAT+ reads: weathering's ions (`[salt.weathering]`, no rain or road salt, from GWT's weathering source
+  by zone) beside chloride. Specific conductance is a constant plus each species' slope times its mg/L
+  (`[salt.conductance] base, slopes`), replacing chloride's own `conductance`.
+- Land sources (`sources = [{name, rate, by, timing, group}]`): kg per m2 of the HRU a year as a number, by HRU, by
+  SWAT+ land use or by calendar year (`hru, year, kg_m2`), timed evenly, by 12 monthly weights or on the HRU's first
+  fertilizer day of each year (swatplus-bmi's `hru_nb:fertn`, `fertp`), each with its own ledger line.
+- Road salt by an annual amount per calendar year (`road_salt = {annual = "hru, year, kg_m2" CSV}`, the USGS grid's
+  form), spread over that year's snow and ice days, worked out at start-up from the stations' weather records, in
+  proportion to each day's precipitation (or equally); years outside the table take the mean of its last or first
+  N years (`repeat_last`, `repeat_first`).
+- Multipliers on each input group's mass (`multipliers`; calibration parameters of model `salt`, target
+  `<species>:<group>`), applied where the mass enters, so the ledger books the scaled mass.
+- A point source's water from a user that doesn't report the species takes the stated concentration (it had counted
+  as carrying none). The synthetic example runs with the surface store on. Cost on it with two species and the land
+  sources: 15 ms a simulated day.
 
 ## 0.10.1 (2026-11-22)
 
