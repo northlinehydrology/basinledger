@@ -948,6 +948,104 @@ in at the transfer hydrograph's temperature, and it mixes HRU water yields in mm
   temperature in each example.
 - An example asks for it with `[outputs] temperature = true`: SWAT+ then prints `lsunit_wb` daily in the run's copy.
 
+## Salt: chloride through land, aquifer and streams (designed and built Nov 22, 2026)
+
+For the Virginia study (the Rappahannock above Fredericksburg), which calibrates chloride and specific conductance at
+many sites. Sources there: road salt (winter, on roads and developed land; in the stream fast through runoff and
+slowly through groundwater, a legacy of decades: Kelly and others 2008, Kaushal and others 2005), weathering in
+groundwater by geology, sewer plants and atmospheric deposition. SWAT+ 62.0.1's salt module can't run with aquifers
+or point sources (Water quality across links, above), so Basin Ledger carries chloride itself, as it carries stream
+temperature, and MODFLOW 6's GWT carries it in the aquifer (stage 1). Unlike the temperature, the balance runs inside
+the coupled run, each day: the recharge's concentration comes from the land the same day, and the streams' losses
+carry the streams' concentration into the aquifer, so neither can wait for the run's end.
+
+Chloride is a conservative mass (kg): no reactions, no plant uptake, no sorption [A]. Specific conductance is derived
+from it for scoring only. It is `salt.py`, asked for with `[salt.<species>]` beside `[transport.<species>]`.
+
+**1. Land: a well-mixed store per HRU.** Each day, after SWAT+'s day:
+
+- **Inputs.** Atmospheric deposition, a concentration in precipitation times the HRU's precipitation (snow included)
+  [A]; road salt, an application rate (kg of chloride per m2 of road a day) times the HRU's road area (a share of its
+  area, a number or a table by HRU), on days with snowfall of at least `snowfall_mm` or precipitation of at least
+  `precipitation_mm` with the HRU's minimum temperature at or below `tmin_c` [A] (a snow or ice event), or on the
+  days and rates of a stated series (a DOT's records, say) [A]; and groundwater up into the soil, yesterday's water
+  from each cell at the cell's concentration, split among the HRUs over it exactly as the water is
+  (`gwsoil.after_solve`'s rows).
+- **Outputs** leave in proportion to water at the store's concentration: the water SWAT+ sends to the stream that day
+  (surface runoff, lateral flow and tile flow: `hru_wb`'s `surq_gen`, `latq`, `qtile`) and percolation
+  (`soil_water__percolation_rate`, the recharge link's own variable, so the mass and the water are read alike).
+- **The store's water** is the profile's water at the end of the day, the wilting point's included (chloride is
+  dissolved in all of it) [A], plus the water SWAT+ holds back in its surface and lateral lags and an HRU wetland
+  (`sw_final`, `wpmm` summed, `lagsurf`, `laglatq`, `wet_stor`). The concentration is the day's mass (yesterday's,
+  plus the inputs) over that water plus the day's outflows: an implicit, fully mixed step, so the mass closes by
+  construction and evapotranspiration concentrates it (the chloride mass balance's evapoconcentration).
+- **Why SWAT+'s printed columns, read through BMI.** swatplus-bmi reads every column of `hru_wb` (and `hru_pw`,
+  `channel_sd`) for the day just done, as SWAT+ prints it, without printing (its "every printed daily column"); the
+  temperature's after-the-run reading of the files can't serve a balance that the aquifer needs the same day. The run's
+  copy of `print.prt` starts printing at year 0, since the records are made only after `nyskip`'s years.
+- **A surface store, optional** (`surface_store = true`; off by default, the design as asked). One store per HRU
+  mutes the winter flush: road salt is diluted into the profile's 200 to 400 mm of water before any reaches the
+  stream. With it, deposition and road salt land on a surface store (the snowpack and the road), well mixed with the
+  snowpack's water; each day the share of it that leaves as liquid (rain plus melt over that plus the snowpack left)
+  is released, and of that the share that ran off (`surq_cont` over rain plus melt) goes to the stream that day and
+  the rest into the soil store [A]. Surface runoff then carries the surface's mass and the soil store gives only
+  lateral flow, tile flow and percolation. INCA-Cl (Jin and others 2011, to check) keeps a fast and a slow store the
+  same way.
+
+**2. Groundwater.** The existing GWT species (`coupling/transport.py`), its recharge concentration each day the land's:
+each HRU's percolation mass placed on the cells under its ground by the same conserving map as its water, so a cell
+under two HRUs takes their flow-weighted mean, and the mass sent is the land's exactly (the recharge map needs
+`source = "hru"`). Weathering: a mass source per cell by geologic zone (GWT's SRC package, `salt.add_weathering`,
+kg per m3 of aquifer a year) [A], chosen over a background recharge concentration because weathering adds solute
+with the water's time in the rock, which a source in the aquifer's volume carries and a recharge concentration
+doesn't: a recharge background would put as much into a wet year's recharge as a dry year's, and none into slow, old
+groundwater. For chloride it is usually small (crystalline Piedmont and Blue Ridge rock holds little chloride); the
+major ions that weathering does add show up in the conductance's background below. Wells as built (the user's
+intake follows the aquifer at its well).
+
+**3. Streams: a mass balance by water body, upstream first.** Each SWAT+ channel and reservoir is a well-mixed store
+(kg), in the order `chandeg.con` and `reservoir.con` route them:
+
+- **In:** the upstream bodies' outflow mass, by their routing fractions; the land's runoff, lateral and tile mass
+  through the routing units (`rout_unit.def`, `.ele`, `.con`; each HRU's mass in full, split as SWAT+ splits its
+  water); rain on the channel or reservoir at the precipitation's concentration; point sources, a direct user's
+  returned mass where its component reports the species, the rest of the point source's water at a stated
+  concentration [A] (a sewer plant's effluent, say); and the groundwater's gains (rivers, drains and lakes at a fixed
+  stage), each at its cell's concentration from GWT, arriving with their water the next day.
+- **Out:** the losses to the aquifer, the mass GWT took in the day before (the water's one-day lag, below); the
+  outflow downstream (or out of the basin at the outlet), withdrawals (SWAT+ places of use) and a reservoir's own
+  seepage, each at the mixed concentration, over SWAT+'s end-of-day volume plus those outflows. Evaporation takes
+  no mass.
+- **The losses' concentration.** A losing reach's water enters the aquifer at the channel's mixed concentration that
+  day (set on the river package's auxiliary before MODFLOW 6 solves; a lake at a fixed stage takes its outlet
+  channel's [A]). SWAT+ takes that water from the channel the next day, so the stream gives up exactly that mass the
+  next day. If the channel has less mass than that (its concentration fell sharply overnight), what it couldn't give
+  is booked as a shortfall (`streams:loss_shortfall`), mass from outside, like the water's shortfall; it should be
+  small.
+- A dry body keeps its mass until water returns. Conservative, no reactions.
+
+**4. Conductance.** Specific conductance (uS/cm) = a background + a slope x chloride (mg/L), fitted per study [A] (r2
+0.87 on Mountain Run). An output only (`conductance_us_cm:<channel>`), never fed back.
+
+**5. Ledger and checks (kg).** Every source, store, link (sent and received) and outflow, as basin totals:
+`salt:<sp>:land:*` (precipitation, road salt, from groundwater, to streams, recharge, storage), `salt:<sp>:streams:*`
+(from land, precipitation, point sources, gains received, losses taken, the shortfall, withdrawn, outlet, reservoir
+seepage, storage), the links in transit overnight (`transit:gains`, `transit:losses`, `transit:soil`), and
+GWT's own accounts (`transport:<sp>:*`, whose recharge and leakage sent are now the land's and the streams' masses).
+Held every day:
+- the land's and the streams' closure, each a share of the day's gross mass, within 1e-9;
+- land to streams sent = received, recharge sent = GWT's received (the existing pair), the soil link's mass out of GWT
+  = the HRUs' share of it;
+- the whole system: land + streams + in transit + the aquifer (from GWT's storage release) change by the sources
+  (deposition, road salt, point sources, GWT's boundaries and weathering, the shortfall) less the sinks (the outlet,
+  withdrawals, wells, reservoir seepage), within 1e-6 of the day's gross mass flow, as water is held.
+
+Per channel, the concentration (mg/L) and conductance are series in `series.csv` for `[outputs] channels`.
+
+**Not built:** reservoirs coupled to LAK lakes (`[[lakes]]`), irrigation from wells (`[irrigation]`), several
+groundwater models, an SFR exchange (needs SFT), NextGen, SWAT+ water allocation other than Basin Ledger's places of
+use, and a user's intake from a channel. Each is refused at start-up.
+
 ## Calibration
 
 Using Basin Ledger depends on calibrated models. Calibration is part of every example, not something a study adds
