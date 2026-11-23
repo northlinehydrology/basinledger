@@ -95,12 +95,40 @@ def test_pass_through_settings(tmp_path, swatplus):
     import shutil
     d = tmp_path / "p"
     shutil.copytree(swatplus / "Osu_1hru", d)
+    aqu = (d / "aquifer.aqu").read_text().splitlines()
+    f = aqu[2].split()
+    f[S.AQUIFER_SOLP_COLUMN] = "0.05"  # soluble P, mg/L, as many projects have it
+    (d / "aquifer.aqu").write_text("\n".join(aqu[:2] + ["  ".join(f)] + aqu[3:]) + "\n")
+    assert aqu[1].split()[S.AQUIFER_SOLP_COLUMN] == "sol_p"  # the column the editor names sol_p (aqu_dat%minp)
     S.aquifer_pass_through(d)
     lines = (d / "aquifer.aqu").read_text().splitlines()
     cols = lines[1].split()
     for l in lines[2:]:
         f = l.split()
         assert float(f[cols.index("flo_min")]) == -1e6 and float(f[cols.index("rchg_dp")]) == 0
+        assert float(f[S.AQUIFER_SOLP_COLUMN]) == 0  # no P sent to the channels with the recharge's volume
+
+
+def test_aquifer_soluble_p_is_refused_two_way(tmp_path, swatplus):
+    """SWAT+ 62.0.1 sends an aquifer's channels soluble P of the day's recharge volume times sol_p, with no water when
+    it passes recharge through: two-way, groundwater P is MODFLOW 6's, so a project or calibration that sets it is
+    refused."""
+    import shutil
+    d = tmp_path / "p"
+    shutil.copytree(swatplus / "Osu_1hru", d)
+    S.aquifer_pass_through(d)
+    S.no_transmission_loss(d)
+    assert S.coupling_problems(d, two_way=True) == []
+    aqu = (d / "aquifer.aqu").read_text().splitlines()
+    f = aqu[2].split()
+    f[S.AQUIFER_SOLP_COLUMN] = "0.05"
+    (d / "aquifer.aqu").write_text("\n".join(aqu[:2] + ["  ".join(f)] + aqu[3:]) + "\n")
+    assert any("soluble P" in p for p in S.coupling_problems(d, two_way=True))
+    S.aquifer_pass_through(d)
+    (d / "file.cio").write_text((d / "file.cio").read_text().replace("cal_parms.cal     null",
+                                                                       "cal_parms.cal     calibration.cal"))
+    (d / "calibration.cal").write_text("calibration.cal\n 1\n NAME CHG_TYP VAL\nminp_init absval 0.05 0 0 0 0 0 0 0 0\n")
+    assert any("minp_init" in p for p in S.coupling_problems(d, two_way=True))
 
 
 def test_stage_from_swat_depth(swatplus):
