@@ -57,6 +57,7 @@ class RechargeLink:
         Returns the volume sent, m3."""
         self.swat.get_value(self.var, self._buf)
         rate = self._buf.astype(np.float64) * DAY  # m d-1 per aquifer
+        self.rate = rate  # kept for the mass that goes with it (coupling/surface_mass.py)
         if not getattr(self, "_checked", False):
             self.check_package()
             self._checked = True

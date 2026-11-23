@@ -236,6 +236,19 @@ def start_warnings(project: Path) -> list[str]:
             "start the soils wetter"]
 
 
+def records_every_year(project: Path):
+    """SWAT+ makes its daily output records from the first year: ``nyskip`` (print.prt's years not summarized) set to
+    0. swatplus-bmi's reads of those records (``hru_pw:percn``, ``hru_ls:lchlabp``, ``aquifer:minp``) are NaN in the
+    years SWAT+ skips (command.f90 summarizes only after nyskip), and the transport's links read them every day. Only
+    what SWAT+ prints and sums changes (its average-annual files cover the skipped years too), not what it simulates."""
+    path = Path(project) / "print.prt"
+    lines = path.read_text().splitlines()
+    f = lines[2].split()
+    if f and f[0] != "0":
+        lines[2] = "  ".join(["0"] + f[1:])
+        path.write_text("\n".join(lines) + "\n")
+
+
 def no_transmission_loss(project: Path):
     """No channel transmission loss (``k`` = 0 in hyd-sed-lte.cha), for two-way coupling. SWAT+ 62.0.1
     (ch_rtmusk.f90) takes the loss out of the channel, records it as ``seep`` and sends it nowhere, so in two-way mode
