@@ -1,7 +1,7 @@
 # Prior art: coupling SWAT and SWAT+ with MODFLOW
 
 What earlier couplings exchange, how often, how they map SWAT units to grid cells, and whether their code is public.
-Compiled Nov 4, 2026. Where a detail comes from a tutorial, code or a later paper rather than the paper itself, it says
+Compiled Nov 4, 2026; SWATGenX added and Basin Ledger's row brought up to 0.7.0 on Nov 14, 2026. Where a detail comes from a tutorial, code or a later paper rather than the paper itself, it says
 so. Details not confirmed are marked.
 
 | Work | Models | Exchanged | How often | Units to cells | Code |
@@ -9,9 +9,10 @@ so. Details not confirmed are marked.
 | Hughes et al. 2022 | MODFLOW 6 API (BMI + XMI) | anything in MODFLOW 6's memory | per time step or per outer iteration | n/a | MODFLOW 6, xmipy, modflowapi (public) |
 | Bailey et al. 2016, SWAT-MODFLOW | SWAT 2012 + MODFLOW-NWT, one executable | recharge; stream-aquifer exchange (RIV) to subbasin channels; water table to HRUs; later pumping and EVT | daily | HRUs split into located parts (DHRUs), intersected with the grid, by area | public (swat.tamu.edu) |
 | Bailey et al. 2020, SWAT+ gwflow | SWAT+ with its own gridded groundwater module | recharge, lateral flow, groundwater ET, pumping, streambed exchange, saturation excess | daily | HRU-cell overlap areas; channel cells by intersection | inside SWAT+ |
-| Bailey et al. 2025, SWAT+MODFLOW (egusphere-2025-300) | SWAT+ rev 61 + MODFLOW-NWT, one executable | recharge and soil transfer, groundwater ET, channel and canal exchange, tile drains, reservoirs, irrigation pumping | daily | HRU recharge × fraction of HRU in cell; channel length per cell | public (Zenodo) |
+| Bailey et al. 2025, SWAT+MODFLOW (GMD 18:5681) | SWAT+ rev 61 + MODFLOW-NWT, one executable | recharge and soil transfer, groundwater ET, channel and canal exchange, tile drains, reservoirs, irrigation pumping | daily | HRU recharge × fraction of HRU in cell; channel length per cell | public (Zenodo) |
 | Nikiel and Żurek 2026 (EGU26-22367) | SWAT+ + MODFLOW 6, through Python scripts | recharge and river flow, both ways | not stated | "upscaling" HRUs to the grid; method not described | none found |
-| **Basin Ledger** | SWAT+ 62.0.1 (swatplus-bmi) + MODFLOW 6 (libmf6) + water-user BMI components, separate programs | one-way built: recharge, well pumping. Two-way designed: stream-aquifer exchange | daily, with a ledger check each day | area maps from config (aquifer or HRU to cell); channel length maps planned | this repository |
+| SWATGenX, SWAT+ with MODFLOW 6 (Rafiei, 2026) | a SWAT+ fork calling MODFLOW 6 (libmf6, XMI), one program | recharge; groundwater discharge to channels (SFR); PFAS in soil, aquifer and channels | daily | HRU to cell by area; reaches to channels by map file | engine public (LGPL-2.1); model generator not public |
+| **Basin Ledger** | SWAT+ 62.0.1 (swatplus-bmi) + MODFLOW 6 (libmf6) + water-user BMI components, separate programs | recharge (per aquifer or per HRU); well pumping; stream-aquifer exchange both ways (RIV with a supply limit, or SFR); groundwater up into the soil | daily, discharge returned the next day, with a ledger check each day | area maps (aquifer or HRU to cell); flowpath lengths per cell | this repository |
 
 ## Hughes et al. 2022: the MODFLOW API
 
@@ -83,7 +84,7 @@ the choice when a study needs a layered aquifer, a regional model that already e
 have one), or MODFLOW's packages: wells screened in several layers, SFR, transport. swatplus-bmi's saved states don't
 yet cover gwflow (swatplus-bmi README).
 
-## Bailey et al. 2025: SWAT+MODFLOW (egusphere-2025-300)
+## Bailey et al. 2025: SWAT+MODFLOW (GMD 18:5681)
 
 Bailey, R.T., Abbas, S., Arnold, J.G., White, M.J., 2025. SWAT+MODFLOW: a new hydrologic model for simulating
 surface–subsurface flow in managed watersheds. *Geoscientific Model Development* 18, 5681–5697.
@@ -125,8 +126,41 @@ https://doi.org/10.5194/egusphere-egu26-22367 (AGH Kraków).
   https://doi.org/10.5194/egusphere-egu25-12133).
 - **Code:** none found. Only an abstract so far.
 
-**For Basin Ledger:** the closest prior work, and the only SWAT+ to MODFLOW 6 coupling in Python found. It is worth
-contacting the authors.
+**For Basin Ledger:** close prior work, and the only SWAT+ to MODFLOW 6 coupling through Python scripts found. It is
+worth contacting the authors.
+
+## SWATGenX: SWAT+ with MODFLOW 6 (Rafiei, 2026)
+
+SWATGenX LLC (Michigan); the engine is by Vahid Rafiei. Sources, read Nov 14, 2026:
+- the coupling page, https://www.swatgenx.com/swat-modflow-6;
+- the engine, https://github.com/rafiei-vahid/swatplus (a SWAT+ fork, LGPL-2.1);
+- the PFAS study repository, https://github.com/SWATGenX/swatplus-mf6-pfas (created June 2026);
+- the SWAT+ model generator's announcement on the SWAT+ user group, March 2026.
+
+Related paper, not read: Rafiei, V., Nejadhashemi, A.P., 2023. *Water Research* 240, 120073 (watershed-scale PFAS
+fate and transport).
+
+- **What it is.** SWAT+ changed to load `libmf6` and call MODFLOW 6 through XMI, as one program. An `mf6.con` file
+  switches the coupling on: the MODFLOW 6 workspace, the step in whole days, a recharge multiplier and the library
+  path. Without it the engine runs as plain SWAT+.
+- **Exchanged:**
+  - SWAT+ deep percolation becomes MODFLOW 6 recharge;
+  - MODFLOW 6 groundwater discharge (SFR) goes back to SWAT+ channels;
+  - PFAS in the soil, the aquifer (GWT) and the channels. Passing soil PFAS down into MODFLOW 6 transport is built but,
+    per the page, has not yet carried PFAS in a run.
+- **How often:** daily. The order within the day is not stated.
+- **Mapping:** HRU to cell by area (`mf6_recharge.map`); SFR reaches to SWAT+ channels (`mf6_baseflow.map`).
+- **Automatic builds:** SWAT+ models for USGS gages (over 600, self-reported). The groundwater model is built
+  steady-state from annual-mean percolation; the page says automatic builds do not yet run the two-way coupling.
+- **Checks published:** MODFLOW 6's percent discrepancy, and simulated against observed heads at wells. Recharge and
+  hydraulic conductivity are calibrated to heads.
+- **Code:** the engine is public; the model generator is not.
+
+**For Basin Ledger:** the nearest work in its parts: the same MODFLOW 6 interface, HRU recharge by area, and SFR back to
+channels. The design differs. SWATGenX changes SWAT+ so that it calls MODFLOW 6 inside one program. Basin Ledger keeps
+stock SWAT+ (through swatplus-bmi) and MODFLOW 6 as separate components under its own driver, links water-user
+components the same way, and stops a run when an exchange does not close. SWATGenX was not used in Basin Ledger's
+design; it is listed here for comparison.
 
 ## A groundwater model for a Michigan example
 
