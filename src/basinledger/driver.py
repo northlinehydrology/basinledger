@@ -246,7 +246,7 @@ class Basin:
                     if on:
                         raise ValueError(f"{what} with several groundwater models coupled isn't built")
             by_model: dict[str, list] = {}  # new users' wells, a package of its own in each model that has them
-            for w in cfg.wells:
+            for w in list(cfg.wells) + list(cfg.ground):  # users' wells and returns to the ground
                 if w.add:
                     by_model.setdefault((w.model or cfg.mf6_model).lower(), []).append((w.name, w.package, w.cell))
             for model, added in by_model.items():
@@ -350,7 +350,17 @@ class Basin:
             if self._part(f"well {w.name}", lambda w=w: wells.__setitem__(w.name, (w.package, self._well_node(w)))
                           or True) is None:
                 self._wells_left_out.add(w.name)
-        self.router = Router(self.sw, self.mf6, wells, L)
+        grounds = {}  # returns to the ground: a WEL entry at the cell, injecting (route ground:<name>)
+        if cfg.ground and self.mf6 is None:
+            self._problem(ValueError("[[ground]] returns water to MODFLOW 6's aquifer; it needs a [modflow6] model"))
+        elif cfg.ground and (cfg.transport or cfg.salt):
+            self._problem(NotImplementedError("[[ground]] with transport or salt isn't built: what a return carries "
+                                              "into the aquifer needs its concentration on the WEL entry"))
+        else:
+            for g in cfg.ground:
+                self._part(f"[[ground]] {g.name}", lambda g=g: grounds.__setitem__(g.name, (g.package,
+                                                                                            self._well_node(g))))
+        self.router = Router(self.sw, self.mf6, wells, L, grounds)
 
         # irrigation pumped from MODFLOW 6's wells (coupling/irrigation.py): the HRUs mapped and their wells
         self.irrigation = None
@@ -1526,7 +1536,8 @@ class Basin:
                     take(sel, f"lake {lk.lake}'s exchange with SWAT+'s reservoir {lk.reservoir}, {how}")
             wells = np.zeros(n, bool)
             named = []
-            for name, (pkg, node) in self.router.wells.items():
+            for name, (pkg, node) in (list(self.router.wells.items())
+                                      + [(f"{n} (to the ground)", v) for n, v in self.router.grounds.items()]):
                 if pkg.upper() != p:
                     continue
                 if isinstance(node, tuple):  # a multi-aquifer well: its connections
