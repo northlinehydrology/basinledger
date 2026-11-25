@@ -31,8 +31,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
-- routes: MODFLOW 6 wells, SWAT+ water allocation intakes and point sources, outfalls, water from and to outside the
-  basin;
+- routes: MODFLOW 6 wells, SWAT+ water allocation intakes (on any channel, several to a channel served senior first,
+  with swatplus-bmi 0.14.0) and point sources, outfalls, water from and to outside the basin;
 - the utility chain: sources, losses, sewer, plant outfall;
 - feedback rules: curtailment, dry mode, drawdown limit;
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
