@@ -51,9 +51,10 @@ def places_of_use_problems(uses: list[tuple[str, str]]) -> list[str]:
     if len(channels) <= 1 or places_of_use_fixed():
         return []
     major, minor = _swatplus_bmi_version()
-    return [f"places of use on {len(channels)} channels ({', '.join(channels[:5])}{', ...' if len(channels) > 5 else ''}) "
-            f"need swatplus-bmi 0.14.0 or later (installed: {major}.{minor}): SWAT+ 62.0.1 gives a place of use on any "
-            "channel but the first another's demand or none (wallo_withdraw.f90), which 0.14.0 patches"]
+    named = ", ".join(channels[:5]) + (", ..." if len(channels) > 5 else "")
+    return [(f"places of use on {len(channels)} channels ({named}) need swatplus-bmi 0.14.0 or later (installed: "
+             f"{major}.{minor}): SWAT+ 62.0.1 gives a place of use on any channel but the first another's demand or "
+             "none (wallo_withdraw.f90), which 0.14.0 patches")]
 
 
 def add_places_of_use(project: Path, uses: list[tuple[str, str]], rate_max: float = 100.0):
