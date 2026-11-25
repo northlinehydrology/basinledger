@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Returns to the ground: a route `ground:<name>` puts a user's return into an aquifer cell (`[[ground]]` with a name
+  and a cell), for septic drainfields, a water system's leaks and, later, land application.
+  - Basin Ledger adds a WEL entry at the cell in a package of its own (`wel_ground`, or `add = false` for an entry
+    the model has) and injects the return the same day. MODFLOW 6's budget and the groundwater closure take it in.
+  - The ledger pairs it requested against delivered. The whole-basin balance books `returns_to_ground`, and the
+    capture analysis `from_returns`.
+  - It goes into an aquifer cell, not an HRU's soil: a drainfield is below the root zone, and swatplus-bmi sets no
+    soil water.
+  - Refused with transport or salt for now: what a return carries would need its concentration on the WEL entry.
+  - Tested on the synthetic example (`tests/test_ground.py`): a house pumping its own well and returning 80% to a
+    drainfield three cells away, against the same house returning offsite.
+
 ## 0.13.0 (2026-11-25)
 
 - A user drawing from a SWAT+ intake returns only what its intake delivered. Before, a ReportedUser whose intake

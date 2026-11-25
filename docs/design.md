@@ -268,6 +268,18 @@ A component with a daily or other step works the same way. The driver only asks 
   A return held on the run's last day stays in `:return_held`. A restart carries it. A user on a utility, or drawing
   from a well, returns as before;
 - `swat:point_source:<name>`: a SWAT+ daily point source into its channel (`[swatplus] point_sources`);
+- `ground:<name>`: a return into an aquifer cell (`[[ground]]`; Nov 25, 2026), for septic drainfields, a system's
+  leaks and, later, land application.
+  - Basin Ledger adds a WEL entry at the cell, in a package of its own (`wel_ground`), injecting the return the same
+    day. MODFLOW 6 delivers it exactly, and its budget, and so the groundwater closure, take it in. The ledger pairs
+    requested and delivered. The whole-basin balance books it as `returns_to_ground`, and the capture analysis as
+    `from_returns`.
+  - A house pumping its own well and returning to a drainfield near it is two entries in different cells: the
+    well's withdrawal and the field's injection, each counted once.
+  - Chosen over a return into an HRU's soil: a drainfield is below the root zone, so its water belongs to the aquifer
+    cell, and swatplus-bmi sets no soil water. The cell's layer is the study's to give (the top active layer, as a
+    rule).
+  - Transport and salt with it aren't built: a return's concentration would go on the WEL entry;
 - `outfall:<name>`: a return entered in the ledger only;
 - `utility:<name>`: the utility chain.
 
