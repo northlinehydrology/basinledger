@@ -327,6 +327,8 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | MODFLOW 6's budget | closes every day to 1e-7 of the gross flow, with and without pumping |
 | Physics | pumping draws down most at the well, and depletes the river by less than it pumps, more over time |
 | Surface routes | SWAT+ takes what was asked (or reports the shortfall); the channel's flow changes the same day by what the users put in and took out |
+| Intakes | several on one channel, through the file's second point of diversion: the senior gets its demand or the day's outflow, the junior its demand of the rest; the route pairs close, nothing overdrawn, and the channel loses exactly what they took |
+| Irrigation from streams | SWAT+'s own irrigation from its channel: what the channel gave = what the HRU took = what reached the field + the loss, every day; the whole-basin balance's channels close with it |
 | Utility chain | production = delivery + losses = the sum of its sources; sewer = plant outfall |
 | Rules | act on exactly the days after the trigger; a curtailed user takes nothing; dry mode uses less water and more electricity |
 | Two-way exchange | SWAT+'s aquifer returns nothing and stores exactly its recharge; each day's river exchange reaches SWAT+ the next day, whole |
