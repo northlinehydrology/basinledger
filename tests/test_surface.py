@@ -47,8 +47,18 @@ def test_routes_deliver_what_was_asked(with_users):
     assert t[r + "delivered"].sum() > 0
     assert (t[r + "delivered"] <= t[r + "requested"] * (1 + 1e-6) + 1e-6).all()
     np.testing.assert_allclose(t[r + "requested"], t["user:mill:withdrawal"], rtol=0)
-    np.testing.assert_allclose(t["route:swat:point_source:mill_outfall:delivered"], t["user:mill:return"],
-                               rtol=1e-6, atol=1e-6)
+    # the mill's day scales by the share its intake delivered, and its return leaves the next day: no return of
+    # water the channel didn't give (0.13.0)
+    share = t["user:mill:delivered_share"]
+    assert (share <= 1).all()
+    np.testing.assert_allclose(t["user:mill:delivered"], t[r + "delivered"], rtol=1e-6, atol=1e-9)
+    np.testing.assert_allclose(t["user:mill:unmet"], t[r + "shortfall"], rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(t["user:mill:return_due"], share * t["user:mill:return"], rtol=1e-12)
+    sent = t["route:swat:point_source:mill_outfall:delivered"]
+    assert sent[0] == 0
+    np.testing.assert_allclose(sent[1:], t["user:mill:return_due"][:-1], rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(t["user:mill:return_sent"][1:], t["user:mill:return_due"][:-1], rtol=1e-12)
+    assert (sent <= np.r_[0.0, t[r + "delivered"][:-1]] + 1e-6).all()  # never more than the intake gave
 
 
 def test_the_channel_carries_the_users_water(with_users, baseline):
