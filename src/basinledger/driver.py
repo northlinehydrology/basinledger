@@ -157,6 +157,8 @@ class Basin:
             places = list(cfg.places_of_use) + [(f"seep_{c}", c) for c in via_routes]
             points = list(cfg.point_sources) + [(f"gw_{c}", c) for c in via_routes]
             if places:
+                for problem in S.places_of_use_problems(places):
+                    self._problem(ValueError(problem))
                 S.add_places_of_use(swat_dir, places)
             if points:
                 S.add_point_sources(swat_dir, points)
