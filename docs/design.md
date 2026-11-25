@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 25, 2026, release 0.12.0). Built and tested on synthetic examples:
+Status (Nov 25, 2026, release 0.13.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -20,8 +20,9 @@ Status (Nov 25, 2026, release 0.12.0). Built and tested on synthetic examples:
   gwflow's rule (swatplus-bmi 0.7.0; the drain chosen);
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
 - the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
-- intakes on any channel, several to a channel served senior first, and SWAT+'s own irrigation from its channels and
-  reservoirs booked by source (swatplus-bmi 0.14.0; Irrigation from surface water);
+- intakes on any channel or reservoir, several to one served senior first, a user returning only the share its intake
+  delivered, the next day, and SWAT+'s own irrigation from its channels and reservoirs booked by source
+  (swatplus-bmi 0.14.0; Irrigation from surface water);
 - scenarios from a shared warm-up, and restarts;
 - stream temperature as a reach heat balance, with users' returns carrying their heat;
 - water quality: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users' intake

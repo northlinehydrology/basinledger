@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 (2026-11-25)
 
 - A user drawing from a SWAT+ intake returns only what its intake delivered. Before, a ReportedUser whose intake
   fell short still sent its full return. The Virginia study's Lake Pelham intake got 8,697 m3 of 870,385, and its
