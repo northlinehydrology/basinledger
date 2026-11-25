@@ -61,11 +61,17 @@ what, why, and how Basin Ledger copes until then. Written Nov 4, 2026.
    two-way exchange takes water from losing reaches. Today each such reach needs a water allocation place of use set
    up in the SWAT+ project.
 
-5. **To check in SWAT+ 62.0.1's water allocation:** `wallo_withdraw.f90` reads a place of use's duty as
-   `pou(ipou)%pod(ipod)%duty`, with `ipod` the point of diversion's global number, though `pou(ipou)%pod` is the
-   place of use's own list. With one point of diversion per place of use, as Basin Ledger writes them, the two agree
-   for the first channel. A place of use on a second channel may read the wrong entry. Basin Ledger's tests use one
-   channel. A test on a two-channel project would settle it.
+5. **SWAT+ 62.0.1's water allocation reads a place of use's duty with the wrong indices (confirmed Nov 24, 2026).**
+   `wallo_withdraw.f90` reads `pou(ipou)%pod(ipod)%duty`, where `ipou` is the place's position in its point of
+   diversion's list and `ipod` is the point of diversion's number. The right entry is
+   `pou(pou_num)%pod(pod_num)%duty`, which the routine computes a few lines later.
+   - On any channel but the first, the read runs past the place of use's own list and withdraws 0 or a stray value.
+     The Rappahannock study's intakes got nothing past the first channel, cha1031 included, which carried 2.8 m3/s.
+   - On a shared channel, each place gets another's demand.
+
+   The fix is four lines, tested on a scratch build. The write-up, its reproduction on Osu_1hru and the study's
+   project, and the diff are with the swatplus-bmi hand-over. Basin Ledger's side, after the release: refuse places
+   of use past the first channel on older swatplus-bmi, and add a two-channel test.
 
 6. **Reservoirs (lakes), for coupling a model's lakes the way its streams are (Nov 14, 2026).** Per reservoir: its
    water level (stage, m) and volume after the day; its groundwater exchange set for the next day, positive into the
@@ -79,6 +85,20 @@ what, why, and how Basin Ledger copes until then. Written Nov 4, 2026.
    once, from the model that owns groundwater, and lands on SWAT+'s fields (docs/design.md, "Large users and
    irrigation, MODFLOW first"). Optionally, the HRU's irrigation demand set from outside, for a study that keeps a
    model's own pumping and applies it to the fields.
+8. **Irrigation from SWAT+'s channels and reservoirs, booked (Nov 24, 2026).** Read only, for the day just run:
+   - by channel, `channel_water__irrigation_withdrawal_volume_flow_rate` (m3 s-1): the water SWAT+'s `irrigate`
+     actions took from the channel's storage (actions.f90, case `cha`/`sdc`: `rto * ch_stor%flo`, 0 when the channel
+     held too little);
+   - by reservoir, `reservoir_water__irrigation_withdrawal_volume_flow_rate`, the same for case `res`;
+   - by HRU, `land_irrigation_water__withdrawal_volume_flow_rate`: what the HRU's irrigation took from a SWAT+
+     channel or reservoir.
+
+   With request 7's irrigation that reached the soil and ran off, the HRU's application loss follows (it leaves SWAT+
+   with no account). SWAT+ doesn't tag `irrig(j)%demand` with its source, so the patch adds the volume up where
+   actions.f90 removes it, zeroed at the day's start like the other daily records. It is a diagnostic, with no
+   change to what SWAT+ does. The aquifer case isn't needed, since Basin Ledger refuses it in two-way mode, and
+   62.0.1 computes its delivery from the storage already reduced. Basin Ledger then books SWAT+'s own surface
+   irrigation by source and closes the whole-basin balance (docs/design.md, "Irrigation from surface water").
 
 A note for the swatplus-bmi docs: SWAT+ keeps one point of diversion per channel (`sd_ch%wallo_pod`), so several
 places of use on one channel must share one `point_of_diver.wro` row listing them all. Separate rows for the same
