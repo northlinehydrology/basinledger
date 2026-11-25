@@ -12,8 +12,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
 
     [swatplus]                          # the surface model: SWAT+, stepped live through swatplus-bmi
     project = "{swatplus_refdata}/Osu_1hru"
-    places_of_use = [{name = "intake", channel = "cha01"}]    # added to the run's copy, set daily; on a shared
-                                        #   channel, served in this order (the first is senior)
+    places_of_use = [{name = "intake", channel = "cha01"}]    # added to the run's copy, set daily; or
+                                        #   {name, reservoir = "res01"}; sharing a channel or reservoir, served in
+                                        #   this order (the first is senior)
     point_sources = [{name = "wwtp", channel = "cha01"}]
 
     # or [nextgen]                      # the surface model: a finished NGIAB run, replayed (coupling/nextgen.py)
@@ -355,6 +356,15 @@ def _path(base: Path, p: str) -> Path:
     return q if q.is_absolute() else (base / q).resolve()
 
 
+def _place_of_use(path: Path, x: dict) -> tuple[str, str]:
+    """``[swatplus] places_of_use``'s entry: {name, channel} or {name, reservoir}, as (name, source) with a reservoir
+    written "res:<reservoir>" (coupling/swatplus.py, ``place_source``)."""
+    if "name" not in x or ("channel" in x) == ("reservoir" in x):
+        raise ValueError(f"{path}: [swatplus] places_of_use: each needs a name and one of channel or reservoir; got "
+                         f"{x}")
+    return (x["name"], x["channel"]) if "channel" in x else (x["name"], "res:" + x["reservoir"])
+
+
 def load(path: str | Path) -> ExampleConfig:
     path = Path(path).resolve()
     with open(path, "rb") as f:
@@ -545,7 +555,7 @@ def load(path: str | Path) -> ExampleConfig:
                                 if c.get("calibration", {}).get("parameters") else None),
         calibration_zones=_path(base, c["calibration"]["zones"]) if c.get("calibration", {}).get("zones") else None,
         calibration_pilot_points=_pilot_points(path, base, c.get("calibration", {}).get("pilot_points")),
-        places_of_use=[(x["name"], x["channel"]) for x in sw.get("places_of_use", [])],
+        places_of_use=[_place_of_use(path, x) for x in sw.get("places_of_use", [])],
         point_sources=[(x["name"], x["channel"]) for x in sw.get("point_sources", [])],
         exchange=c.get("exchange"),
         utilities=c.get("utilities", []),
