@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.10.2 (2026-11-25)
+
+- Fixed: intakes on more than one channel. Each SWAT+ water allocation place of use now takes its own demand, on any
+  channel and several to a channel. SWAT+ 62.0.1's wallo_withdraw.f90 sized a withdrawal from
+  `pou(ipou)%pod(ipod)%duty`, with `ipou` the place's position in its point of diversion's list and `ipod` the point
+  of diversion's number. So a place of use on any channel but the first took nothing, or a stray value read past an
+  array, and places sharing a channel took each other's demands. Basin Ledger's ledger booked it all as shortfalls,
+  or caught an overdraw.
+  - The Rappahannock study's intakes got nothing past the first channel over 120 days, Motts Run's 3.06 million m3
+    on a 4,100 km2 channel included. A shared channel overdrew 1,910 m3 on the first day.
+  - swatplus-bmi 0.14.0 patches it and is now the minimum. With an older swatplus-bmi, places of use on more than
+    one channel are refused at start-up, with the reason.
+- Several places of use on one channel are served in `[swatplus] places_of_use`'s order. The first listed is the
+  senior: it takes what it asks of the day's outflow, and the next takes what it asks of the rest. This is SWAT+'s
+  rule for a point of diversion's places of use, now documented.
+- Tests (`tests/test_intakes.py`): two reported users share Osu_1hru's channel through the file's second point of
+  diversion, the case 0.13.1 got wrong (the coupled test fails there). It checks:
+  - the senior gets its demand or the day's outflow;
+  - the junior gets its demand from the rest;
+  - both get all they ask when the flow allows;
+  - the route pairs close with nothing overdrawn;
+  - the channel loses exactly what they took, the same day.
+
 ## 0.10.1 (2026-11-22)
 
 - A map from pixels reads in seconds: `AreaMap.from_csv` finds each object by name in a table and each distinct cell's

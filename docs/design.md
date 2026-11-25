@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 22, 2026, release 0.10.1). Built and tested on synthetic examples:
+Status (Nov 25, 2026, release 0.10.2). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -244,7 +244,11 @@ A component with a daily or other step works the same way. The driver only asks 
 - `well:<name>`: pumped from a MODFLOW 6 well;
 - `swat:place_of_use:<name>`: a SWAT+ water allocation demand, taken from its channel the same day. What the channel
   couldn't supply is entered as a shortfall. The places of use are added to the run's copy of the project from the
-  config (`[swatplus] places_of_use`);
+  config (`[swatplus] places_of_use`). Several on one channel share its point of diversion, and SWAT+ serves them in
+  the config's order, so the first listed is the senior: it takes what it asks of the day's outflow, and the next takes
+  what it asks of the rest. Places of use on more than one channel need swatplus-bmi 0.14.0 or later. SWAT+ 62.0.1's
+  wallo_withdraw.f90 gives a place of use on any channel but the first another's demand or none, which 0.14.0
+  patches, and an older swatplus-bmi is refused them at start-up (Nov 25, 2026);
 - `swat:point_source:<name>`: a SWAT+ daily point source into its channel (`[swatplus] point_sources`);
 - `outfall:<name>`: a return entered in the ledger only;
 - `utility:<name>`: the utility chain.
