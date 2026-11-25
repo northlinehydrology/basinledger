@@ -12,7 +12,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
 
     [swatplus]                          # the surface model: SWAT+, stepped live through swatplus-bmi
     project = "{swatplus_refdata}/Osu_1hru"
-    places_of_use = [{name = "intake", channel = "cha01"}]    # added to the run's copy, set daily
+    places_of_use = [{name = "intake", channel = "cha01"}]    # added to the run's copy, set daily; on a shared
+                                        #   channel, served in this order (the first is senior)
     point_sources = [{name = "wwtp", channel = "cha01"}]
 
     # or [nextgen]                      # the surface model: a finished NGIAB run, replayed (coupling/nextgen.py)
