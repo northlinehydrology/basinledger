@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- swatplus-bmi 0.14.0 is now the minimum: places of use on any channel, a channel's irrigation taken out of the
+  channel, and its irrigation withdrawal reads.
 - SWAT+'s own irrigation from its channels and reservoirs, booked (docs/design.md, "Irrigation from surface water";
   `coupling/irrigation.py`, `NativeIrrigation`; swatplus-bmi 0.14.0). Where a project's decision tables irrigate
   from a channel or reservoir, the driver reads each day what each water body gave and what each HRU took, and books
