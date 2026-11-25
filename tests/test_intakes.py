@@ -19,12 +19,12 @@ import shutil
 
 import numpy as np
 import pytest
+from conftest import ROOT, RUNS
 
 from basinledger import config as C
 from basinledger.config import UserConfig
 from basinledger.coupling import swatplus as S
 from basinledger.driver import Basin
-from conftest import ROOT, RUNS
 
 DAY = 86400.0
 DAYS = 240
