@@ -1852,7 +1852,15 @@ SWAT+ moves the water, and in low flow a dry channel gives nothing. Basin Ledger
 - `channel_sd_day` has no column for the withdrawal, so the whole-basin channel balance puts it in its residual;
 - with `[irrigation]` on, the driver books it as `irrigation:from_outside`, which is wrong today.
 
-So it waits on a read-only swatplus-bmi variable set (docs/requests.md, request 8). By channel and by reservoir, the
+There is also a SWAT+ 62.0.1 bug, found by the swatplus-bmi session on Nov 24, 2026. A channel's `irrigate` lowers
+`ch_stor`, but routing (ch_rtmusk.f90) starts from `tot_stor`, carried from the day before, and overwrites `ch_stor`
+from it. So the field gets the water and the channel never loses it. Reservoirs do lose theirs. Andrew chose to patch
+it in swatplus-bmi 0.14.0 (actions.f90 and wet_irrp.f90, drafted upstream). Basin Ledger therefore needs 0.14.0 for
+channel irrigation. On an older swatplus-bmi, channel irrigation is water from outside the basin.
+
+So it waits on a read-only swatplus-bmi variable set (docs/requests.md, request 8; in swatplus-bmi 0.14.0 as
+`channel_water__irrigation_withdrawal_volume_flow_rate`, `reservoir_water__irrigation_withdrawal_volume_flow_rate`
+and `land_irrigation_water__withdrawal_volume_flow_rate`). By channel and by reservoir, the
 day's water SWAT+'s irrigate actions took; by HRU, what its irrigation took from a SWAT+ water body. SWAT+ doesn't
 keep either one tagged with its source (`irrig(j)%demand` is the action's demand, whatever the source). So
 swatplus-bmi's patch adds them up where actions.f90 removes the water: a diagnostic, with no change to what SWAT+
