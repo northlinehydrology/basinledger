@@ -31,8 +31,9 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
-- routes: MODFLOW 6 wells, SWAT+ water allocation intakes (on any channel, several to a channel served senior first,
-  with swatplus-bmi 0.14.0) and point sources, outfalls, water from and to outside the basin;
+- routes: MODFLOW 6 wells, SWAT+ water allocation intakes (on any channel or reservoir, several to one served senior
+  first, with swatplus-bmi 0.14.0; a user drawing from one returns only what it got, the next day) and point sources,
+  outfalls, water from and to outside the basin;
 - the utility chain: sources, losses, sewer, plant outfall;
 - feedback rules: curtailment, dry mode, drawdown limit;
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
@@ -309,7 +310,8 @@ Any BMI component that reports its withdrawal, consumption and return can be a w
 constituent loads, return temperature and electricity are optional. A component that uses its own variable names is
 mapped role by role in the config. The engine checks each user's balance every step:
 withdrawal + gain = consumption + return + change in storage. It then integrates the hourly rates into the daily
-volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-users).
+volumes the hydrologic models take. A user drawing from a SWAT+ intake that falls short uses only the share it got,
+and returns that share the next day. See [docs/design.md](docs/design.md#water-users).
 
 ## What the tests check
 
@@ -327,7 +329,7 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | MODFLOW 6's budget | closes every day to 1e-7 of the gross flow, with and without pumping |
 | Physics | pumping draws down most at the well, and depletes the river by less than it pumps, more over time |
 | Surface routes | SWAT+ takes what was asked (or reports the shortfall); the channel's flow changes the same day by what the users put in and took out |
-| Intakes | several on one channel, through the file's second point of diversion: the senior gets its demand or the day's outflow, the junior its demand of the rest; the route pairs close, nothing overdrawn, and the channel loses exactly what they took |
+| Intakes | several on one channel, through the file's second point of diversion: the senior gets its demand or the day's outflow, the junior its demand of the rest; the route pairs close, nothing overdrawn, and the channel loses exactly what they took. On a reservoir, its daily balance closes with what they took. A short intake's user returns its delivered share the next day, never more than it got |
 | Irrigation from streams | SWAT+'s own irrigation from its channel: what the channel gave = what the HRU took = what reached the field + the loss, every day; the whole-basin balance's channels close with it |
 | Utility chain | production = delivery + losses = the sum of its sources; sewer = plant outfall |
 | Rules | act on exactly the days after the trigger; a curtailed user takes nothing; dry mode uses less water and more electricity |

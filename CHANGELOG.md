@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- A user drawing from a SWAT+ intake returns only what its intake delivered. Before, a ReportedUser whose intake
+  fell short still sent its full return. The Virginia study's Lake Pelham intake got 8,697 m3 of 870,385, and its
+  plant returned 829,326, water from nowhere, with every pair closing.
+  - A return enters SWAT+ before its day, and a delivery is only known after it. So such a user's day now scales
+    by the share delivered (consumption, gain, storage, and the return with its loads and heat), and its return
+    leaves the next day (Andrew's choice, Nov 25, 2026). **This changes the timing of these users' returns.**
+  - The ledger books `user:<name>:delivered`, `:unmet`, `:delivered_share`, `:return_due`, `:return_sent` and
+    `:return_held`. It closes what was asked = delivered + unmet, and delivered = consumption met + return due +
+    storage less gain met, every day.
+  - A restart carries the return held overnight.
+  - Users on a utility, or drawing from wells, are unchanged.
+- Places of use on a reservoir: `[swatplus] places_of_use = [{name, reservoir = "res30"}]` writes a point of
+  diversion of type `res`. SWAT+ takes the water from the reservoir's storage after the day's inflow and before its
+  release. Several users share one, senior first, as on a channel. Salt takes the reservoir's concentration.
+  Tested on Osu_1hru with a reservoir: the reservoir's daily balance (its volume, inflow, precipitation, release,
+  evaporation and seepage, read through swatplus-bmi) closes with exactly what the intakes took. SWAT+ 62.0.1's
+  reservoir path needed no patch beyond 0.14.0's place-of-use fix.
+- Tests (`tests/test_intakes.py`): a plant asking more than its channel carries, the reservoir intakes, and the
+  config and project files. `tests/test_surface.py`'s mill now returns the next day.
+
 ## 0.12.0 (2026-11-25)
 
 - swatplus-bmi 0.14.0 is now the minimum: places of use on any channel, a channel's irrigation taken out of the
