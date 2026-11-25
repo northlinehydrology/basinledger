@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 (2026-11-25)
 
 - swatplus-bmi 0.14.0 is now the minimum: places of use on any channel, a channel's irrigation taken out of the
   channel, and its irrigation withdrawal reads.
