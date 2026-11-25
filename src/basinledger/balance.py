@@ -4,15 +4,17 @@ Over the area the surface model covers:
 
 - **land** (SWAT+'s ``basin_wb_day``, summed over the run): precipitation + irrigation + groundwater into the soil
   (``gwsoilq``) = ET + runoff to the channels + percolation + the gain in soil water and snow + a residual, which is SWAT+'s own (wetland storage, for one, isn't
-  in it). Irrigation is counted as water from outside [A]: where a project irrigates from its own channels or
-  aquifers, that is a transfer inside the basin, and the example should say so;
+  in it). Irrigation is SWAT+'s ``irr``, what reached the soil, from any source. What SWAT+'s own irrigation took
+  from its channels and reservoirs (swatplus-bmi 0.14.0, booked by the driver) is reported beside it:
+  ``irrigation_from_streams``, ``irrigation_from_lakes`` and the application's ``irrigation_loss``, which leaves
+  the basin; the rest of ``irr`` is water from outside, or pumped from MODFLOW 6's wells (``[irrigation]``);
 - **the link** (the ledger): what SWAT+'s aquifers recharged, what MODFLOW 6 received, and what the map added;
 - **groundwater** (the ledger): recharge + boundary inflow + release from storage = discharge to the coupled streams
   + pumping + water up into the soil (``gw_soil:sent``), which closes by MODFLOW 6's budget;
 - **channels and lakes**: runoff + groundwater SWAT+'s channels received (the exchange as applied, gains less
   losses) + precipitation on lakes and channels + water users' returns to the streams + inflow from elsewhere =
-  evaporation from lakes and channels + withdrawals from the streams + outflow at the outlet + the gain in lake and
-  channel storage + a residual. Precipitation, evaporation and storage come from the lakes' and channels' daily
+  evaporation from lakes and channels + withdrawals from the streams + irrigation from the streams and lakes +
+  outflow at the outlet + the gain in lake and channel storage + a residual. Precipitation, evaporation and storage come from the lakes' and channels' daily
   files (else the average annual ones times the run's years, with no storage term). Inflow from elsewhere is what
   SWAT+'s channels report taking in beyond their upstream channels, the lakes' releases, the land's runoff, the
   groundwater they gained and Basin Ledger's returns: the project's own point sources (recall objects), for one,
@@ -96,6 +98,9 @@ def basin_balance(run: str | Path, outlet: str) -> dict[str, float]:
         "returns_to_streams": float(np.nansum(_sum(t, "route:swat:point_source:", ":delivered"))),
         "withdrawals_from_streams": float(np.nansum(_sum(t, "route:swat:place_of_use:", ":delivered"))),
         "irrigation": to_m3(mm("irr")) if "irr" in col else 0.0,
+        "irrigation_from_streams": float(np.nansum(_sum(t, "irrigation:native:from_channels"))),
+        "irrigation_from_lakes": float(np.nansum(_sum(t, "irrigation:native:from_reservoirs"))),
+        "irrigation_loss": float(np.nansum(_sum(t, "irrigation:native:loss"))),
         "groundwater_into_soil": to_m3(mm("gwsoilq")) if "gwsoilq" in col else 0.0,
         "groundwater_to_soil_sent": float(np.nansum(_sum(t, "gw_soil:sent"))),
         "inflow_from_elsewhere": _other_inflow(sw, t),
@@ -116,7 +121,8 @@ def basin_balance(run: str | Path, outlet: str) -> dict[str, float]:
                               + b["runoff_to_channels"] + b["groundwater_into_channels"] + b["precipitation_lakes"]
                               + b["precipitation_channels"] + b["returns_to_streams"]
                               + b["inflow_from_elsewhere"] - b["evaporation_lakes"]
-                              - b["evaporation_channels"] - b["withdrawals_from_streams"] - b["outflow"])
+                              - b["evaporation_channels"] - b["withdrawals_from_streams"]
+                              - b["irrigation_from_streams"] - b["irrigation_from_lakes"] - b["outflow"])
     return b
 
 
