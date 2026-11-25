@@ -1837,7 +1837,7 @@ aquifer.
   SWAT+'s aquifer only holds the recharge it passed to MODFLOW 6, so water drawn from it would be pumped twice.
   Irrigation from a channel or a reservoir is surface water and stays SWAT+'s.
 
-**Irrigation from surface water (designed Nov 24, 2026; way chosen by Andrew the same day; not built).** The aim: a
+**Irrigation from surface water (designed Nov 24, 2026; way chosen by Andrew the same day; built Nov 25).** The aim: a
 field that SWAT+ irrigates takes its water out of the stream or reservoir it is drawn from, as `[irrigation] wells`
 takes it out of MODFLOW 6. The ledger has to close, and no water may be counted twice against SWAT+'s own irrigation
 accounting.
@@ -1866,26 +1866,29 @@ keep either one tagged with its source (`irrig(j)%demand` is the action's demand
 swatplus-bmi's patch adds them up where actions.f90 removes the water: a diagnostic, with no change to what SWAT+
 does.
 
-Once swatplus-bmi has it, Basin Ledger:
+**Built (Nov 25, 2026, on swatplus-bmi 0.14.0; `coupling/irrigation.py`, `NativeIrrigation`).** Basin Ledger:
 
-- **needs no config.** Every HRU whose tables irrigate from a channel or reservoir is booked; `irrigation.sources`
-  already finds them. `[irrigation] wells` still refuses those HRUs, so a field's water comes from one source.
-- **books each day** `irrigation:channel:<c>` and `irrigation:reservoir:<r>` (what each source gave). Per HRU, it books
-  `irrigation:native:withdrawn`, `irrigation:native:applied` (reached the soil and ran off) and
-  `irrigation:native:loss`. Two pairs close each day: the sources' sum = the HRUs' withdrawn, to float32, and an HRU's
-  withdrawn = applied + loss. `irrigation:from_outside` becomes the outside-source irrigation on HRUs not pumped
-  from wells.
+- **needs no config.** The HRUs whose decision tables irrigate from a channel or reservoir, and the water bodies they
+  name, are read from the project (`irrigation.native`). `[irrigation] wells` still refuses those HRUs, so a field's
+  water comes from one source.
+- **books each day**, over the HRUs, `irrigation:native:withdrawn` (what they took),
+  `irrigation:native:from_channels` and `:from_reservoirs` (what the water bodies gave), `:applied` (what reached
+  the soil and ran off, on the HRUs that took water that day) and `:loss`. It also books `irrigation:channel:<c>`
+  and `irrigation:reservoir:<r>` for each water body the tables name. Two pairs close each day, to float32: what
+  was taken = what the channels and reservoirs gave, and what was taken = applied + loss. `:excess` (more applied
+  than taken) must be zero. With `[irrigation] wells`, `irrigation:from_outside` leaves out the HRUs that took
+  from a SWAT+ water body that day.
 - **in the whole-basin balance** (`balance.py`), the channels' and lakes' outflow side gains
-  `irrigation_from_streams` and `irrigation_from_lakes`, so their residual closes. The land keeps SWAT+'s `irr` (only
-  `irrig%applied`, hru_control.f90), now split into the part from the basin's own water and the part from outside.
-  The loss is booked as leaving the basin. Water taken from a channel after that channel has routed its day shows in
-  its storage the next day. The balance sums over the run, so only the run's last day can be off by that day's
-  withdrawal.
+  `irrigation_from_streams` and `irrigation_from_lakes`, so their residual closes, and `irrigation_loss` is
+  reported. The land keeps SWAT+'s `irr` (only `irrig%applied`, hru_control.f90). Of it, what the streams and lakes
+  gave less the loss is the basin's own water; the rest came from outside or MODFLOW 6's wells. Water taken from a
+  channel after that channel has routed its day shows in its storage the next day. The balance sums over the run,
+  so only the run's last day can be off by that day's withdrawal.
 - **at start-up**, a project with channel or reservoir irrigation on an older swatplus-bmi gets a warning that it isn't
   booked. The warning becomes a refusal where `[outputs] balance` is asked for.
-- **to check when built:** the constituents. `irrig(j)%water` is `rto * ch_stor`, nitrate and phosphorus included.
-  Whether SWAT+ puts them on the field, and how that meets the stream transport's mass, comes before transport runs
-  with it.
+- **not checked yet:** the constituents. `irrig(j)%water` is `rto * ch_stor`, nitrate and phosphorus included.
+  Whether SWAT+ puts them on the field, and how that meets the stream transport's mass, needs checking before a
+  study runs transport with channel irrigation.
 
 **Not chosen.**
 
@@ -1901,15 +1904,21 @@ diversion's list and `ipod` is the point of diversion's number. So it delivers n
 of use on any channel but the first, and on a shared channel each place gets another's demand (request 5, now
 confirmed). The chosen way doesn't go through water allocation.
 
-**Tests (when built).** Osu_1hru's paddy table switched to `irrigate cha 1`, as `test_irrigation` already does for
-the refusal, with an application small enough for the channel's storage (its 60 mm, 6,000 m3, is more than the
-channel holds, so SWAT+ would give none). The tests check:
+**Tested** (`tests/test_irrigation_surface.py`). Osu_1hru's paddy table is switched to irrigate 1 mm (100 m3)
+from its channel with sprinkler_med (efficiency 0.85), and the channel's storage coefficient is halved so it keeps
+some water. It is coupled both ways on the synthetic example for three years, with the whole-basin balance.
 
-- the channel's withdrawal against the HRU's;
-- applied + loss = withdrawn;
-- the channel's flow against a run without irrigation;
-- the whole-basin balance with `irrigation_from_streams`;
-- a day the channel is short, which gives nothing and books nothing.
+- Thirteen actions found water, 100 m3 each.
+- The channel gave what the HRU took every day, and what reached the soil was 85% of it.
+- SWAT+'s land budget's irrigation was that 85% (1,105 m3), with none from outside.
+- The channels closed to -113 m3 against 611,000 m3 of outflow. Without the irrigation term they would be off by
+  about 1,190 m3.
+
+swatplus-bmi 0.14.0's own tests cover:
+
+- the channel's outflow and storage against a run without irrigation;
+- a day the channel is short, which gives nothing;
+- a reservoir as the source.
 
 **Built (Nov 14, 2026): the start-up check and maps on the model's own grid.**
 

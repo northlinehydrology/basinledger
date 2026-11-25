@@ -46,7 +46,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   Ledger takes over listed at start-up, maps onto its grid, its own units and stress periods, an SFR network a study
   brought lined up with SWAT+'s channels and its mover cut, users' wells added or on its MAW wells, storage for a
   model handed over steady, several of a simulation's models coupled together, LAK lakes on SWAT+'s reservoirs and
-  irrigation pumped from its wells (both swatplus-bmi 0.11.0);
+  irrigation pumped from its wells (both swatplus-bmi 0.11.0), and SWAT+'s own irrigation from its channels and
+  reservoirs booked by source, the whole-basin balance closing with it (swatplus-bmi 0.14.0);
 - groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
   profile's bottom (chosen) or SWAT+ gwflow's rule, with or without a cap at the layers' room (none chosen;
   swatplus-bmi 0.7.0);
