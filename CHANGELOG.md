@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.12.0 (2026-11-25)
+
+- swatplus-bmi 0.14.0 is now the minimum: places of use on any channel, a channel's irrigation taken out of the
+  channel, and its irrigation withdrawal reads.
+- SWAT+'s own irrigation from its channels and reservoirs, booked (docs/design.md, "Irrigation from surface water";
+  `coupling/irrigation.py`, `NativeIrrigation`; swatplus-bmi 0.14.0). Where a project's decision tables irrigate
+  from a channel or reservoir, the driver reads each day what each water body gave and what each HRU took, and books
+  those amounts, what reached the field and the application's loss. Two pairs close each day.
+  - The whole-basin balance's channels and lakes gain `irrigation_from_streams` and `irrigation_from_lakes`, and the
+    balance reports `irrigation_loss`.
+  - With `[irrigation] wells`, `irrigation:from_outside` no longer counts water SWAT+ took from its own channels and
+    reservoirs. That was wrong before.
+  - On an older swatplus-bmi, such a project is warned that the irrigation isn't booked, or refused where
+    `[outputs] balance` is asked for. SWAT+ 62.0.1 never took a channel's irrigation out of the channel, and
+    swatplus-bmi 0.14.0 patches that.
+  - Tested on Osu_1hru's paddy irrigating from its channel, coupled both ways for three years. The ledger's pairs
+    closed every day, and the channels closed in the whole-basin balance with the 1,300 m3 they gave.
+- From 0.10.2: places of use on more than one channel, several to a channel served senior first. These need
+  swatplus-bmi 0.14.0, and an older one is refused them (`tests/test_intakes.py`).
+
 ## 0.11.0 (2026-11-23)
 
 - Groundwater transport, stage 2 (docs/design.md, Water quality across links): nitrate and soluble phosphorus travel

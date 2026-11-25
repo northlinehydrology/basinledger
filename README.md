@@ -27,12 +27,12 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.11.0).** Built and tested:
+**Status: early (0.12.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
-- routes: MODFLOW 6 wells, SWAT+ water allocation intakes and point sources, outfalls, water from and to outside the
-  basin;
+- routes: MODFLOW 6 wells, SWAT+ water allocation intakes (on any channel, several to a channel served senior first,
+  with swatplus-bmi 0.14.0) and point sources, outfalls, water from and to outside the basin;
 - the utility chain: sources, losses, sewer, plant outfall;
 - feedback rules: curtailment, dry mode, drawdown limit;
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
@@ -46,7 +46,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   Ledger takes over listed at start-up, maps onto its grid, its own units and stress periods, an SFR network a study
   brought lined up with SWAT+'s channels and its mover cut, users' wells added or on its MAW wells, storage for a
   model handed over steady, several of a simulation's models coupled together, LAK lakes on SWAT+'s reservoirs and
-  irrigation pumped from its wells (both swatplus-bmi 0.11.0);
+  irrigation pumped from its wells (both swatplus-bmi 0.11.0), and SWAT+'s own irrigation from its channels and
+  reservoirs booked by source, the whole-basin balance closing with it (swatplus-bmi 0.14.0);
 - groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
   profile's bottom (chosen) or SWAT+ gwflow's rule, with or without a cap at the layers' room (none chosen;
   swatplus-bmi 0.7.0);
@@ -165,7 +166,7 @@ pip install "basinledger[users,nextgen]"      # or: uv add "basinledger[users,ne
 On Windows x86-64, Linux x86-64 (glibc 2.34 or later: Ubuntu 22.04, RHEL 9 and newer) and macOS 15 or later on Apple
 silicon, that's all (0.10.0). Both models come with it, nothing to compile or fetch:
 
-- **SWAT+**, built with the exchange mode, inside swatplus-bmi's wheel (swatplus-bmi 0.13.1 or later);
+- **SWAT+**, built with the exchange mode, inside swatplus-bmi's wheel (swatplus-bmi 0.14.0 or later);
 - **MODFLOW 6's shared library** (`libmf6`), USGS's release unchanged (6.8.2), inside Basin Ledger's own wheel
   (`basinledger/_lib/`, with a note on its source and license).
 
@@ -326,6 +327,8 @@ volumes the hydrologic models take. See [docs/design.md](docs/design.md#water-us
 | MODFLOW 6's budget | closes every day to 1e-7 of the gross flow, with and without pumping |
 | Physics | pumping draws down most at the well, and depletes the river by less than it pumps, more over time |
 | Surface routes | SWAT+ takes what was asked (or reports the shortfall); the channel's flow changes the same day by what the users put in and took out |
+| Intakes | several on one channel, through the file's second point of diversion: the senior gets its demand or the day's outflow, the junior its demand of the rest; the route pairs close, nothing overdrawn, and the channel loses exactly what they took |
+| Irrigation from streams | SWAT+'s own irrigation from its channel: what the channel gave = what the HRU took = what reached the field + the loss, every day; the whole-basin balance's channels close with it |
 | Utility chain | production = delivery + losses = the sum of its sources; sewer = plant outfall |
 | Rules | act on exactly the days after the trigger; a curtailed user takes nothing; dry mode uses less water and more electricity |
 | Two-way exchange | SWAT+'s aquifer returns nothing and stores exactly its recharge; each day's river exchange reaches SWAT+ the next day, whole |

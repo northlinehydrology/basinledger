@@ -14,6 +14,12 @@ would take it twice; from SWAT+'s aquifer it is refused in two-way mode anyway (
 through water allocation (``irr_demand`` with a water allocation source) its source isn't known here. These are
 refused for a mapped HRU. An HRU irrigated from an outside source but not mapped keeps SWAT+'s water from outside,
 and the ledger books it so (``irrigation:from_outside``).
+
+Irrigation from SWAT+'s own channels and reservoirs stays SWAT+'s, and is booked (``NativeIrrigation``, swatplus-bmi
+0.14.0): each day, what each water body gave, what each HRU took, and the application's loss, which leaves the basin
+(docs/design.md, "Irrigation from surface water"). SWAT+ 62.0.1 never took a channel's irrigation out of the channel
+(its routing starts from storage the action doesn't touch); swatplus-bmi 0.14.0 patches that, so the stream loses
+what the field gets.
 """
 
 from __future__ import annotations
@@ -22,7 +28,16 @@ import csv
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
+
+from ..ledger import FLOAT32
+from ..units import DAY
+
 IRRIGATION = "land_irrigation_water__volume_flow_rate"  # m3 s-1 by HRU, the day just done (swatplus-bmi 0.11.0)
+# what SWAT+'s own irrigate actions took from its channels and reservoirs, the day just done (swatplus-bmi 0.14.0)
+CHANNEL_TAKE = "channel_water__irrigation_withdrawal_volume_flow_rate"      # m3 s-1 by channel
+RESERVOIR_TAKE = "reservoir_water__irrigation_withdrawal_volume_flow_rate"  # m3 s-1 by reservoir
+HRU_TAKE = "land_irrigation_water__withdrawal_volume_flow_rate"             # m3 s-1 by HRU
 
 OUTSIDE = "an outside source"
 SOURCES = {"aqu": "SWAT+'s aquifer", "cha": "a SWAT+ channel", "sdc": "a SWAT+ channel", "res": "a SWAT+ reservoir"}
@@ -81,9 +96,10 @@ def _schedules(project: Path) -> dict[str, tuple[list[str], bool]]:
     return out
 
 
-def _tables(project: Path) -> dict[str, set[str]]:
-    """The land use decision tables (lum.dtl): each table's irrigation sources."""
-    out: dict[str, set[str]] = {}
+def _tables(project: Path, objects: bool = False) -> dict[str, set]:
+    """The land use decision tables (lum.dtl): each table's irrigation sources, or with ``objects`` the SWAT+ water
+    bodies its irrigate actions draw from, as (type, number): ("cha", 1), ("res", 2)."""
+    out: dict[str, set] = {}
     f = project / "lum.dtl"
     if not f.exists():
         return out
@@ -95,10 +111,85 @@ def _tables(project: Path) -> dict[str, set[str]]:
             table = next((x.split() for x in lines[i + 1:] if x.split()), [None])[0]
             out.setdefault(table, set())
         elif table and len(w) >= 2 and w[0] == "irrigate":
-            out[table].add(SOURCES.get(w[1], OUTSIDE))
-        elif table and len(w) >= 8 and w[0] == "irr_demand":
+            if not objects:
+                out[table].add(SOURCES.get(w[1], OUTSIDE))
+            elif w[1] in ("cha", "sdc", "res") and len(w) >= 3 and w[2].isdigit():
+                out[table].add(("res" if w[1] == "res" else "cha", int(w[2])))
+        elif table and len(w) >= 8 and w[0] == "irr_demand" and not objects:
             out[table].add(OUTSIDE if w[7] == "unlim" else ALLOCATION)
     return out
+
+
+def _hru_tables(project: Path) -> dict[str, tuple[list[str], bool]]:
+    """Each HRU (by its name in hru.con): the decision tables its land use's schedule runs, and whether the schedule
+    has a scheduled irrigation (hru.con -> hru-data.hru's lu_mgt -> landuse.lum's mgt -> management.sch)."""
+    data = {r[0]: r[5] for r in _rows(project / "hru-data.hru") if len(r) > 5}   # id -> land use
+    mgt = {r[0]: r[3] for r in _rows(project / "landuse.lum") if len(r) > 3}      # land use -> schedule
+    scheds = _schedules(project)
+    return {r[1]: scheds.get(mgt.get(data.get(r[7]), "null"), ([], False))
+            for r in _rows(project / "hru.con") if len(r) >= 8}
+
+
+def native(project: str | Path) -> tuple[list[str], set[tuple[str, int]]]:
+    """SWAT+'s own irrigation from its channels and reservoirs: the HRUs whose decision tables irrigate from one, and
+    the water bodies they draw from, as (type, number) with type "cha" or "res"."""
+    project = Path(project)
+    tables = _tables(project, objects=True)
+    hrus, objs = [], set()
+    for hru, (auto, _) in _hru_tables(project).items():
+        got = set().union(*[tables.get(t, set()) for t in auto]) if auto else set()
+        if got:
+            hrus.append(hru)
+            objs |= got
+    return hrus, objs
+
+
+class NativeIrrigation:
+    """SWAT+'s own irrigation from its channels and reservoirs, booked (docs/design.md, "Irrigation from surface
+    water"; swatplus-bmi 0.14.0, which also takes a channel's water out of the channel, as SWAT+ 62.0.1 didn't).
+
+    SWAT+ moves the water the same day: an irrigate action takes its demand out of the channel's storage or the
+    reservoir, all or nothing. Each day Basin Ledger reads what each water body gave and what each HRU took, and books:
+
+    - ``irrigation:native:from_channels`` and ``:from_reservoirs``, which add up to ``:withdrawn`` (what the HRUs took);
+    - ``:applied`` (what reached the soil and ran off on the HRUs that took water that day) and ``:loss`` (the
+      application's loss, which leaves SWAT+ with no account), which add up to ``:withdrawn``; ``:excess``, more
+      applied than taken, must be zero;
+    - ``irrigation:channel:<name>`` and ``irrigation:reservoir:<name>`` for each water body the decision tables name.
+    """
+
+    def __init__(self, sw, ledger, objects: set[tuple[str, int]]):
+        self.sw = sw
+        self.has_res = sw.has(RESERVOIR_TAKE)
+        chans = list(sw.names(CHANNEL_TAKE))
+        ress = list(sw.names(RESERVOIR_TAKE)) if self.has_res else []
+        self.named = [(f"irrigation:channel:{chans[n - 1]}", "cha", n - 1) for t, n in sorted(objects)
+                      if t == "cha" and 0 < n <= len(chans)]
+        self.named += [(f"irrigation:reservoir:{ress[n - 1]}", "res", n - 1) for t, n in sorted(objects)
+                       if t == "res" and 0 < n <= len(ress)]
+        k = "irrigation:native:"
+        ledger.pair(k + "withdrawn", [k + "from_channels", k + "from_reservoirs"], rtol=FLOAT32)
+        ledger.pair(k + "withdrawn", [k + "applied", k + "loss"], rtol=FLOAT32)
+        ledger.zero(k + "excess")
+        self.took = None
+
+    def day(self, ledger):
+        """The day just run: book it, and keep which HRUs took water from a SWAT+ water body (``took``)."""
+        took = self.sw.get(HRU_TAKE) * DAY
+        cha = self.sw.get(CHANNEL_TAKE) * DAY
+        res = self.sw.get(RESERVOIR_TAKE) * DAY if self.has_res else np.zeros(0)
+        put = self.sw.get(IRRIGATION) * DAY
+        self.took = took > 0
+        withdrawn, applied = float(took.sum()), float(put[self.took].sum())
+        k = "irrigation:native:"
+        ledger.enter(k + "withdrawn", withdrawn)
+        ledger.enter(k + "from_channels", float(cha.sum()))
+        ledger.enter(k + "from_reservoirs", float(res.sum()))
+        ledger.enter(k + "applied", applied)
+        ledger.enter(k + "loss", max(withdrawn - applied, 0.0))
+        ledger.enter(k + "excess", max(applied - withdrawn * (1 + FLOAT32) - 1e-6, 0.0))
+        for key, typ, i in self.named:
+            ledger.enter(key, float((cha if typ == "cha" else res)[i]))
 
 
 def sources(project: str | Path) -> dict[str, set[str]]:
@@ -106,15 +197,9 @@ def sources(project: str | Path) -> dict[str, set[str]]:
     (hru.con -> hru-data.hru's lu_mgt -> landuse.lum's mgt -> management.sch), the decision tables it runs and a
     scheduled irrm. An HRU that never irrigates has none."""
     project = Path(project)
-    data = {r[0]: r[5] for r in _rows(project / "hru-data.hru") if len(r) > 5}   # id -> land use
-    mgt = {r[0]: r[3] for r in _rows(project / "landuse.lum") if len(r) > 3}      # land use -> schedule
-    scheds, tables = _schedules(project), _tables(project)
+    tables = _tables(project)
     out = {}
-    for r in _rows(project / "hru.con"):
-        if len(r) < 8:
-            continue
-        name, lu = r[1], data.get(r[7])
-        auto, irrm = scheds.get(mgt.get(lu, "null"), ([], False))
+    for name, (auto, irrm) in _hru_tables(project).items():
         got = set().union(*[tables.get(t, set()) for t in auto]) if auto else set()
         if irrm:
             got.add(OUTSIDE)

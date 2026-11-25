@@ -52,7 +52,7 @@ wheels = [
 
 [[package]]
 name = "basinledger"
-version = "0.11.0"
+version = "0.12.0"
 source = { editable = "." }
 dependencies = [
     { name = "bmipy" },
@@ -107,7 +107,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyyaml", marker = "extra == 'users'", specifier = ">=6" },
     { name = "shapely", marker = "extra == 'gis'", specifier = ">=2" },
-    { name = "swatplus-bmi", specifier = ">=0.13.1" },
+    { name = "swatplus-bmi", specifier = ">=0.14.0" },
     { name = "waterledger-models", marker = "extra == 'users'", specifier = ">=3.11" },
 ]
 provides-extras = ["users", "nextgen", "gis"]
@@ -2599,7 +2599,7 @@ wheels = [
 
 [[package]]
 name = "swatplus-bmi"
-version = "0.13.1"
+version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bmipy" },
@@ -2607,12 +2607,12 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/17/7d/1261256bf7ba70934e4cd7de9b2f86e0ecc960e1ad8d79fedc8b5c8e6cd1/swatplus_bmi-0.13.1.tar.gz", hash = "sha256:525e9ef82ac3812fde960ede2638aa1304b068d111b142d659499d550f3845a8", size = 735253, upload-time = "2026-11-16T06:05:40.774Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/61/1e/c56d8eee9e3c08ccdaca5d2e0539ddf5f47a6e17257584669ed64a6d76eb/swatplus_bmi-0.14.0.tar.gz", hash = "sha256:449b8300b3c25ca899d131ef365534c17ef50cbbc4ff6893eafc07dc7770cd30", size = 754168, upload-time = "2026-11-25T15:00:00.404Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/f2/35ae1a540f5ee6448429e2631eafa7f94145c45b8f842d4741a978ed35ba/swatplus_bmi-0.13.1-py3-none-any.whl", hash = "sha256:34295d6c3487cbb6871717605675ac314f4b8f4688c7454f59e0ffcc94219f51", size = 128301, upload-time = "2026-11-16T06:05:34.074Z" },
-    { url = "https://files.pythonhosted.org/packages/c3/07/7aa7d3a58503f60854fee4efc25231212daee56a427df541b87d132ac392/swatplus_bmi-0.13.1-py3-none-macosx_15_0_arm64.whl", hash = "sha256:e25aaca76aa9cca893551ab34285da5a4406c1c6bd54490ad57b28a6761bc61d", size = 2813962, upload-time = "2026-11-16T06:05:35.576Z" },
-    { url = "https://files.pythonhosted.org/packages/ff/2d/5734ec7d3255d2225811bb770fab4b7843c7496de170bf30da71dfaf1c33/swatplus_bmi-0.13.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:407c7d7890dfb0c5a00fc316031cd12542788a155099412ca70020b361a6fcac", size = 3543940, upload-time = "2026-11-16T06:05:37.471Z" },
-    { url = "https://files.pythonhosted.org/packages/e0/4e/5bbccf78966ebc110642c9a80cf3753bcef069059d6ac5b442f8f4752420/swatplus_bmi-0.13.1-py3-none-win_amd64.whl", hash = "sha256:50f448c8f9d367ae221b184354d6dab81f0048a6811269d0ea9bb59bac78c6a8", size = 3170050, upload-time = "2026-11-16T06:05:39.239Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/e3/4ddb94c430250ad5e0d67f6d9c18f5d7504ffaa4bf081bb83e499e38a015/swatplus_bmi-0.14.0-py3-none-any.whl", hash = "sha256:83093217766c550ca7d6f979d5c0d90267658e8a4afdb4ab875a961e1bc11511", size = 133203, upload-time = "2026-11-25T14:59:54.217Z" },
+    { url = "https://files.pythonhosted.org/packages/97/c5/ff799c0cdddf46dd732aa062b04ecd2077782919c840ca202beb907e4207/swatplus_bmi-0.14.0-py3-none-macosx_15_0_arm64.whl", hash = "sha256:22dd48b9d62d70cf8922dec30c02b5c92aa0eee957dcfbbd207bd2c8aa5f24a0", size = 2820348, upload-time = "2026-11-25T14:59:55.801Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/e1/695830b93b5ecb08fbebd4e8f6b0b78e50e2c12c149d734c5e1999f55a99/swatplus_bmi-0.14.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:92d192d98cc83c4c2f7b8fa1c12598a3d071555d77686d3eb1cfd8e592d7d007", size = 3552964, upload-time = "2026-11-25T14:59:57.535Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/13/f100de8f4d5c0c28438788adcf921586c1ad13466ecf0f2f5eff68361ad3/swatplus_bmi-0.14.0-py3-none-win_amd64.whl", hash = "sha256:1b901433c128ce0d83db1d07a2506697bb93742946d03b0c0f50dc6854340d2a", size = 3183135, upload-time = "2026-11-25T14:59:59.099Z" },
 ]
 
 [[package]]

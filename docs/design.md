@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 23, 2026, release 0.11.0). Built and tested on synthetic examples:
+Status (Nov 25, 2026, release 0.12.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -20,6 +20,8 @@ Status (Nov 23, 2026, release 0.11.0). Built and tested on synthetic examples:
   gwflow's rule (swatplus-bmi 0.7.0; the drain chosen);
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
 - the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
+- intakes on any channel, several to a channel served senior first, and SWAT+'s own irrigation from its channels and
+  reservoirs booked by source (swatplus-bmi 0.14.0; Irrigation from surface water);
 - scenarios from a shared warm-up, and restarts;
 - stream temperature as a reach heat balance, with users' returns carrying their heat;
 - water quality: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users' intake
@@ -247,7 +249,11 @@ A component with a daily or other step works the same way. The driver only asks 
 - `well:<name>`: pumped from a MODFLOW 6 well;
 - `swat:place_of_use:<name>`: a SWAT+ water allocation demand, taken from its channel the same day. What the channel
   couldn't supply is entered as a shortfall. The places of use are added to the run's copy of the project from the
-  config (`[swatplus] places_of_use`);
+  config (`[swatplus] places_of_use`). Several on one channel share its point of diversion, and SWAT+ serves them in
+  the config's order, so the first listed is the senior: it takes what it asks of the day's outflow, and the next takes
+  what it asks of the rest. Places of use on more than one channel need swatplus-bmi 0.14.0 or later. SWAT+ 62.0.1's
+  wallo_withdraw.f90 gives a place of use on any channel but the first another's demand or none, which 0.14.0
+  patches, and an older swatplus-bmi is refused them at start-up (Nov 25, 2026);
 - `swat:point_source:<name>`: a SWAT+ daily point source into its channel (`[swatplus] point_sources`);
 - `outfall:<name>`: a return entered in the ledger only;
 - `utility:<name>`: the utility chain.
@@ -1836,6 +1842,89 @@ aquifer.
   irrigates from SWAT+'s aquifer, and a water allocation point of diversion from an aquifer. In two-way mode
   SWAT+'s aquifer only holds the recharge it passed to MODFLOW 6, so water drawn from it would be pumped twice.
   Irrigation from a channel or a reservoir is surface water and stays SWAT+'s.
+
+**Irrigation from surface water (designed Nov 24, 2026; way chosen by Andrew the same day; built Nov 25).** The aim: a
+field that SWAT+ irrigates takes its water out of the stream or reservoir it is drawn from, as `[irrigation] wells`
+takes it out of MODFLOW 6. The ledger has to close, and no water may be counted twice against SWAT+'s own irrigation
+accounting.
+
+**Chosen: SWAT+'s own irrigation from a channel or reservoir, booked by Basin Ledger.** A decision table's `irrigate`
+action from `cha` (or `sdc`) or `res` (actions.f90) runs the same day. It takes the demand out of the channel's
+storage (`ch_stor`) or the reservoir, all or nothing: if the source holds less, the field gets none that day. So
+SWAT+ moves the water, and in low flow a dry channel gives nothing. Basin Ledger only has to see it. Today it can't:
+
+- swatplus-bmi reads the irrigation that reached the soil and ran off (request 7), not what left the source;
+- the application's loss (the demand less those two, `(1 - eff)` of what isn't runoff) leaves SWAT+ with no account;
+- `channel_sd_day` has no column for the withdrawal, so the whole-basin channel balance puts it in its residual;
+- with `[irrigation]` on, the driver books it as `irrigation:from_outside`, which is wrong today.
+
+There is also a SWAT+ 62.0.1 bug, found by the swatplus-bmi session on Nov 24, 2026. A channel's `irrigate` lowers
+`ch_stor`, but routing (ch_rtmusk.f90) starts from `tot_stor`, carried from the day before, and overwrites `ch_stor`
+from it. So the field gets the water and the channel never loses it. Reservoirs do lose theirs. Andrew chose to patch
+it in swatplus-bmi 0.14.0 (actions.f90 and wet_irrp.f90, drafted upstream). Basin Ledger therefore needs 0.14.0 for
+channel irrigation. On an older swatplus-bmi, channel irrigation is water from outside the basin.
+
+So it waits on a read-only swatplus-bmi variable set (docs/requests.md, request 8; in swatplus-bmi 0.14.0 as
+`channel_water__irrigation_withdrawal_volume_flow_rate`, `reservoir_water__irrigation_withdrawal_volume_flow_rate`
+and `land_irrigation_water__withdrawal_volume_flow_rate`). By channel and by reservoir, the
+day's water SWAT+'s irrigate actions took; by HRU, what its irrigation took from a SWAT+ water body. SWAT+ doesn't
+keep either one tagged with its source (`irrig(j)%demand` is the action's demand, whatever the source). So
+swatplus-bmi's patch adds them up where actions.f90 removes the water: a diagnostic, with no change to what SWAT+
+does.
+
+**Built (Nov 25, 2026, on swatplus-bmi 0.14.0; `coupling/irrigation.py`, `NativeIrrigation`).** Basin Ledger:
+
+- **needs no config.** The HRUs whose decision tables irrigate from a channel or reservoir, and the water bodies they
+  name, are read from the project (`irrigation.native`). `[irrigation] wells` still refuses those HRUs, so a field's
+  water comes from one source.
+- **books each day**, over the HRUs, `irrigation:native:withdrawn` (what they took),
+  `irrigation:native:from_channels` and `:from_reservoirs` (what the water bodies gave), `:applied` (what reached
+  the soil and ran off, on the HRUs that took water that day) and `:loss`. It also books `irrigation:channel:<c>`
+  and `irrigation:reservoir:<r>` for each water body the tables name. Two pairs close each day, to float32: what
+  was taken = what the channels and reservoirs gave, and what was taken = applied + loss. `:excess` (more applied
+  than taken) must be zero. With `[irrigation] wells`, `irrigation:from_outside` leaves out the HRUs that took
+  from a SWAT+ water body that day.
+- **in the whole-basin balance** (`balance.py`), the channels' and lakes' outflow side gains
+  `irrigation_from_streams` and `irrigation_from_lakes`, so their residual closes, and `irrigation_loss` is
+  reported. The land keeps SWAT+'s `irr` (only `irrig%applied`, hru_control.f90). Of it, what the streams and lakes
+  gave less the loss is the basin's own water; the rest came from outside or MODFLOW 6's wells. Water taken from a
+  channel after that channel has routed its day shows in its storage the next day. The balance sums over the run,
+  so only the run's last day can be off by that day's withdrawal.
+- **at start-up**, a project with channel or reservoir irrigation on an older swatplus-bmi gets a warning that it isn't
+  booked. The warning becomes a refusal where `[outputs] balance` is asked for.
+- **not checked yet:** the constituents. `irrig(j)%water` is `rto * ch_stor`, nitrate and phosphorus included.
+  Whether SWAT+ puts them on the field, and how that meets the stream transport's mass, needs checking before a
+  study runs transport with channel irrigation.
+
+**Not chosen.**
+
+- An outside source in SWAT+ with a Basin Ledger place of use paying it back the next day. It needs no swatplus-bmi
+  change, but the stream pays a day late, and in low flow the field gets water the stream never had.
+- Water allocation's `irr` place of use (wallo_start_day, wallo_pou_deliv). It doesn't work in 62.0.1:
+  wallo_pou_deliv tests `irrig(j)` before setting `j` and indexes its loop by `ihru`, not `ird`, and wallo_start_day
+  sums the demand with `hru(ihru)%area_ha`.
+
+Water allocation's places of use, Basin Ledger's intakes, have their own SWAT+ bug, found the same day. wallo_withdraw.f90
+reads a place's demand as `pou(ipou)%pod(ipod)%duty`, where `ipou` is the place's position in its point of
+diversion's list and `ipod` is the point of diversion's number. So it delivers nothing, or a stray value, to a place
+of use on any channel but the first, and on a shared channel each place gets another's demand (request 5, now
+confirmed). The chosen way doesn't go through water allocation.
+
+**Tested** (`tests/test_irrigation_surface.py`). Osu_1hru's paddy table is switched to irrigate 1 mm (100 m3)
+from its channel with sprinkler_med (efficiency 0.85), and the channel's storage coefficient is halved so it keeps
+some water. It is coupled both ways on the synthetic example for three years, with the whole-basin balance.
+
+- Thirteen actions found water, 100 m3 each.
+- The channel gave what the HRU took every day, and what reached the soil was 85% of it.
+- SWAT+'s land budget's irrigation was that 85% (1,105 m3), with none from outside.
+- The channels closed to -113 m3 against 611,000 m3 of outflow. Without the irrigation term they would be off by
+  about 1,190 m3.
+
+swatplus-bmi 0.14.0's own tests cover:
+
+- the channel's outflow and storage against a run without irrigation;
+- a day the channel is short, which gives nothing;
+- a reservoir as the source.
 
 **Built (Nov 14, 2026): the start-up check and maps on the model's own grid.**
 

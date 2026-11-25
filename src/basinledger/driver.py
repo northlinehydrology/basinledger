@@ -162,6 +162,8 @@ class Basin:
             places = list(cfg.places_of_use) + [(f"seep_{c}", c) for c in via_routes]
             points = list(cfg.point_sources) + [(f"gw_{c}", c) for c in via_routes]
             if places:
+                for problem in S.places_of_use_problems(places):
+                    self._problem(ValueError(problem))
                 S.add_places_of_use(swat_dir, places)
             if points:
                 S.add_point_sources(swat_dir, points)
@@ -354,6 +356,10 @@ class Basin:
         self.irrigation = None
         if cfg.irrigation:
             self._part("[irrigation]", lambda: self._irrigation(cfg, swat_dir, wells))
+        # SWAT+'s own irrigation from its channels and reservoirs, booked (coupling/irrigation.py)
+        self.native_irrigation = None
+        if cfg.surface == "swatplus":
+            self._part("irrigation from SWAT+'s channels and reservoirs", lambda: self._native_irrigation(cfg, swat_dir))
         # lakes: SWAT+'s reservoirs holding MODFLOW 6's lakes' water (coupling/lakes.py)
         self.lakes = None
         if cfg.lakes:
@@ -610,6 +616,22 @@ class Basin:
         for i, _ in self.irrigation:
             self._irrigation_rest[i] = False
 
+    def _native_irrigation(self, cfg, swat_dir):
+        """Book SWAT+'s own irrigation from its channels and reservoirs, where the project has any."""
+        hrus, objects = IR.native(swat_dir)
+        if not hrus:
+            return
+        if not (self.sw.has(IR.HRU_TAKE) and self.sw.has(IR.CHANNEL_TAKE)):
+            msg = (f"{len(hrus)} HRU(s) irrigate from SWAT+'s own channels or reservoirs ({', '.join(hrus[:3])}"
+                   f"{', ...' if len(hrus) > 3 else ''}); booking that water needs swatplus-bmi 0.14.0 (its "
+                   "irrigation withdrawal reads), which also takes a channel's irrigation out of the channel, as "
+                   "SWAT+ 62.0.1 didn't")
+            if cfg.outputs.get("balance"):
+                raise ValueError(msg + ", so the whole-basin balance can't close without it")
+            warnings.warn(msg + "; it isn't booked", S.StartWarning, stacklevel=3)
+            return
+        self.native_irrigation = IR.NativeIrrigation(self.sw, self.ledger, objects)
+
     def _lakes(self, cfg, swat_dir, saved):
         if not self.sw.has(LK.VOLUME) or not self.sw.has(LK.GW):
             raise ValueError("[[lakes]] read and set SWAT+'s reservoirs (reservoir_water__volume and its groundwater "
@@ -644,7 +666,8 @@ class Basin:
                 L.enter(k + "mf6_end_stage_m", d["mf6_end_stage"])
 
     def _irrigate(self, L, rt):
-        """The day's irrigation on the mapped HRUs, requested from their wells; the rest stays water from outside."""
+        """The day's irrigation on the mapped HRUs, requested from their wells; the rest stays water from outside,
+        but for what SWAT+'s irrigation took from its own channels and reservoirs."""
         v = self.sw.get(IR.IRRIGATION) * DAY
         pumped = 0.0
         for i, ws in self.irrigation:
@@ -653,7 +676,10 @@ class Basin:
                 L.enter(f"irrigation:well:{w}", float(v[i]) * share)
             pumped += float(v[i])
         L.enter("irrigation:pumped", pumped)
-        L.enter("irrigation:from_outside", float(v[self._irrigation_rest].sum()))
+        rest = self._irrigation_rest
+        if self.native_irrigation is not None:  # what came from SWAT+'s own channels and reservoirs isn't outside
+            rest = rest & ~self.native_irrigation.took
+        L.enter("irrigation:from_outside", float(v[rest].sum()))
 
     def _exchange_channels(self, ex) -> list[str]:
         """The channels the exchange's rivers and drains couple, in order; needed before SWAT+ starts."""
@@ -1162,6 +1188,8 @@ class Basin:
         rt.read_swat()
         if self.lakes is not None:
             self.lakes.after_swat()
+        if self.native_irrigation is not None:  # what SWAT+'s irrigation took from its channels and reservoirs
+            self.native_irrigation.day(L)
         if self.irrigation is not None:  # the day's irrigation, pumped from MODFLOW 6's wells today
             self._irrigate(L, rt)
         if gw_soil is not None:

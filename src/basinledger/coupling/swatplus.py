@@ -23,16 +23,47 @@ DEPTH = "channel_water__depth"                                   # m, swatplus-b
 GW_EXCHANGE = "channel_water__groundwater_volume_exchange_rate"  # m3 s-1, positive into the channel, 0.2.0
 
 
+def _swatplus_bmi_version() -> tuple[int, int]:
+    from importlib.metadata import version
+    major, minor = (int(x) for x in version("swatplus-bmi").split(".")[:2])
+    return major, minor
+
+
 def has_groundwater_exchange() -> bool:
     """Whether the installed swatplus-bmi sets a channel's groundwater exchange directly (0.2.0 and later). Earlier
     versions route the exchange through a point source and a water allocation place of use per channel."""
-    from importlib.metadata import version
-    major, minor = (int(x) for x in version("swatplus-bmi").split(".")[:2])
-    return (major, minor) >= (0, 2)
+    return _swatplus_bmi_version() >= (0, 2)
+
+
+def places_of_use_fixed() -> bool:
+    """Whether the installed swatplus-bmi patches SWAT+'s place of use (0.14.0 and later). SWAT+ 62.0.1's
+    wallo_withdraw.f90 sizes a withdrawal from ``pou(ipou)%pod(ipod)%duty``, with ``ipou`` the place's position in
+    its point of diversion's list and ``ipod`` the point of diversion's number. So a place of use on any channel but
+    the first takes nothing, or a stray value past the end of an array, and places sharing a channel take each other's
+    demands. Found on the Rappahannock study's intakes (Nov 24, 2026)."""
+    return _swatplus_bmi_version() >= (0, 14)
+
+
+def places_of_use_problems(uses: list[tuple[str, str]]) -> list[str]:
+    """What an older SWAT+ would get wrong in places of use [(name, channel), ...]: with swatplus-bmi before 0.14.0,
+    only places of use on one channel take their own demands (``places_of_use_fixed``)."""
+    channels = list(dict.fromkeys(ch for _, ch in uses))
+    if len(channels) <= 1 or places_of_use_fixed():
+        return []
+    major, minor = _swatplus_bmi_version()
+    named = ", ".join(channels[:5]) + (", ..." if len(channels) > 5 else "")
+    return [(f"places of use on {len(channels)} channels ({named}) need swatplus-bmi 0.14.0 or later (installed: "
+             f"{major}.{minor}): SWAT+ 62.0.1 gives a place of use on any channel but the first another's demand or "
+             "none (wallo_withdraw.f90), which 0.14.0 patches")]
 
 
 def add_places_of_use(project: Path, uses: list[tuple[str, str]], rate_max: float = 100.0):
-    """Water allocation places of use, each taking from one channel: [(name, channel), ...]."""
+    """Water allocation places of use, each taking from one channel: [(name, channel), ...].
+
+    Several places of use on one channel share its point of diversion, which lists them in the order given here, and
+    SWAT+ serves them in that order: the first takes its demand from the day's outflow, the next what it asks of what
+    is left, and so on, so the first listed is the senior (wallo_control.f90). Each gets its own demand only with
+    swatplus-bmi 0.14.0 or later (``places_of_use_fixed``)."""
     project = Path(project)
     cio = (project / "file.cio").read_text().splitlines()
     cio = ["water_rights      place_of_use.wro  point_of_diver.wro  null" if l.startswith("water_rights") else l
