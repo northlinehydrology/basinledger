@@ -906,7 +906,11 @@ class SaltBalance:
             if p not in to_ch:
                 raise ValueError(f"salt: place of use {p} isn't Basin Ledger's; SWAT+'s own water allocation isn't "
                                  "built")
-        self.place_body = np.array([self.ch_index[to_ch[p]] for p in self.places], int)
+        def body(src):  # a channel's index among the water bodies, or a reservoir's after the channels
+            from .coupling.swatplus import place_source
+            typ, obj = place_source(src)
+            return self.ch_index[obj] if typ == "cha" else len(self.channels) + list(self.reservoirs).index(obj)
+        self.place_body = np.array([body(to_ch[p]) for p in self.places], int)
         # state
         if saved is not None:
             self.m_soil = np.asarray(saved["m_soil"], float)

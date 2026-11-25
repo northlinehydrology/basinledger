@@ -44,44 +44,70 @@ def places_of_use_fixed() -> bool:
     return _swatplus_bmi_version() >= (0, 14)
 
 
+RESERVOIR = "res:"  # a place of use's source written "res:<reservoir>" draws from that reservoir, else a channel
+
+
+def place_source(source: str) -> tuple[str, str]:
+    """A place of use's source as SWAT+'s point of diversion type and the object's name: ("cha", "cha01") or
+    ("res", "res01") for "res:res01"."""
+    return ("res", source[len(RESERVOIR):]) if source.startswith(RESERVOIR) else ("cha", source)
+
+
 def places_of_use_problems(uses: list[tuple[str, str]]) -> list[str]:
-    """What an older SWAT+ would get wrong in places of use [(name, channel), ...]: with swatplus-bmi before 0.14.0,
-    only places of use on one channel take their own demands (``places_of_use_fixed``)."""
-    channels = list(dict.fromkeys(ch for _, ch in uses))
-    if len(channels) <= 1 or places_of_use_fixed():
+    """What an older SWAT+ would get wrong in places of use [(name, source), ...]: with swatplus-bmi before 0.14.0,
+    only places of use on one channel or reservoir take their own demands (``places_of_use_fixed``)."""
+    sources = list(dict.fromkeys(src for _, src in uses))
+    if len(sources) <= 1 or places_of_use_fixed():
         return []
     major, minor = _swatplus_bmi_version()
-    named = ", ".join(channels[:5]) + (", ..." if len(channels) > 5 else "")
-    return [(f"places of use on {len(channels)} channels ({named}) need swatplus-bmi 0.14.0 or later (installed: "
-             f"{major}.{minor}): SWAT+ 62.0.1 gives a place of use on any channel but the first another's demand or "
-             "none (wallo_withdraw.f90), which 0.14.0 patches")]
+    names = [place_source(x)[1] for x in sources]
+    named = ", ".join(names[:5]) + (", ..." if len(names) > 5 else "")
+    return [(f"places of use on {len(sources)} channels or reservoirs ({named}) need swatplus-bmi 0.14.0 or later "
+             f"(installed: {major}.{minor}): SWAT+ 62.0.1 gives a place of use on any point of diversion but the "
+             "first another's demand or none (wallo_withdraw.f90), which 0.14.0 patches")]
 
 
 def add_places_of_use(project: Path, uses: list[tuple[str, str]], rate_max: float = 100.0):
-    """Water allocation places of use, each taking from one channel: [(name, channel), ...].
+    """Water allocation places of use, each taking from one channel or reservoir: [(name, source), ...], the source a
+    channel's name or "res:<reservoir>" (``place_source``).
 
-    Several places of use on one channel share its point of diversion, which lists them in the order given here, and
-    SWAT+ serves them in that order: the first takes its demand from the day's outflow, the next what it asks of what
-    is left, and so on, so the first listed is the senior (wallo_control.f90). Each gets its own demand only with
-    swatplus-bmi 0.14.0 or later (``places_of_use_fixed``)."""
+    Several places of use on one channel or reservoir share its point of diversion, which lists them in the order
+    given here, and SWAT+ serves them in that order: the first takes its demand, the next what it asks of what is
+    left, and so on, so the first listed is the senior (wallo_control.f90). Each gets its own demand only with
+    swatplus-bmi 0.14.0 or later (``places_of_use_fixed``). A channel's places of use take from its outflow after
+    routing (sd_channel_control3.f90); a reservoir's from its storage after the day's inflow and before its release
+    (res_control.f90), nothing left below the reservoir's minimum (``const_min``, 0 here)."""
     project = Path(project)
     cio = (project / "file.cio").read_text().splitlines()
     cio = ["water_rights      place_of_use.wro  point_of_diver.wro  null" if l.startswith("water_rights") else l
            for l in cio]
     (project / "file.cio").write_text("\n".join(cio) + "\n")
-    chans = _channels(project)
+    objects = {"cha": _channels(project), "res": _reservoirs(project)}
+    for name, src in uses:
+        typ, obj = place_source(src)
+        if obj not in objects[typ]:
+            raise ValueError(f"place of use {name}: no {'channel' if typ == 'cha' else 'reservoir'} {obj!r} in the "
+                             f"SWAT+ project ({'chandeg.con' if typ == 'cha' else 'reservoir.con'})")
     pou = [f"place_of_use.wro: {len(uses)} places of use (Basin Ledger)", str(len(uses)),
            "num name typ typ_num pods pors dtbl_mx rate_max dtbl_pod_fr dtbl_por_fr"]
-    # SWAT+ keeps one point of diversion per channel (sd_ch%wallo_pod), so the places of use on a channel share it
-    order = list(dict.fromkeys(ch for _, ch in uses))
-    for i, (name, ch) in enumerate(uses, 1):
+    # SWAT+ keeps one point of diversion per channel or reservoir (sd_ch%wallo_pod, res_ob%wallo_pod), so the places
+    # of use on one share it
+    order = list(dict.fromkeys(src for _, src in uses))
+
+    def where(src):
+        typ, obj = place_source(src)
+        return obj, typ, objects[typ].index(obj) + 1
+
+    for i, (name, src) in enumerate(uses, 1):
+        obj, typ, num = where(src)
         pou.append(f"{i} {name} out {i} 1 0 null {rate_max} null null")
-        pou.append(f"1 {order.index(ch) + 1} {ch} cha {chans.index(ch) + 1} null 0 null 0.0 null 1000000. 1.0 n")
-    pod = [f"point_of_diver.wro: one per channel (Basin Ledger)", str(len(order)),
+        pou.append(f"1 {order.index(src) + 1} {obj} {typ} {num} null 0 null 0.0 null 1000000. 1.0 n")
+    pod = ["point_of_diver.wro: one per channel or reservoir (Basin Ledger)", str(len(order)),
            "num name typ typ_num pous pou_num pou_name pod_num typ typ_num right"]
-    for k, ch in enumerate(order, 1):
-        mine = [(i, name) for i, (name, c) in enumerate(uses, 1) if c == ch]
-        pod.append(f"{k} {ch} cha {chans.index(ch) + 1} {len(mine)} "
+    for k, src in enumerate(order, 1):
+        obj, typ, num = where(src)
+        mine = [(i, name) for i, (name, s) in enumerate(uses, 1) if s == src]
+        pod.append(f"{k} {obj} {typ} {num} {len(mine)} "
                    + " ".join(f"{i} {name} 1 out {i} senior" for i, name in mine))
     (project / "place_of_use.wro").write_text("\n".join(pou) + "\n")
     (project / "point_of_diver.wro").write_text("\n".join(pod) + "\n")
@@ -390,6 +416,16 @@ def _channels(project: Path) -> list[str]:
         return []
     lines = (Path(project) / "chandeg.con").read_text().splitlines()
     return [l.split()[1] for l in lines[2:] if l.split()]
+
+
+def _reservoirs(project: Path) -> list[str]:
+    """The reservoirs in reservoir.con's order, as SWAT+ numbers them (none without one)."""
+    path = Path(project) / "reservoir.con"
+    if not path.exists():
+        return []
+    lines = path.read_text().splitlines()
+    i = lines[1].split().index("name")
+    return [f[i] for f in (ln.split() for ln in lines[2:]) if len(f) > i]
 
 
 def _period(project: Path) -> tuple[dt.date, dt.date]:

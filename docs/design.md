@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 25, 2026, release 0.12.0). Built and tested on synthetic examples:
+Status (Nov 25, 2026, release 0.13.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -20,8 +20,9 @@ Status (Nov 25, 2026, release 0.12.0). Built and tested on synthetic examples:
   gwflow's rule (swatplus-bmi 0.7.0; the drain chosen);
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
 - the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
-- intakes on any channel, several to a channel served senior first, and SWAT+'s own irrigation from its channels and
-  reservoirs booked by source (swatplus-bmi 0.14.0; Irrigation from surface water);
+- intakes on any channel or reservoir, several to one served senior first, a user returning only the share its intake
+  delivered, the next day, and SWAT+'s own irrigation from its channels and reservoirs booked by source
+  (swatplus-bmi 0.14.0; Irrigation from surface water);
 - scenarios from a shared warm-up, and restarts;
 - stream temperature as a reach heat balance, with users' returns carrying their heat;
 - water quality: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users' intake
@@ -247,13 +248,25 @@ A component with a daily or other step works the same way. The driver only asks 
 **Routing.** Each user's config names where its withdrawal comes from and where its return goes:
 
 - `well:<name>`: pumped from a MODFLOW 6 well;
-- `swat:place_of_use:<name>`: a SWAT+ water allocation demand, taken from its channel the same day. What the channel
-  couldn't supply is entered as a shortfall. The places of use are added to the run's copy of the project from the
-  config (`[swatplus] places_of_use`). Several on one channel share its point of diversion, and SWAT+ serves them in
-  the config's order, so the first listed is the senior: it takes what it asks of the day's outflow, and the next takes
-  what it asks of the rest. Places of use on more than one channel need swatplus-bmi 0.14.0 or later. SWAT+ 62.0.1's
-  wallo_withdraw.f90 gives a place of use on any channel but the first another's demand or none, which 0.14.0
-  patches, and an older swatplus-bmi is refused them at start-up (Nov 25, 2026);
+- `swat:place_of_use:<name>`: a SWAT+ water allocation demand, taken the same day from its channel, or from its
+  reservoir (`{name, reservoir = "res30"}`, Nov 25, 2026). A channel's is taken from its outflow after routing. A
+  reservoir's is taken from its storage after the day's inflow and before its release. What the source couldn't
+  supply is entered as a shortfall. The places of use are added to the run's copy of the project from the config
+  (`[swatplus] places_of_use`). Several on one channel or reservoir share its point of diversion, and SWAT+ serves
+  them in the config's order, so the first listed is the senior: it takes what it asks, and the next takes what it
+  asks of the rest. Places of use on more than one channel or reservoir need swatplus-bmi 0.14.0 or later. SWAT+
+  62.0.1's wallo_withdraw.f90 gives a place of use on any point of diversion but the first another's demand or none,
+  which 0.14.0 patches, and an older swatplus-bmi is refused them at start-up (Nov 25, 2026).
+
+  A user drawing from one only learns what it got after SWAT+'s day, but its return enters SWAT+ before that day. So
+  its day scales by the share delivered: consumption, gain, storage, and the return with its loads and heat, as a
+  withdrawal limit scales a day. Its return is then held overnight and leaves the next day (Andrew, Nov 25, 2026).
+  The ledger books `user:<name>:delivered`, `:unmet`, `:delivered_share`, `:return_due`, `:return_sent` and
+  `:return_held`, and closes two pairs every day: what it asked = delivered + unmet, and delivered = consumption met
+  + return due + storage less gain met. So no user returns water its intake never delivered. Before this, the
+  Virginia study's Lake Pelham intake got 8,697 m3 of the 870,385 it asked, and its plant still returned 829,326 m3.
+  A return held on the run's last day stays in `:return_held`. A restart carries it. A user on a utility, or drawing
+  from a well, returns as before;
 - `swat:point_source:<name>`: a SWAT+ daily point source into its channel (`[swatplus] point_sources`);
 - `outfall:<name>`: a return entered in the ledger only;
 - `utility:<name>`: the utility chain.
