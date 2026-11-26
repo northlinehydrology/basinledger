@@ -623,6 +623,8 @@ class Recorder:
             k.startswith("transfer:") and k.count(":") == 2 and k.rsplit(":", 1)[-1] in WATER)}
         lines["recharge:sent"] = L.today("recharge:sent")
         d["json"] = {"ledger": lines, "controls": {u.name: dict(wu.controls) for u, wu in basin.users},
+                     "restrictions": {k: v for k, v in getattr(basin, "_controls", {}).items()
+                                      if k.startswith("utility:")},
                      "series": {k: basin.series[k][-1] for k in basin.series
                                 if k.split(":")[0] in ("flow", "baseflow", "head")},
                      "structure": self.gwf.structure_today()}
@@ -904,6 +906,14 @@ class ReplayBasin(Basin):
             chain.declare(L, rtol=FLOAT32)
             if chain.name in held:
                 chain.held = held[chain.name]
+        # restrictions (operations.py): each day's cuts the recorded run's rules made
+        from . import operations as OP
+        self.restricted = {}
+        for r in cfg.rules:
+            if r.get("kind") == "restriction" and r.get("utility") in self.utilities and \
+                    r["utility"] not in self.restricted:
+                self.restricted[r["utility"]] = OP.restrict(self.utilities[r["utility"]])
+                OP.declare_restricted(L, r["utility"], self.restricted[r["utility"]])
 
         # users: those taking in the aquifer's water, or a water system's, run again; the others' lines are the
         # record's
@@ -1025,10 +1035,20 @@ class ReplayBasin(Basin):
                 L.enter(k + "MWh", use.energy)
             for name, v in use.reported.items():
                 L.enter(k + name, v)
+        from . import operations as OP
+        from .operations import WATER
         date = self.start + dt.timedelta(days=d)
+        for name, classes in self.restricted.items():  # the recorded run's cuts on a system's classes
+            if "restrictions" not in j:
+                raise ReplayRefused(f"replay day {d}: the record has no restrictions (a record made before they were "
+                                    "recorded: make a new one)")
+            cuts = j["restrictions"].get(f"utility:{name}", {})
+            for c, cls in classes.items():
+                cls.cut = cuts.get(f"cut:{c}", 0.0)
         if self.utilities or self._ground_cfg:
             self._routes_before(L, date)
-        from .operations import WATER
+        for name, classes in self.restricted.items():
+            OP.book_restricted(L, name, classes)
         for n, tr in self.transfers.items():  # the recorded run's water, as its rules moved it
             for a in WATER:
                 acct = f"transfer:{n}:{a}"
