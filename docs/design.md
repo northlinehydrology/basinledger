@@ -1095,8 +1095,8 @@ order [A]).
   ms per species a day, all but 1.3 ms of it in MODFLOW 6's transport solve (TVD advection, the solver's settings in
   `add_transport`). Sorption costs no more than decay. On a large basin each species is a second groundwater solve
   a day; the solver's settings (`ims`) and the advection scheme are the levers.
-- **Not in stage 2:** a user's return loads to SWAT+'s point sources (`point_source_water_<sp>__mass_flow_rate` is
-  there; the routing isn't built); nitrate or P in irrigation pumped from wells (its mass leaves the aquifer with the
+- **Not in stage 2:** a user's return loads to SWAT+'s point sources (built in 0.17.0 with the water systems'
+  outfalls: Mass through the human-system routes); nitrate or P in irrigation pumped from wells (its mass leaves the aquifer with the
   well and isn't put on the HRU: swatplus-bmi has no way to set it); SFR, several groundwater models and
   multi-aquifer wells with transport (refused, as in stage 1); SWAT+'s reservoirs coupled to MODFLOW 6's lakes
   (`[[lakes]]`: LAK's exchange with the aquifer is booked as a boundary, its mass not carried to the reservoir); the salt ions (SWAT+'s salt module can't run with aquifers, above).
@@ -1441,7 +1441,7 @@ run with SWAT+'s nutrient stress off; (3) the nitrate branch's surface-mass link
 saves only MODFLOW 6's flow solve (3.9 to 4.2 s a day on the Rappahannock grid; SWAT+ and the transport remain),
 against salt's nearly all. Not before the nitrate branch is merged.
 
-## Mass through the human-system routes (designed Nov 25, 2026, for the Virginia study's water quality)
+## Mass through the human-system routes (designed and built Nov 25, 2026, for the Virginia study's water quality; 0.17.0)
 
 Basin Ledger 0.16.0 moves the water of the basin's existing water-use system: water systems with customers, returns
 to the ground over service areas, wells over many cells. None of that water carried mass: `ground:` routes and
@@ -1513,7 +1513,8 @@ delivered, to its customers; each class's returns carry a stated concentration, 
     species; each row held until the next, a day before the first refused), so a plant's DMR quality by month
     reproduces. `"sewer"` passes the sewer's mass through (a plant that removes nothing: chloride, a water plant's
     backwash). The sewer's mass is the tap water's in the classes' sewered water, plus the users' returns at what
-    they report (the tap water's where they report nothing [A]). What the plant changes is booked (`plant:added`,
+    they report (the tap water's where they report nothing [A]); inflow and infiltration, water from outside,
+    carry none [A]. What the plant changes is booked (`plant:added`,
     negative where it removes). The outflow's mass leaves the next day with its water, at the effluent
     concentration of the day it leaves: to the outfall, and to the systems reusing it.
   - **septic:** to the ground through its `septic_to` route, at `septic_effluent = {<species> = value}` (on the
@@ -1551,10 +1552,12 @@ delivered, to its customers; each class's returns carry a stated concentration, 
   loads) and MODFLOW 6 (the ground entries' concentrations). A restart carries the held mass with the water.
 - **Ledger** (kg, `utility:<s>:<sp>:`), every day: `source:<route>:kg` and `produced:kg`; `concentration`;
   `delivered:kg`, `losses:kg`, `leaks:kg`, `unaccounted:kg`; by class `delivered:<c>:kg`, `sewered:<c>:kg`,
-  `septic:<c>:kg`, `septic_added:<c>`, `consumed:<c>:kg`; `users_delivered:kg`, `users_return:kg`; `sewer:kg` and
+  `septic:<c>:kg`, `septic_tap:<c>:kg`, `septic_added:<c>`, `consumed:<c>:kg`; `users_delivered:kg`,
+  `users_return:kg`; `sewer:kg` and
   `held_to_ground:kg` (held); at the release, `plant_outflow:kg`, `plant:added`, `outfall:kg`, `reuse:kg`,
   `reuse:<n>:kg` and `to_ground:<route>:kg`. Pairs: produced = the sources'; produced = delivered + losses;
-  delivered = the classes' + the users'; each class's delivered + septic added = sewered + septic + consumed;
+  delivered = the classes' + the users'; each class's delivered = sewered + the tap water in its septic water +
+  consumed, and its septic = that tap water + what use added;
   losses = leaks + unaccounted; plant outflow = outfall + reuse. And the system's closure: what it holds overnight
   changes by the sources' mass, the users' returns and what use and the plant add, less what it delivers to users,
   drops (consumed, unaccounted) and releases (to the ground, the plant's outflow), `closure_share` within 1e-12.

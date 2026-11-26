@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.17.0 (unreleased)
+
+Mass through the human-system routes, for the Virginia study's water quality (docs/design.md, "Mass through the
+human-system routes"). Before this, returns to the ground and routes over several cells were refused with transport
+and salt, and a water system's water carried no constituent.
+
+- **Returns to the ground carry mass.** A `ground:` route's concentration goes on its WEL entries, as an auxiliary
+  per transport species, and the package is an AUX source in each transport model's SSM. Basin Ledger writes both
+  into the run's copy (`add = true`); with `add = false` the package must already be one, or the start-up refuses
+  it. A route over several cells gives each cell the same concentration, so its mass splits by the weights its
+  water does, the same day.
+  - A user's return carries its reported mass, or `[[ground]] concentration = {<species> = kg m-3}` [A] where it
+    reports none. A user that reports none with none stated is refused.
+  - Booked: `transport:<sp>:ground:<name>:due` = `sent` + `no_water`, and `sent` = `received`, every day.
+  - With salt, the returns' mass enters the whole-system closure from outside (`salt:<sp>:aquifer:from_ground`).
+- **A well over several cells takes each cell's concentration by what it gave** (`well:<name>#i:withdrawn`, and
+  the route's `withdrawn` and `concentration`); its users' intake follows it a day later.
+- **Constituents through water systems.** Every transport species, mixed from the sources by what each delivered:
+  - sources: a well's water as the transport model took it out; a place of use's as salt's channel or reservoir
+    held it, or SWAT+'s channel outflow concentration for nitrate and soluble P; another plant's effluent; or
+    `concentration = {...}` stated on the source (required for imports and, for nitrate and P, reservoir intakes);
+  - each class's septic water at `septic_effluent` (on the system or the class), leaks at the mixed water's, the
+    sewer the tap water's plus the users' reported returns, and the plant's outflow at `effluent`, the day it
+    leaves: a constant, 12 monthly values, a dated CSV (a DMR's months), `"sewer"` (passed through) or `"tap"`;
+  - outdoor use's and unaccounted water's mass dropped, booked as leaving (the water leaves the model too);
+  - the users on a system take in its concentration a day later;
+  - each system's mass booked by source, class and return (`utility:<s>:<sp>:`), its pairs and closure every day,
+    held overnight with the water and carried by a restart.
+- **The plants' and users' loads reach SWAT+'s point sources** for nitrate and soluble P
+  (`point_source_water_<x>__mass_flow_rate`), with `[transport.<sp>] point_sources = {<p> = kg m-3}` [A] for
+  water no one reports. Water with neither carries none, as before, booked as `unstated_m3` with a warning. For a
+  salted species the systems report their outfall's mass at the point source, as direct users do.
+- **Septic counted once.** A salted species with a land source in group `septic` and septic water on `ground:`
+  routes is refused, unless the land source says `outside_routes = true` (it covers only the homes no route
+  carries). The routes' stated septic concentrations scale by the `septic` multiplier (now always a group) and the
+  plants' by `point_sources`. For nitrate and P, SWAT+'s own septic systems (`landuse.lum`) with routed septic are
+  refused.
+- Not built, refused: ground routes, routes over several cells and systems carrying mass in a replay or a replay
+  record.
+- Tested in `tests/test_ground_mass.py`, `tests/test_chain.py` and `tests/test_systems_mass.py`.
+
 ## 0.16.0 (2026-11-25)
 
 - A water system's source shares from a dated table: `shares = "file.csv"`, with a date and then a column per
