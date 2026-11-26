@@ -44,12 +44,20 @@ class Router:
                  grounds: dict[str, tuple[str, int]] | None = None):
         self.swat, self.mf6, self.wells, self.ledger = swat, mf6, wells, ledger
         self.grounds = grounds or {}  # returns to the ground: name -> (WEL package, node)
+        # a well or ground return over several cells: its route -> [(each cell's own route, weight)]; each cell is
+        # an entry of its own above (<name>#1, #2, ...), and the route's request is split among them by weight
+        self.groups: dict[str, list[tuple[str, float]]] = {}
         self.places = swat.names(S.DEMAND) if swat.has(S.DEMAND) else []
         self.points = swat.names(S.POINT) if swat.has(S.POINT) else []
         self.req: dict[str, float] = defaultdict(float)
         self.used: set[str] = set()
 
     def check(self, route: str):
+        if route in self.groups:  # booked as one route: requested, and delivered over its cells
+            if route not in self.used:
+                self.used.add(route)
+                self.ledger.pair(f"route:{route}:requested", f"route:{route}:delivered")
+            return
         k, name = kind(route)
         known = {"well": self.wells, "swat:place_of_use": self.places, "swat:point_source": self.points,
                  "ground": self.grounds}.get(k)
@@ -69,6 +77,8 @@ class Router:
     def request(self, route: str, m3: float):
         self.check(route)
         self.req[route] += m3
+        for sub, w in self.groups.get(route, ()):
+            self.req[sub] += m3 * w
 
     def apply_swat(self):
         if self.places:
@@ -127,6 +137,16 @@ class Router:
                 self.mf6.set_well(pkg, i, q)
 
     def read_wells(self):
+        got = {}
+        for name, (pkg, i) in self._ground_entries.items():
+            got[f"ground:{name}"] = self.mf6.simvals(pkg)[i]
+        for name, (pkg, i) in self._entries.items():
+            if not self._maw(i):
+                got[f"well:{name}"] = -self.mf6.simvals(pkg)[i]
+        for route, subs in self.groups.items():
+            if route in self.used:
+                self.ledger.enter(f"route:{route}:requested", self.req.get(route, 0.0))
+                self.ledger.enter(f"route:{route}:delivered", float(sum(got[s] for s, _ in subs)))
         for name, (pkg, i) in self._ground_entries.items():
             r = f"ground:{name}"
             if r in self.used:

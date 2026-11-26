@@ -196,6 +196,8 @@ or ``~/repos/nextgen-michigan``).
 
 from __future__ import annotations
 
+import csv
+
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -240,6 +242,7 @@ class WellConfig:
     add: bool = False       # a well the model doesn't have, in a WEL package Basin Ledger adds (existing.add_wells)
     model: str | None = None  # with several models coupled, the one it's in (the first if not given)
     well: int | None = None   # a multi-aquifer well (MAW): its number in the package, 1-based, in place of a cell
+    cells: tuple = ()         # several cells, in place of cell: ((cell, weight), ...), the weights summing to 1
 
 
 def _flag(path: Path, where: str, v) -> bool:
@@ -267,16 +270,51 @@ def _well(path: Path, w: dict) -> WellConfig:
         if not isinstance(w["well"], int) or isinstance(w["well"], bool) or w["well"] < 1:
             raise ValueError(f"{path}: {where}: well is the MAW well's number in its package, from 1; got {w['well']!r}")
         return WellConfig(w["name"], w.get("package", "maw"), None, False, w.get("model"), w["well"])
+    if "cells" in w:
+        if "cell" in w:
+            raise ValueError(f"{path}: {where}: cell or cells, not both")
+        return WellConfig(w["name"], w.get("package", "wel"), None, _flag(path, f"{where} add", w.get("add", False)),
+                          w.get("model"), cells=_cells(path, where, w["cells"]))
     return WellConfig(w["name"], w.get("package", "wel"), _cell(path, where, w.get("cell")),
                       _flag(path, f"{where} add", w.get("add", False)), w.get("model"))
+
+
+def _cells(path: Path, where: str, cells) -> tuple:
+    """``cells``: [[layer, row, col, weight], ...] (DIS) or [[layer, icell2d, weight], ...] (DISV), or a CSV of those
+    columns (layer, row, col, weight or layer, icell2d, weight). The weights are normalized to sum to 1. A route on
+    them splits each day's request by weight."""
+    if isinstance(cells, str):
+        with open(_path(path.parent, cells), newline="") as f:
+            rows = list(csv.DictReader(f))
+        keys = ["layer", "row", "col"] if rows and "row" in rows[0] else ["layer", "icell2d"]
+        cells = [[int(r[k]) for k in keys] + [float(r["weight"])] for r in rows]
+    if not isinstance(cells, (list, tuple)) or not cells:
+        raise ValueError(f"{path}: {where} cells must be a non-empty list of [cell..., weight] or a CSV file")
+    out = []
+    for c in cells:
+        if not isinstance(c, (list, tuple)) or len(c) not in (3, 4) or not isinstance(c[-1], (int, float)) \
+                or isinstance(c[-1], bool) or c[-1] <= 0:
+            raise ValueError(f"{path}: {where} cells: each is [layer, row, col, weight] or [layer, icell2d, weight] "
+                             f"with a positive weight; got {c!r}")
+        out.append((_cell(path, where, list(c[:-1])), float(c[-1])))
+    if len({c for c, _ in out}) != len(out):
+        raise ValueError(f"{path}: {where} cells: a cell is listed twice")
+    total = sum(w for _, w in out)
+    return tuple((c, w / total) for c, w in out)
 
 
 def _ground(path: Path, g: dict) -> WellConfig:
     """A [[ground]] entry: a return to the ground at an aquifer cell, as a WEL entry injecting it (``WellConfig``;
     route ``ground:<name>``). Added by Basin Ledger in a package of its own unless ``add = false``."""
     where = f"[[ground]] {g.get('name')!r}"
-    if "name" not in g or set(g) - {"name", "cell", "package", "add", "model"}:
-        raise ValueError(f"{path}: {where} takes name and cell, and may have package, add and model; got {sorted(g)}")
+    if "name" not in g or set(g) - {"name", "cell", "cells", "package", "add", "model"}:
+        raise ValueError(f"{path}: {where} takes name and cell (or cells), and may have package, add and model; got "
+                         f"{sorted(g)}")
+    if "cells" in g:
+        if "cell" in g:
+            raise ValueError(f"{path}: {where}: cell or cells, not both")
+        return WellConfig(g["name"], g.get("package", "wel_ground"), None, _flag(path, f"{where} add",
+                          g.get("add", True)), g.get("model"), cells=_cells(path, where, g["cells"]))
     return WellConfig(g["name"], g.get("package", "wel_ground"), _cell(path, where, g.get("cell")),
                       _flag(path, f"{where} add", g.get("add", True)), g.get("model"))
 

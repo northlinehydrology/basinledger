@@ -248,7 +248,9 @@ class Basin:
             by_model: dict[str, list] = {}  # new users' wells, a package of its own in each model that has them
             for w in list(cfg.wells) + list(cfg.ground):  # users' wells and returns to the ground
                 if w.add:
-                    by_model.setdefault((w.model or cfg.mf6_model).lower(), []).append((w.name, w.package, w.cell))
+                    cells = [(f"{w.name}#{i}", c) for i, (c, _) in enumerate(w.cells, 1)] or [(w.name, w.cell)]
+                    by_model.setdefault((w.model or cfg.mf6_model).lower(), []).extend(
+                        (n, w.package, c) for n, c in cells)
             for model, added in by_model.items():
                 for note in EX.add_wells(ws, model, added):
                     warnings.warn(note, EX.TakeoverNote, stacklevel=2)
@@ -344,11 +346,17 @@ class Basin:
         for sp, t in self.transport.items():
             if cfg.transport[sp].get("surface"):
                 self._part(f"[transport.{sp}]", lambda sp=sp: self._surface_mass(cfg, sp, saved))
-        wells = {}
+        wells, groups = {}, {}
         self._wells_left_out = set()  # a check's wells with a problem: listed once, not again by the users on them
+        spread = [w for w in list(cfg.wells) + list(cfg.ground) if w.cells]
+        if spread and (cfg.transport or cfg.salt or cfg.replay_record):
+            self._problem(NotImplementedError(f"wells or ground returns over several cells ({spread[0].name}) with "
+                                              "transport, salt or a replay record aren't built"))
         for w in cfg.wells:
-            if self._part(f"well {w.name}", lambda w=w: wells.__setitem__(w.name, (w.package, self._well_node(w)))
-                          or True) is None:
+            if w.cells:
+                self._spread(w, "well", wells, groups)
+            elif self._part(f"well {w.name}", lambda w=w: wells.__setitem__(w.name, (w.package, self._well_node(w)))
+                            or True) is None:
                 self._wells_left_out.add(w.name)
         grounds = {}  # returns to the ground: a WEL entry at the cell, injecting (route ground:<name>)
         if cfg.ground and self.mf6 is None:
@@ -358,9 +366,13 @@ class Basin:
                                               "into the aquifer needs its concentration on the WEL entry"))
         else:
             for g in cfg.ground:
-                self._part(f"[[ground]] {g.name}", lambda g=g: grounds.__setitem__(g.name, (g.package,
-                                                                                            self._well_node(g))))
+                if g.cells:
+                    self._spread(g, "ground", grounds, groups)
+                else:
+                    self._part(f"[[ground]] {g.name}", lambda g=g: grounds.__setitem__(g.name, (g.package,
+                                                                                                self._well_node(g))))
         self.router = Router(self.sw, self.mf6, wells, L, grounds)
+        self.router.groups = groups
 
         # irrigation pumped from MODFLOW 6's wells (coupling/irrigation.py): the HRUs mapped and their wells
         self.irrigation = None
@@ -1151,6 +1163,19 @@ class Basin:
                     float(np.nansum(self.sw.get("aquifer:no3_lat") * np.array(list(area.values())))))
             L.enter("swatplus:aquifer_solp_outflow", float(np.nansum(self.sw.get("aquifer:minp"))))
         self._set_intakes()
+
+    def _spread(self, w, kind_: str, entries: dict, groups: dict):
+        """A well or ground return over several cells: an entry per cell (<name>#1, #2, ...) and its route's group."""
+        subs = []
+        for i, (cell, weight) in enumerate(w.cells, 1):
+            sub = f"{w.name}#{i}"
+            ok = self._part(f"{'well' if kind_ == 'well' else '[[ground]]'} {w.name} cell {list(cell)}",
+                            lambda c=cell: entries.__setitem__(sub, (w.package, self.mf6.node(*c, model=w.model)))
+                            or True)
+            if ok is None:
+                self._wells_left_out.add(w.name)
+            subs.append((f"{kind_}:{sub}", weight))
+        groups[f"{kind_}:{w.name}"] = subs
 
     def _well_cell(self, name: str):
         return next(w.cell for w in self.cfg.wells if w.name == name)
