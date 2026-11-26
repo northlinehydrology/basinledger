@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.17.0 (2026-11-25)
+## 0.17.1 (2026-11-26)
+
+0.17.0 was tagged but never published: its tests failed on Windows. 0.17.1 is 0.17.0 with these fixes, and the first
+release of it.
+
+- The scenario tests wrote Windows paths into TOML strings, where the backslashes read as escapes. They now write POSIX
+  paths.
+- The scenario runner's workers set their niceness only where the platform has `os.nice` (POSIX). On Windows they run
+  at the runner's priority.
+
+## 0.17.0 (2026-11-25, not published)
 
 Mass through the human-system routes, for the Virginia study's water quality (docs/design.md, "Mass through the
 human-system routes"). Before this, returns to the ground and routes over several cells were refused with transport

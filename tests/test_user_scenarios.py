@@ -150,7 +150,7 @@ def test_the_cases_configs():
 
 def _set(tmp_path, scenarios: str, combos: str = "") -> SC.ScenarioSet:
     p = tmp_path / "set.toml"
-    p.write_text(f'name = "t"\nexample = "{ROOT / "examples" / "synthetic" / "town.toml"}"\n'
+    p.write_text(f'name = "t"\nexample = "{(ROOT / "examples" / "synthetic" / "town.toml").as_posix()}"\n'
                  f'[warm_up]\ndays = 10\n{scenarios}\n{combos}')
     return SC.load_set(p)
 
@@ -220,9 +220,10 @@ def test_interaction_arithmetic():
 @pytest.mark.slow
 def test_the_set_runs_compares_and_resumes(swatplus, tmp_path):
     text = SET.read_text().replace('example = "../town.toml"',
-                                   f'example = "{SET.parent.parent / "town.toml"}"\nfolder = "{RUNS / "user-scenarios"}"')
+                                   f'example = "{(SET.parent.parent / "town.toml").as_posix()}"\n'
+                                   f'folder = "{(RUNS / "user-scenarios").as_posix()}"')
     for n in ("dc_a", "dc_b"):
-        text = text.replace(f'config = "{n}.toml"', f'config = "{SET.parent / (n + ".toml")}"')
+        text = text.replace(f'config = "{n}.toml"', f'config = "{(SET.parent / (n + ".toml")).as_posix()}"')
     path = tmp_path / "set.toml"
     path.write_text(text)
     log = []
