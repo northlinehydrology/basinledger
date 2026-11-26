@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 (2026-11-25)
 
 - Water systems with customers: a town is one system (`[[utilities]]`, `chain.py`; docs/design.md, "Water systems
   with customers"). A new customer, such as a data center, adds to its demand and is drawn from the same sources.
