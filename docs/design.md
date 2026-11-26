@@ -2010,7 +2010,34 @@ The ledger books, under `transfer:<name>:`:
 - `requested` = `delivered` + `shortfall`;
 - `delivered` = `sent` + `held_gain` (what went in today is yesterday's delivery).
 
-Each route's own pairs hold as before. Not built with transport or salt (refused): the water would need its mass.
+Each route's own pairs hold as before.
+
+**A transfer's mass (built Nov 25, 2026, the same night, for the study's water quality runs).** A transfer's water
+carries the intake's concentration of each species salt or SWAT+ carries. The concentrations come from the systems'
+sources (Mass through the human-system routes, part 2):
+
+- for chloride and weathering's ions, salt's channel or reservoir, which takes the withdrawal out at that
+  concentration;
+- for nitrate and soluble P, SWAT+'s outflow concentration of the channel [A];
+- a reservoir's nitrate and P aren't readable through swatplus-bmi, so a release from one states them
+  (`concentration = {<species> = kg m-3}` on the transfer [A], which may also state any other species). The start-up
+  refuses a transfer without them.
+
+The mass is held overnight with the water and goes in with it the next day:
+
+- into salt's water body at the point source, reported as a system's outfall is;
+- or as SWAT+'s point source load (`point_source_water_<x>__mass_flow_rate`), with the systems' and the users';
+- or, to `outfall:` or `offsite:`, it leaves.
+
+A transfer's water is its part of what SWAT+ withdrew, not capped at what it asked, so salt's water body loses
+exactly the mass the transfer carries. Booked under `transfer:<name>:<species>:`: `concentration`, and
+`delivered:kg` = `sent:kg` + `held_gain:kg`. A restart carries the held mass.
+
+A replay record holds the transfers' water lines, what the rules did. A replay enters them again and works out
+their mass from the replay's concentrations. The record also holds each day's restriction cuts, and the replay puts
+them on the systems' classes before it plans them again. A record made before this is refused for a config with
+transfers or restrictions: make a new one. A transfer's stated concentration is part of the flow's identity, so a
+replay can't change it.
 
 **The rules,** each read at the pause from yesterday's flows and the reservoirs' volumes:
 

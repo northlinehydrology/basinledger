@@ -67,12 +67,19 @@ reservoirs (docs/design.md, "Scenarios of water users" and "Operating rules for 
   - **`restriction`:** staged cuts on a system's customer classes, triggered by a channel's flow or a reservoir's
     share of pool. Booked as `wanted:<class>` = `demand:<class>` + `restricted:<class>`, apart from a shortfall.
   - The smallest rate and the largest cut win. Scenarios may add transfers (`[[scenario.transfers]]`).
-  - Not built with transport or salt (refused).
+  - **Their mass.** A transfer carries the intake's concentration of each species salt or SWAT+ carries: salt's
+    channel or reservoir, SWAT+'s channel outflow for nitrate and soluble P, or `concentration` stated on the
+    transfer. A reservoir's nitrate and P must be stated. The mass goes in the next day with the water: into salt's
+    water body, or as SWAT+'s point source load. A replay record holds the transfers' water and the restrictions'
+    cuts, and a replay reproduces them, the transfers' mass from its own salt.
   - Tested in `tests/test_user_scenarios.py`:
     - the rules by construction;
     - Osu_1hru with a reservoir: a pump fills it at high flow (its inflow is the channel's and the pump's), a
       release keeps the channel up at low flow, and a town's outdoor and indoor use is cut in two stages;
-    - a restart, bit for bit.
+    - a restart, bit for bit;
+    - chloride and weathering through a pump and a release, salt's water bodies losing and gaining exactly the
+      transfers' mass and closing every day; a replay of it, with a town under a restriction, bit for bit;
+    - nitrate and soluble P as the point sources' loads, the reservoir's stated and refused unstated, and a restart.
 
 - Scenarios of water users on the existing system, and what each user does to the basin (`scenarios.py`,
   `phases.py`, `attribution.py`; docs/design.md, "Scenarios of water users"). Andrew asked for them on Nov 25,
