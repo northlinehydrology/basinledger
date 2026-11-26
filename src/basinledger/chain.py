@@ -31,11 +31,23 @@ Config (one ``[[utilities]]`` table per system):
                  {name = "edge", demand = 0.001, septic = 0.9, septic_to = "ground:edge", consumed = 0.1}]
                                # demand: m3 s-1, 12 monthly values (m3 s-1), or a CSV of date and m3 by day
     outfall = "swat:point_source:wwtp"
+    # with transport (docs/design.md, Mass through the human-system routes), kg m-3 by species:
+    effluent = {nitrate = "wwtp_dmr.csv", chloride = "sewer"}  # the plant's outflow: a constant, 12 monthly values,
+                               # a CSV (date, then a column per species, each row held to the next), or "sewer"
+                               # (the sewer's mass passes through)
+    septic_effluent = {nitrate = 0.04, chloride = 0.08}          # what septic water carries to the water table
+                               # (the same forms, or "tap", the mixed water's); a class's own wins
+    # a source's {route, ..., concentration = {chloride = 0.02}} states its water's [A]
 
 The first form still reads: ``demand`` (m3 s-1) is a class of existing customers, ``sewered`` its sewered share
 (the rest consumed), ``infiltration`` (m3 s-1) water from outside into the sewer.
 
-Ledger accounts, all m3 a day, under ``utility:<name>:``; the pairs are in ``declare``.
+Ledger accounts, all m3 a day, under ``utility:<name>:``; the pairs are in ``declare``. With transport, each
+species' mass, kg, under ``utility:<name>:<species>:`` (``mass_release``, ``mass_settle``; pairs in
+``declare_mass``): the sources' concentrations mixed by what each delivered, carried by everything the system
+delivers, loses and leaks; each class's septic water at its septic effluent concentration; the sewer's mass the tap
+water's in the sewered water and the users' returns; the plant's outflow at its effluent concentration the day it
+leaves; outdoor use's and unaccounted water's mass dropped, booked as leaving.
 """
 
 from __future__ import annotations
@@ -49,6 +61,51 @@ from pathlib import Path
 from .units import DAY
 
 EFFLUENT = "effluent:"
+TAP, SEWER = "tap", "sewer"  # a return at the system's mixed water's concentration; a plant passing its sewer through
+
+
+class Quality:
+    """A stated concentration through time, kg m-3: a constant, 12 monthly values, or dated values from a CSV
+    (``date``, then a column per species, each row held until the next date; a day before the first is refused).
+    ``keyword``: ``"tap"`` or ``"sewer"``, a concentration the system works out (``None`` for a stated one)."""
+
+    _tables: dict = {}  # a CSV read once: path -> [(date, {column: value})]
+
+    def __init__(self, where: str, species: str, spec, base: Path | None, keywords: tuple[str, ...]):
+        self.where, self.keyword, self.monthly, self.dated = where, None, None, None
+        if isinstance(spec, str) and spec in keywords:
+            self.keyword = spec
+        elif isinstance(spec, str):
+            path = Path(spec) if Path(spec).is_absolute() or base is None else Path(base) / spec
+            if path not in Quality._tables:
+                with open(path, newline="") as f:
+                    Quality._tables[path] = sorted((dt.date.fromisoformat(r["date"]), r) for r in csv.DictReader(f))
+            rows = Quality._tables[path]
+            if not rows or species not in rows[0][1]:
+                raise ValueError(f"{where}: {path} has no column {species!r}")
+            self.dated = ([d for d, _ in rows], [float(r[species]) for _, r in rows])
+            if min(self.dated[1]) < 0:
+                raise ValueError(f"{where}: {path} has a concentration below zero")
+        else:
+            self.monthly = _monthly(where, spec)
+            if min(self.monthly) < 0:
+                raise ValueError(f"{where}: a concentration below zero")
+
+    def on(self, day: dt.date) -> float:
+        if self.monthly is not None:
+            return self.monthly[day.month - 1]
+        dates, values = self.dated
+        i = bisect.bisect_right(dates, day) - 1
+        if i < 0:
+            raise ValueError(f"{self.where}: no concentration on or before {day} (the table starts {dates[0]})")
+        return values[i]
+
+
+def _qualities(where: str, spec, base: Path | None, keywords: tuple[str, ...]) -> dict[str, Quality]:
+    if not isinstance(spec, dict):
+        raise ValueError(f"{where} is {{<species> = kg m-3, 12 monthly values, a CSV or {' or '.join(keywords)}}}; "
+                         f"got {spec!r}")
+    return {sp: Quality(f"{where} {sp}", sp, v, base, keywords) for sp, v in spec.items()}
 
 
 def _monthly(where: str, v) -> list[float]:
@@ -66,6 +123,7 @@ class Source:
     share: float | list[float] | None = None   # a constant or 12 monthly values
     priority: int | None = None
     capacity: float | None = None              # m3 s-1, with priority
+    concentration: dict = field(default_factory=dict)  # species -> kg m-3 of its water, stated [A]
 
     @property
     def effluent(self) -> str | None:
@@ -81,6 +139,7 @@ class Customers:
     septic: float = 0.0
     consumed: float = 0.0
     septic_to: str | None = None
+    septic_effluent: dict = field(default_factory=dict)  # species -> Quality, over the system's
 
     def on(self, day: dt.date) -> float:
         """The class's demand on the day, m3."""
@@ -91,8 +150,10 @@ class Customers:
 
 def _customers(system: str, c: dict, base: Path | None) -> Customers:
     where = f"utility {system}: customers {c.get('name')!r}"
-    if set(c) - {"name", "demand", "sewered", "septic", "septic_to", "consumed"} or "name" not in c or "demand" not in c:
-        raise ValueError(f"{where}: takes name, demand, sewered, septic, septic_to and consumed; got {sorted(c)}")
+    if set(c) - {"name", "demand", "sewered", "septic", "septic_to", "consumed", "septic_effluent"} \
+            or "name" not in c or "demand" not in c:
+        raise ValueError(f"{where}: takes name, demand, sewered, septic, septic_to, consumed and septic_effluent; got "
+                         f"{sorted(c)}")
     d = c["demand"]
     if isinstance(d, str):
         path = Path(d) if Path(d).is_absolute() or base is None else Path(base) / d
@@ -106,7 +167,8 @@ def _customers(system: str, c: dict, base: Path | None) -> Customers:
         raise ValueError(f"{where}: sewered, septic and consumed must be shares that add up to 1")
     if septic > 0 and not str(c.get("septic_to", "")).startswith("ground:"):
         raise ValueError(f"{where}: septic water needs septic_to, a ground: route")
-    return Customers(c["name"], demand, sewered, septic, consumed, c.get("septic_to"))
+    return Customers(c["name"], demand, sewered, septic, consumed, c.get("septic_to"),
+                     _qualities(f"{where} septic_effluent", c.get("septic_effluent", {}), base, (TAP,)))
 
 
 @dataclass
@@ -122,12 +184,19 @@ class UtilityChain:
     leaks: float = 0.0           # share of the losses to the ground
     leaks_to: str | None = None
     shares: list = field(default_factory=list)  # [(date, {route: share}), ...] sorted, each held to the next date
+    effluent: dict = field(default_factory=dict)         # species -> Quality: the plant's outflow
+    septic_effluent: dict = field(default_factory=dict)  # species -> Quality: septic water at the water table
     # the day, between plan and settle
     _withdrawals: float = field(default=0.0, repr=False)
     _returns: float = field(default=0.0, repr=False)          # users' returns to this sewer, scaled (settle)
     _day: dict = field(default_factory=dict, repr=False)
     # held overnight: tomorrow's plant outflow, septic water and leaks; reuse asked of this plant today
-    held: dict = field(default_factory=lambda: {"sewer": 0.0, "ground": {}}, repr=False)
+    held: dict = field(default_factory=lambda: {"sewer": 0.0, "ground": {}, "kg": {}}, repr=False)
+    # each species' mixed concentration on the day last settled (its users' intake), and its plant outflow's today
+    concentration: dict = field(default_factory=dict, repr=False)
+    _effluent_c: dict = field(default_factory=dict, repr=False)
+    _return_parts: list = field(default_factory=list, repr=False)  # users' returns: (m3, {species: kg reported})
+    _mass_day: dict = field(default_factory=dict, repr=False)
     _reuse_asked: dict = field(default_factory=dict, repr=False)
     _reuse_given: dict = field(default_factory=dict, repr=False)
 
@@ -173,13 +242,20 @@ class UtilityChain:
         name = c["name"]
         sources = []
         for s in c["sources"]:
+            conc = s.get("concentration", {})
+            if not isinstance(conc, dict) or any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0
+                                                 for v in conc.values()):
+                raise ValueError(f"utility {name}: source {s['route']} concentration is {{<species> = kg m-3}}, none "
+                                 f"below zero; got {conc!r}")
+            conc = {k: float(v) for k, v in conc.items()}
             if "priority" in s:
                 sources.append(Source(s["route"], None, int(s["priority"]),
-                                      float(s["capacity"]) if "capacity" in s else None))
+                                      float(s["capacity"]) if "capacity" in s else None, conc))
             elif "share" in s:
-                sources.append(Source(s["route"], s["share"] if isinstance(s["share"], list) else float(s["share"])))
+                sources.append(Source(s["route"], s["share"] if isinstance(s["share"], list) else float(s["share"]),
+                                      concentration=conc))
             else:
-                sources.append(Source(s["route"]))
+                sources.append(Source(s["route"], concentration=conc))
         shares = []
         if c.get("shares"):  # a table of dated shares: date, then a column per source's route
             path = Path(c["shares"])
@@ -195,7 +271,10 @@ class UtilityChain:
                    demand=float(c.get("demand", 0.0)), sewered=float(c.get("sewered", 1.0)),
                    infiltration=float(c.get("infiltration", 0.0)),
                    customers=[_customers(name, x, base) for x in c.get("customers", [])],
-                   leaks=float(leaks.get("share", 0.0)), leaks_to=leaks.get("to"), shares=shares)
+                   leaks=float(leaks.get("share", 0.0)), leaks_to=leaks.get("to"), shares=shares,
+                   effluent=_qualities(f"utility {name}: effluent", c.get("effluent", {}), base, (SEWER,)),
+                   septic_effluent=_qualities(f"utility {name}: septic_effluent", c.get("septic_effluent", {}), base,
+                                              (TAP,)))
 
     # ---------- routes ----------
     def routes(self) -> list[str]:
@@ -213,9 +292,11 @@ class UtilityChain:
         self._withdrawals += withdrawal
         self._returns += returned
 
-    def add_return(self, returned: float):
-        """A user's return to this sewer after the day: its withdrawal's delivered share of what it returned."""
+    def add_return(self, returned: float, kg: dict | None = None):
+        """A user's return to this sewer after the day: its withdrawal's delivered share of what it returned, and the
+        mass it reports by species (a species it doesn't report returns at the system's mixed concentration [A])."""
         self._returns += returned
+        self._return_parts.append((returned, dict(kg or {})))
 
     def plan(self, ledger, day: dt.date, systems: dict | None = None) -> dict[str, float]:
         """Before the models' day: the demand, the production asked, and each source's request (m3). Another system's
@@ -290,6 +371,7 @@ class UtilityChain:
                 asked_r = ledger.today(f"route:{route}:requested")
                 got = req * min(ledger.today(f"route:{route}:delivered") / asked_r, 1.0) if asked_r > 0 else 0.0
             ledger.enter(k + f"source:{route}:delivered", got)
+            self._day.setdefault("got", {})[route] = got
             produced += got
         asked = self._day["asked"]
         share = min(produced / asked, 1.0) if asked > 0 else 1.0
@@ -335,6 +417,164 @@ class UtilityChain:
         ledger.enter(k + "held_to_ground", sum(ground.values()))
         self.held = {"sewer": sewer, "ground": ground}
         self._withdrawals = self._returns = 0.0
+
+    # ---------- mass (with transport) ----------
+    def needs(self, users_return: bool) -> dict[str, bool]:
+        """What the system's mass needs stated: an effluent concentration if its plant can have an outflow (a
+        sewered class, a user returning to its sewer, or inflow and infiltration), a septic one for each class with
+        septic water (``(class, needed)``)."""
+        plant = users_return or self.infiltration > 0 or any(c.sewered > 0 for c in self.customers)
+        return {"effluent": plant, **{f"septic:{c.name}": c.septic > 0 for c in self.customers}}
+
+    def missing(self, species: list[str], users_return: bool, sources: dict[str, set]) -> list[str]:
+        """The concentrations the system's mass needs and doesn't have, by species: ``sources``: route -> the species
+        Basin Ledger can work out its water's concentration for (the rest need one stated)."""
+        out = []
+        need = self.needs(users_return)
+        for sp in species:
+            if need["effluent"] and sp not in self.effluent:
+                out.append(f"effluent {sp}")
+            for c in self.customers:
+                if need[f"septic:{c.name}"] and sp not in c.septic_effluent and sp not in self.septic_effluent:
+                    out.append(f"septic_effluent {sp} (class {c.name})")
+            for s in self.sources:
+                if sp not in s.concentration and sp not in sources.get(s.route, set()):
+                    out.append(f"source {s.route} concentration {sp}")
+        given = set(self.effluent) | set(self.septic_effluent) | {sp for s in self.sources for sp in s.concentration}
+        given |= {sp for c in self.customers for sp in c.septic_effluent}
+        out += [f"{sorted(given - set(species))}, which aren't transported"] if given - set(species) else []
+        return out
+
+    def _septic(self, c: Customers, sp: str) -> Quality:
+        return c.septic_effluent.get(sp) or self.septic_effluent[sp]
+
+    def mass_release(self, ledger, day: dt.date, species: list[str], scale: dict | None = None) -> dict:
+        """At the day's start, after ``release``: the plant's outflow at today's effluent concentration (or its sewer's
+        mass passed through), to the outfall and the systems reusing it in proportion to their water, and yesterday's
+        septic water's and leaks' mass to the ground. ``scale``: species -> {"effluent", "septic"} multipliers on the
+        stated concentrations (salt's groups). Returns {"outfall": {species: kg}, "ground": {route: {species: kg}}}."""
+        k = f"utility:{self.name}:"
+        out = ledger.today(k + "plant_outflow")
+        out_kg, ground = {}, {}
+        self._effluent_c = {}
+        self._mass_day = {"held_start": {}, "released": {}}
+        for sp in species:
+            ks = k + f"{sp}:"
+            held = self.held.get("kg", {}).get(sp, {"sewer": 0.0, "ground": {}})
+            self._mass_day["held_start"][sp] = held["sewer"] + sum(held["ground"].values())
+            q = self.effluent.get(sp)
+            if q is None or q.keyword == SEWER:
+                kg = held["sewer"]
+                c = kg / out if out > 0 else 0.0
+            else:
+                c = q.on(day) * (scale or {}).get(sp, {}).get("effluent", 1.0)
+                kg = c * out
+            self._effluent_c[sp] = c
+            reuse = 0.0
+            for n, v in self._reuse_given.items():
+                ledger.enter(ks + f"reuse:{n}:kg", c * v)
+                reuse += c * v
+            ledger.enter(ks + "plant_outflow:kg", kg)
+            ledger.enter(ks + "plant:added", kg - held["sewer"])
+            ledger.enter(ks + "reuse:kg", reuse)
+            ledger.enter(ks + "outfall:kg", kg - reuse)
+            out_kg[sp] = kg - reuse
+            to_ground = 0.0
+            for route, m in held["ground"].items():
+                ledger.enter(ks + f"to_ground:{route}:kg", m)
+                ground.setdefault(route, {})[sp] = m
+                to_ground += m
+            self._mass_day["released"][sp] = kg + to_ground
+        return {"outfall": out_kg, "ground": ground}
+
+    def effluent_concentration(self, sp: str) -> float:
+        """Today's plant outflow concentration (``mass_release``), for the systems reusing it."""
+        return self._effluent_c.get(sp, 0.0)
+
+    def mass_settle(self, ledger, day: dt.date, species: list[str], c_sources: dict[str, dict[str, float]],
+                    scale: dict | None = None):
+        """After ``settle``: each species' mass by where the day's water went, and what is held overnight.
+        ``c_sources``: route -> species -> its water's concentration today (kg m-3), stated ones already in it."""
+        k = f"utility:{self.name}:"
+        d, s = self._day, self._day["share"]
+        got = d.get("got", {})
+        delivered = s * d["demand"]
+        losses = d["produced"] - delivered
+        leaks = self.leaks * losses
+        users = ledger.today(k + "users_delivered")
+        held = {}
+        for sp in species:
+            ks = k + f"{sp}:"
+            produced_kg = 0.0
+            for route, v in got.items():
+                m = v * c_sources[route][sp]
+                ledger.enter(ks + f"source:{route}:kg", m)
+                produced_kg += m
+            c = produced_kg / d["produced"] if d["produced"] > 0 else 0.0
+            self.concentration[sp] = c
+            ledger.enter(ks + "produced:kg", produced_kg)
+            ledger.enter(ks + "concentration", c)
+            ledger.enter(ks + "delivered:kg", c * delivered)
+            ledger.enter(ks + "losses:kg", c * losses)
+            ledger.enter(ks + "leaks:kg", c * leaks)
+            ledger.enter(ks + "unaccounted:kg", c * (losses - leaks))
+            sewer, consumed, added, ground = 0.0, 0.0, 0.0, {}
+            for cl in self.customers:
+                w = s * d["classes"][cl.name]
+                ledger.enter(ks + f"delivered:{cl.name}:kg", c * w)
+                ledger.enter(ks + f"sewered:{cl.name}:kg", c * cl.sewered * w)
+                ledger.enter(ks + f"consumed:{cl.name}:kg", c * cl.consumed * w)
+                sep = 0.0
+                if cl.septic > 0:
+                    q = self._septic(cl, sp)
+                    cs = c if q.keyword == TAP else q.on(day) * (scale or {}).get(sp, {}).get("septic", 1.0)
+                    sep = cs * cl.septic * w
+                    ground[cl.septic_to] = ground.get(cl.septic_to, 0.0) + sep
+                ledger.enter(ks + f"septic:{cl.name}:kg", sep)
+                ledger.enter(ks + f"septic_tap:{cl.name}:kg", c * cl.septic * w)  # the tap water's in it
+                ledger.enter(ks + f"septic_added:{cl.name}", sep - c * cl.septic * w)
+                sewer += c * cl.sewered * w
+                consumed += c * cl.consumed * w
+                added += sep - c * cl.septic * w
+            if leaks > 0:
+                ground[self.leaks_to] = ground.get(self.leaks_to, 0.0) + c * leaks
+            back = sum(kg[sp] if sp in kg else c * v for v, kg in self._return_parts)
+            ledger.enter(ks + "users_delivered:kg", c * users)
+            ledger.enter(ks + "users_return:kg", back)
+            ledger.enter(ks + "consumed:kg", consumed)
+            sewer += back  # inflow and infiltration, water from outside, carry none [A]
+            ledger.enter(ks + "sewer:kg", sewer)
+            ledger.enter(ks + "held_to_ground:kg", sum(ground.values()))
+            held[sp] = {"sewer": sewer, "ground": ground}
+            # the system's closure: what it holds overnight changes by what came in and what left today
+            start = self._mass_day.get("held_start", {}).get(sp, 0.0)
+            released = self._mass_day.get("released", {}).get(sp, 0.0)
+            plant_added = ledger.today(ks + "plant:added")
+            gain = produced_kg + back + added + plant_added
+            loss = c * users + consumed + c * (losses - leaks) + released
+            end = sewer + sum(ground.values())
+            gross = abs(gain) + abs(loss) + start + end
+            ledger.enter(ks + "closure_share", ((end - start) - (gain - loss)) / max(gross, 1e-12))
+        self.held["kg"] = held
+        self.held["concentration"] = dict(self.concentration)  # a restart's users' intake on its first day
+        self._return_parts = []
+
+    def declare_mass(self, ledger, species: list[str]):
+        k = f"utility:{self.name}:"
+        for sp in species:
+            ks = k + f"{sp}:"
+            routes = list(dict.fromkeys(s.route for s in self.sources))
+            ledger.pair(ks + "produced:kg", [ks + f"source:{r}:kg" for r in routes])
+            ledger.pair(ks + "produced:kg", [ks + "delivered:kg", ks + "losses:kg"])
+            ledger.pair(ks + "delivered:kg", [ks + f"delivered:{c.name}:kg" for c in self.customers]
+                        + [ks + "users_delivered:kg"])
+            for c in self.customers:
+                ledger.pair(ks + f"delivered:{c.name}:kg", [ks + f"sewered:{c.name}:kg", ks + f"septic_tap:{c.name}:kg",
+                                                            ks + f"consumed:{c.name}:kg"])
+                ledger.pair(ks + f"septic:{c.name}:kg", [ks + f"septic_tap:{c.name}:kg", ks + f"septic_added:{c.name}"])
+            ledger.pair(ks + "losses:kg", [ks + "leaks:kg", ks + "unaccounted:kg"])
+            ledger.pair(ks + "plant_outflow:kg", [ks + "outfall:kg", ks + "reuse:kg"])
+            ledger.zero(ks + "closure_share", atol=1e-12)
 
     def close_day(self, ledger, day: dt.date | None = None) -> dict[str, float]:
         """One system alone, its sources delivering all they're asked (the first form's day, for tests): plan,

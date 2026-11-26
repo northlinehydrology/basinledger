@@ -1,0 +1,48 @@
+name = "synthetic-town"
+description = """The two-way example with an existing system: the plant on its own well, and a town on a second well
+whose homes return their wastewater outside the basin. The baseline of the scenarios of water users
+(scenarios/data_centers.toml). For the engine's tests only."""
+
+[run]
+folder = "../../runs/synthetic-town"
+
+[swatplus]
+project = "{swatplus_refdata}/Osu_1hru"
+
+[modflow6]
+builder = "model:build_small"
+
+[recharge]
+map = "all:aqu001"
+area_rtol = 1e-6
+
+[exchange]
+package = "riv"
+map = "all:cha01"
+
+[[wells]]
+name = "pw1"
+cell = [0, 5, 6]
+
+[[wells]]
+name = "pw2"
+cell = [0, 2, 8]
+package = "wel_town"
+add = true
+
+[[utilities]]
+name = "town"
+sources = [{route = "well:pw2", share = 1.0}]
+outfall = "outfall:town"
+losses = 0.1
+customers = [{name = "homes", demand = 0.0003, sewered = 0.8, consumed = 0.2}]
+
+[[users]]
+name = "plant"
+component = "basinledger.testing:SyntheticUser"
+config = "small_user.toml"
+withdrawal = "well:pw1"
+return = "outfall:offsite"
+
+[outputs]
+heads = [{name = "pw1", cell = [0, 5, 6]}]

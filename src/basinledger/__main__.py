@@ -6,6 +6,7 @@
     python -m basinledger check basin.toml [--baseline]
     python -m basinledger forward basin.toml parameters.csv observations.csv simulated.csv [--run-folder DIR]
                                                                                           [--replay RECORD]
+    python -m basinledger scenarios set.toml [--workers N] [--cases A,B] [--fresh] [--tables]
 
 ``run`` steps the example's models through its period (or ``--days``), checking the ledger every day, and writes
 ledger.csv, series.csv and summary.json to the run's outputs folder. ``--baseline`` runs it without its water users.
@@ -17,7 +18,10 @@ problem its start-up finds (``Basin.check``); it exits with 1 if there are any. 
 runs (calibration.py): the parameter set applied, the example run, and its value at each observation written;
 ``--run-folder`` puts the run's files there instead of the example's run folder. ``--replay`` (``run`` and
 ``forward``) runs only the salt, from a record of the flow made by a run with ``[replay] record`` (replay.py); the
-parameters may then be salt's only, and anything that would change the flow is refused.
+parameters may then be salt's only, and anything that would change the flow is refused. ``scenarios`` runs a set of
+scenarios of water users (scenarios.py): the warm-up once, then the baseline, each scenario and each combination in
+parallel processes, skipping what is done and resuming what was stopped, and writes the tables comparing them
+(attribution.py); ``--tables`` only writes the tables from the cases already run.
 """
 
 from __future__ import annotations
@@ -53,7 +57,23 @@ def main(argv=None) -> int:
         f.add_argument(name)
     f.add_argument("--run-folder", default=None, help="where the run's files go (default: the example's)")
     f.add_argument("--replay", default=None, help="run only the salt, from this record of the flow (replay.py)")
+    sc = sub.add_parser("scenarios", help="a set of scenarios of water users, run and compared")
+    sc.add_argument("set")
+    sc.add_argument("--workers", type=int, default=None, help="cases at once (default: the set's [run] workers)")
+    sc.add_argument("--cases", default=None, help="only these cases, comma-separated")
+    sc.add_argument("--fresh", action="store_true", help="run everything again")
+    sc.add_argument("--tables", action="store_true", help="only write the tables from the cases already run")
     a = ap.parse_args(argv)
+
+    if a.cmd == "scenarios":
+        from . import scenarios as SC
+        if a.tables:
+            from .attribution import write_tables
+            out = write_tables(SC.load_set(a.set))
+        else:
+            out = SC.run_set(a.set, workers=a.workers, cases=a.cases.split(",") if a.cases else None, fresh=a.fresh)
+        print(f"tables: {out}")
+        return 0
 
     if a.cmd == "check":
         cfg = C.load(a.config)

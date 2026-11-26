@@ -129,6 +129,9 @@ class LandSource:
     by: str = "hru"
     timing: str | list = "uniform"
     group: str = ""
+    # a septic source's statement that it covers only the septic systems no ground: route carries (docs/design.md,
+    # Mass through the human-system routes, part 3)
+    outside_routes: bool = False
 
     def __post_init__(self):
         self.group = self.group or self.name
@@ -142,8 +145,9 @@ class Settings:
     """``[salt.<species>]``. Concentrations in kg m-3 (= g L-1). ``multipliers``: {group: factor} on the inputs'
     mass, set per study or by calibration (a parameter of model ``salt``, target ``<species>:<group>``), applied
     where the mass enters, so the ledger books the scaled mass. Groups: ``precipitation``, ``road_salt``,
-    ``point_sources`` (the stated concentrations; a user's reported mass is its own) and each land source's
-    ``group``."""
+    ``point_sources`` (the stated concentrations, and the water systems' plants' stated effluent; a user's
+    reported mass is its own), ``septic`` (the systems' stated septic effluent, and a land source in that group) and
+    each land source's ``group``."""
     precipitation: float                   # in precipitation (bulk deposition) [A]
     road_salt: RoadSalt | None = None
     sources: list = field(default_factory=list)  # LandSource
@@ -155,7 +159,7 @@ class Settings:
 
     @property
     def groups(self) -> set[str]:
-        return {"precipitation", "road_salt", "point_sources"} | {x.group for x in self.sources}
+        return {"precipitation", "road_salt", "point_sources", "septic"} | {x.group for x in self.sources}
 
     @classmethod
     def from_config(cls, sp: str, s: dict, base: Path) -> "Settings":
@@ -235,10 +239,12 @@ def _road_salt(sp: str, r: dict, base: Path) -> RoadSalt:
 
 def _land_source(sp: str, x: dict, base: Path) -> LandSource:
     what = f"[salt.{sp}] sources"
-    keys = {"name", "rate", "by", "timing", "group", "factor", "repeat_last", "repeat_first"}
+    keys = {"name", "rate", "by", "timing", "group", "factor", "repeat_last", "repeat_first", "outside_routes"}
     if not isinstance(x, dict) or set(x) - keys or not {"name", "rate"} <= set(x):
-        raise ValueError(f"{what}: each is {{name, rate, by, timing, group, repeat_last, repeat_first}}, name and "
-                         f"rate required; got {x!r}")
+        raise ValueError(f"{what}: each is {{name, rate, by, timing, group, repeat_last, repeat_first, "
+                         f"outside_routes}}, name and rate required; got {x!r}")
+    if not isinstance(x.get("outside_routes", False), bool):
+        raise ValueError(f"{what}: outside_routes is true or false")
     what = f"{what} {x['name']}"
     by = x.get("by", "hru")
     if by not in ("hru", "landuse"):
@@ -266,7 +272,7 @@ def _land_source(sp: str, x: dict, base: Path) -> LandSource:
         timing = [float(v) for v in timing]
     elif timing not in TIMINGS:
         raise ValueError(f"{what}: timing is \"uniform\", \"fertilizer\" or 12 monthly weights")
-    return LandSource(x["name"], rate, by, timing, x.get("group", ""))
+    return LandSource(x["name"], rate, by, timing, x.get("group", ""), x.get("outside_routes", False))
 
 
 def read_annual(a: Annual, hrus: list[str], years: range, what: str) -> dict[int, np.ndarray]:
@@ -827,8 +833,8 @@ class SaltBalance:
       tomorrow, and the system's closure."""
 
     def __init__(self, species: str, settings: Settings, sw, swat_dir: Path, recharge_map, hru_area, places,
-                 direct_returns: dict[str, list[tuple[str, set]]], gw_soil=None, saved: dict | None = None,
-                 start: dt.date | None = None, days: int = 0):
+                 direct_returns: dict[str, list[tuple[str, set, str]]], gw_soil=None, saved: dict | None = None,
+                 start: dt.date | None = None, days: int = 0, system_outfalls: dict[str, list[str]] | None = None):
         from .coupling import swatplus as S
         self.sp, self.s, self.sw, self.gw_soil = species, settings, sw, gw_soil
         self.k = f"salt:{species}:"
@@ -899,7 +905,10 @@ class SaltBalance:
         missing_route = [p for p in self.points if p not in self.route.points]
         if missing_route:
             raise ValueError(f"salt: point sources {missing_route} aren't in recall.con")
-        self.direct_returns = direct_returns  # point source -> (user, its constituents) returning to it directly
+        self.direct_returns = direct_returns  # point source -> (user, its constituents, its water's account)
+        self.system_outfalls = system_outfalls or {}  # point source -> the water systems whose plants discharge there
+        self.reported_points: dict[str, list[tuple[str, str]]] = {}  # point source -> (kg account, its water's) of
+        #   others sending it mass the driver books (a transfer's, operations.py)
         self.places = sw.names(WITHDRAWN) if sw.has(WITHDRAWN) else []
         to_ch = dict(places)
         for p in self.places:
@@ -1102,9 +1111,15 @@ class SaltBalance:
             for p, v in zip(self.points, vol):
                 if v <= 0:
                     continue
-                users = [u for u, reported in self.direct_returns.get(p, []) if self.sp in reported]
-                kg_u = sum(L.today(f"user:{u}:{self.sp}:kg") for u in users)
-                v_u = sum(L.today(f"user:{u}:return") for u in users)
+                users = [(u, water) for u, reported, water in self.direct_returns.get(p, []) if self.sp in reported]
+                kg_u = sum(L.today(f"user:{u}:{self.sp}:kg") for u, _ in users)
+                v_u = sum(L.today(water) for _, water in users)  # the water it sent today (held: yesterday's)
+                for s in self.system_outfalls.get(p, []):  # a plant's outflow at its effluent concentration
+                    kg_u += L.today(f"utility:{s}:{self.sp}:outfall:kg")
+                    v_u += L.today(f"utility:{s}:outfall")
+                for kg_a, m3_a in self.reported_points.get(p, []):  # a transfer's water and its mass
+                    kg_u += L.today(kg_a)
+                    v_u += L.today(m3_a)
                 rest = v - v_u
                 rest = rest if rest > 1e-6 * max(v, 1.0) else 0.0  # SWAT+'s 4-byte rounding of the users' water
                 if rest > 0.0 and p not in self.s.point_sources:
@@ -1151,6 +1166,10 @@ class SaltBalance:
     def concentration(self, channel: str) -> float:
         """A channel's outflow concentration today, kg m-3."""
         return float(self.c_body[self.ch_index[channel]])
+
+    def place_concentration(self, place: str) -> float:
+        """The concentration a place of use's water left its channel or reservoir at today, kg m-3."""
+        return float(self.c_body[self.place_body[self.places.index(place)]])
 
     # ---------- MODFLOW 6's sources ----------
     def recharge_concentration(self, entry_nodes: np.ndarray) -> np.ndarray:
@@ -1230,10 +1249,14 @@ class SaltBalance:
         internal = {STREAM_SOURCES} | ({soil_package.lower()} if soil_package else set())
         boundary = sum(m for p, m in b.boundary.items() if p not in internal)
         wells = sum(b.wells.values())
+        # the returns to the ground (septic water, leaks, users' returns): from outside the land, streams and aquifer,
+        # as a point source's mass is, since the water systems' and users' withdrawals leave it as sinks
+        ground = sum(b.grounds.values())
+        L.enter(k + "aquifer:from_ground", ground)
         total = self._outside()
         d = self._day
         change = (total - d["start"]) - b.storage_release
-        ext = d["in"] - d["out"] + boundary - wells
+        ext = d["in"] - d["out"] + boundary - wells + ground
         gross = d["gross"] + b.gross + abs(total - d["start"])
         L.enter(k + "closure_share", (change - ext) / max(gross, 1e-6))
         self.total = total

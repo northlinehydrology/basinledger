@@ -1,5 +1,120 @@
 # Changelog
 
+## 0.17.0 (2026-11-25)
+
+Mass through the human-system routes, for the Virginia study's water quality (docs/design.md, "Mass through the
+human-system routes"). Before this, returns to the ground and routes over several cells were refused with transport
+and salt, and a water system's water carried no constituent.
+
+- **Returns to the ground carry mass.** A `ground:` route's concentration goes on its WEL entries, as an auxiliary
+  per transport species, and the package is an AUX source in each transport model's SSM. Basin Ledger writes both
+  into the run's copy (`add = true`); with `add = false` the package must already be one, or the start-up refuses
+  it. A route over several cells gives each cell the same concentration, so its mass splits by the weights its
+  water does, the same day.
+  - A user's return carries its reported mass, or `[[ground]] concentration = {<species> = kg m-3}` [A] where it
+    reports none. A user that reports none with none stated is refused.
+  - Booked: `transport:<sp>:ground:<name>:due` = `sent` + `no_water`, and `sent` = `received`, every day.
+  - With salt, the returns' mass enters the whole-system closure from outside (`salt:<sp>:aquifer:from_ground`).
+- **A well over several cells takes each cell's concentration by what it gave** (`well:<name>#i:withdrawn`, and
+  the route's `withdrawn` and `concentration`); its users' intake follows it a day later.
+- **Constituents through water systems.** Every transport species, mixed from the sources by what each delivered:
+  - sources: a well's water as the transport model took it out; a place of use's as salt's channel or reservoir
+    held it, or SWAT+'s channel outflow concentration for nitrate and soluble P; another plant's effluent; or
+    `concentration = {...}` stated on the source (required for imports and, for nitrate and P, reservoir intakes);
+  - each class's septic water at `septic_effluent` (on the system or the class), leaks at the mixed water's, the
+    sewer the tap water's plus the users' reported returns, and the plant's outflow at `effluent`, the day it
+    leaves: a constant, 12 monthly values, a dated CSV (a DMR's months), `"sewer"` (passed through) or `"tap"`;
+  - outdoor use's and unaccounted water's mass dropped, booked as leaving (the water leaves the model too);
+  - the users on a system take in its concentration a day later;
+  - each system's mass booked by source, class and return (`utility:<s>:<sp>:`), its pairs and closure every day,
+    held overnight with the water and carried by a restart.
+- **The plants' and users' loads reach SWAT+'s point sources** for nitrate and soluble P
+  (`point_source_water_<x>__mass_flow_rate`), with `[transport.<sp>] point_sources = {<p> = kg m-3}` [A] for
+  water no one reports. Water with neither carries none, as before, booked as `unstated_m3` with a warning. For a
+  salted species the systems report their outfall's mass at the point source, as direct users do.
+- **Septic counted once.** A salted species with a land source in group `septic` and septic water on `ground:`
+  routes is refused, unless the land source says `outside_routes = true` (it covers only the homes no route
+  carries). The routes' stated septic concentrations scale by the `septic` multiplier (now always a group) and the
+  plants' by `point_sources`. For nitrate and P, SWAT+'s own septic systems (`landuse.lum`) with routed septic are
+  refused.
+- **Replays with the new routes.** A record now holds the routes' daily lines and the routes used. A replay rebuilds
+  the same ground packages and wells over several cells, and runs the water systems again from the record (their
+  mass from the replay's own concentrations). It also runs again the users taking in a well's or a system's water.
+  - Stated concentrations, effluent and septic effluent may change in a replay, as salt's settings may. A float64
+    record replays the routes' mass bit for bit (`tests/test_replay_routes.py`).
+  - A record made before 0.17.0 is refused for a config with these routes.
+- **Fixed:** salt's point source counted a held return (a user on an intake or a system) by the water it reported
+  that day, not the water it sent (`return_sent`). So the stated concentration took the wrong share of the point
+  source's water (`tests/test_salt.py`).
+- Tested in `tests/test_ground_mass.py`, `tests/test_chain.py` and `tests/test_systems_mass.py`.
+- Designed, not built: reported irrigation applied on SWAT+'s fields through a `land:` route, the day after it is
+  withdrawn, with its mass. It waits on swatplus-bmi's settable irrigation (docs/requests.md, item 9).
+
+Scenarios of water users and operating rules for systems and reservoirs, for the study's data centers and its
+reservoirs (docs/design.md, "Scenarios of water users" and "Operating rules for systems and reservoirs"):
+
+- Operating rules for systems and reservoirs (`operations.py`, `rules.py`; docs/design.md, "Operating rules for
+  systems and reservoirs"), for the Virginia study's pumped storage (Motts Run, Lake Mooney, Hunting Run) and its
+  drought restrictions. Andrew approved adding them on Nov 25, 2026.
+  - **Transfers** (`[[transfers]]`: name, from a SWAT+ intake, to a point source, outfall or offsite, capacity).
+    Water moves at the rate the rules set, 0 when none does. What the intake delivered goes in the next day, held
+    overnight and carried by a restart, with `requested` = `delivered` + `shortfall` and `delivered` = `sent` +
+    `held_gain`.
+  - A point source may now go into a reservoir (`point_sources = [{name, reservoir}]`), so a pump can fill one.
+  - **`pumped_storage`:** pump the river's flow above a threshold into a reservoir below a share of its pool. The
+    pool is SWAT+'s principal spillway volume unless given.
+  - **`release`:** release a channel's deficit below a threshold, keeping a share of the pool.
+  - **`restriction`:** staged cuts on a system's customer classes, triggered by a channel's flow or a reservoir's
+    share of pool. Booked as `wanted:<class>` = `demand:<class>` + `restricted:<class>`, apart from a shortfall.
+  - The smallest rate and the largest cut win. Scenarios may add transfers (`[[scenario.transfers]]`).
+  - **Their mass.** A transfer carries the intake's concentration of each species salt or SWAT+ carries: salt's
+    channel or reservoir, SWAT+'s channel outflow for nitrate and soluble P, or `concentration` stated on the
+    transfer. A reservoir's nitrate and P must be stated. The mass goes in the next day with the water: into salt's
+    water body, or as SWAT+'s point source load. A replay record holds the transfers' water and the restrictions'
+    cuts, and a replay reproduces them, the transfers' mass from its own salt.
+  - Tested in `tests/test_user_scenarios.py`:
+    - the rules by construction;
+    - Osu_1hru with a reservoir: a pump fills it at high flow (its inflow is the channel's and the pump's), a
+      release keeps the channel up at low flow, and a town's outdoor and indoor use is cut in two stages;
+    - a restart, bit for bit;
+    - chloride and weathering through a pump and a release, salt's water bodies losing and gaining exactly the
+      transfers' mass and closing every day; a replay of it, with a town under a restriction, bit for bit;
+    - nitrate and soluble P as the point sources' loads, the reservoir's stated and refused unstated, and a restart.
+
+- Scenarios of water users on the existing system, and what each user does to the basin (`scenarios.py`,
+  `phases.py`, `attribution.py`; docs/design.md, "Scenarios of water users"). Andrew asked for them on Nov 25,
+  2026, for the Virginia study's data centers.
+  - **A set of scenarios** is one TOML file beside the example: its warm-up, its run, the points compared, and
+    `[[scenario]]` tables of changes on top of the example. A scenario adds users (a customer of a system, or with
+    its own well, intake or reuse) with their wells, returns to the ground, intakes and point sources. It changes a
+    system's keys (its sources: shares or priority), adds systems and rules, and scales or removes existing users and
+    systems. `[[combination]]` runs scenarios together.
+  - **Phased growth:** `phases = [{from = "2027-01-01", mw = 60}, {from = "2030-01-01", mw = 300}]` on any user.
+    The user is off before the first phase. A phase gives `mw` (CoolingWaterBmi's `it_capacity_mw`), `config` (any
+    of the component's keys) or `multiplier`. Each distinct config is its own component, stepped together from the
+    run's start, so each phase is exactly the component at that size. CoolingWaterBmi is unchanged.
+  - **What is compared**, each case against the baseline over the compared period:
+    - flow at the channels named: daily, mean, the flow duration curve, the lowest 7-day mean, the climatic years'
+      7-day minima and the 7Q10 (log-Pearson III);
+    - heads at the cells named;
+    - the capture of the extra pumping;
+    - each changed user's and system's water.
+  - **The interaction** of a combination is its effect less the sum of its scenarios' effects alone, for every
+    statistic and day by day.
+  - **The runner,** `basinledger scenarios set.toml [--workers N] [--cases A,B] [--fresh] [--tables]`, runs the
+    warm-up once, then every case in parallel processes at a niceness. It skips what is done from the same inputs
+    and resumes a stopped case from its checkpoint. It writes CSV tables and `tables.md` for a paper (SI or US
+    units).
+  - `[[users]]` takes `phases`, and `scenarios.warm_up` takes `users`.
+  - The synthetic town (`examples/synthetic/town.toml`) and its set (`examples/synthetic/scenarios/`).
+  - Tested in `tests/test_user_scenarios.py`:
+    - a phased user is the component at each size, to the bit (CoolingWaterBmi at 60 and 300 MW, under a limit
+      too);
+    - two data centers alone and together: their own water adds exactly, the interaction is the effect together
+      less the parts', and the capture's residual is zero;
+    - the town grows onto a new well without the plant;
+    - a rerun does nothing, and a stopped case resumes to the same ledger, bit for bit.
+
 ## 0.16.0 (2026-11-25)
 
 - A water system's source shares from a dated table: `shares = "file.csv"`, with a date and then a column per

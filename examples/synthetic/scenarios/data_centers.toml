@@ -1,0 +1,71 @@
+# Scenarios of water users on the synthetic town (docs/design.md, "Scenarios of water users"): two data centers,
+# each alone and together, and the town growing onto a new well without the plant. For the engine's tests only.
+name = "synthetic-data-centers"
+description = "Two data centers on the synthetic town, alone and together."
+example = "../town.toml"
+
+[warm_up]
+days = 300
+
+[run]
+days = 600
+workers = 2
+checkpoint_days = 100
+
+[compare]
+channels = ["cha01"]
+heads = [{name = "dc_a", cell = [0, 2, 7]}, {name = "dc_b", cell = [0, 8, 8]}]
+low_flow = {days = 7, return_period = 10, year_start = "04-01"}
+
+[[scenario]]
+name = "dc_a"
+description = "A campus on the town's system, built in two phases"
+
+  [[scenario.users]]
+  name = "dc_a"
+  component = "basinledger.testing:SyntheticUser"
+  config = "dc_a.toml"
+  withdrawal = "utility:town"
+  return = "utility:town"
+  phases = [{from = "2010-11-15", config = {withdrawal = 0.0002}}, {from = "2011-03-01", config = {withdrawal = 0.0004}}]
+
+[[scenario]]
+name = "dc_b"
+description = "A campus with its own well, doubling in spring"
+
+  [[scenario.users]]
+  name = "dc_b"
+  component = "basinledger.testing:SyntheticUser"
+  config = "dc_b.toml"
+  withdrawal = "well:wb"
+  return = "outfall:dc_b"
+  phases = [{from = "2010-12-01"}, {from = "2011-04-01", multiplier = 2.0}]
+
+  [[scenario.wells]]
+  name = "wb"
+  cell = [0, 8, 8]
+  package = "wel_new"
+  add = true
+
+[[scenario]]
+name = "town_grows"
+description = "The town's homes grow by half, half of its water from a new well; the plant closes"
+remove = ["user:plant"]
+
+  [[scenario.scale]]
+  utility = "town"
+  multiplier = 1.5
+
+  [[scenario.utilities]]
+  name = "town"
+  sources = [{route = "well:pw2", share = 0.5}, {route = "well:pw3", share = 0.5}]
+
+  [[scenario.wells]]
+  name = "pw3"
+  cell = [0, 5, 9]
+  package = "wel_new"
+  add = true
+
+[[combination]]
+name = "both"
+scenarios = ["dc_a", "dc_b"]

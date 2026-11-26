@@ -189,13 +189,16 @@ def _model_nam(ws, model: str):
     return nam, have, grid
 
 
-def _add_package(ws, model: str, nam, ftype: str, package: str, cells: list[tuple[int, ...]], what: str):
+def _add_package(ws, model: str, nam, ftype: str, package: str, cells: list[tuple[int, ...]], what: str,
+                 aux: list[str] = ()):
     """A list package of Basin Ledger's own, one entry per cell with a value of 0 (set every day), and its line in the
-    model's name file."""
+    model's name file. ``aux``: auxiliary variables, a zero column each (a transport species' concentration)."""
     f = f"{model.lower()}.{package}.{ftype.lower()}"
-    rows = "\n".join("  " + " ".join(str(i + 1) for i in c) + "  0.0" for c in cells)
+    zeros = "  0.0" * (1 + len(aux))
+    rows = "\n".join("  " + " ".join(str(i + 1) for i in c) + zeros for c in cells)
+    options = f"  AUXILIARY {' '.join(aux)}\n" if aux else ""
     (ws / f).write_text(f"# Basin Ledger: {what} (coupling/existing.py); each value set every day\n"
-                        "BEGIN options\nEND options\n\nBEGIN dimensions\n"
+                        f"BEGIN options\n{options}END options\n\nBEGIN dimensions\n"
                         f"  MAXBOUND  {len(cells)}\nEND dimensions\n\nBEGIN period  1\n{rows}\nEND period  1\n")
     text = nam.read_text().splitlines()
     end = next(i for i, x in enumerate(text) if [w.upper() for w in x.split()[:2]] == ["END", "PACKAGES"])
@@ -223,12 +226,14 @@ def add_recharge(ws, model: str, package: str, cells: list[tuple[int, ...]]) -> 
              f"{len(cells)} cells of the recharge map")]
 
 
-def add_wells(ws, model: str, wells: list[tuple[str, str, tuple[int, ...]]]) -> list[str]:
+def add_wells(ws, model: str, wells: list[tuple[str, str, tuple[int, ...]]],
+              aux: dict[str, list[str]] | None = None) -> list[str]:
     """Wells a model doesn't have, added to a run's copy (``[[wells]] add = true``): for each package named, a WEL
     package of Basin Ledger's own, one entry per well at its cell (0-based, in the grid's form), its rate 0 in the
     file and set every day by the users' routes, and its line in the model's name file. ``wells``: (name, package,
-    cell). A package name the model already has, a cell in the wrong form for the grid and two wells at one cell in
-    a package are refused. Returns the start-up's notes."""
+    cell). ``aux``: package -> auxiliary variables it gets (a return to the ground's concentration by transport
+    species, set every day). A package name the model already has, a cell in the wrong form for the grid and two
+    wells at one cell in a package are refused. Returns the start-up's notes."""
     from pathlib import Path
     ws = Path(ws)
     nam, have, grid = _model_nam(ws, model)
@@ -246,10 +251,38 @@ def add_wells(ws, model: str, wells: list[tuple[str, str, tuple[int, ...]]]) -> 
         cells = [c for _, c in added]
         if len(set(cells)) != len(cells):
             raise ValueError(f"{package}: two wells Basin Ledger adds share a cell; give them one well")
-        _add_package(ws, model, nam, "wel", package, cells, "wells the model doesn't have")
+        _add_package(ws, model, nam, "wel", package, cells, "wells the model doesn't have",
+                     (aux or {}).get(package, ()))
         notes.append(f"{package}: a well package Basin Ledger adds to the run's copy for wells the model doesn't have: "
                      + ", ".join(f"{w} at {list(c)}" for w, c in added))
     return notes
+
+
+def add_ssm_sources(ws, model: str, package: str, aux: str) -> list[str]:
+    """A transport model's SSM, in a run's copy, given a flow package as an AUX source: ``<package> AUX <aux>`` in its
+    SOURCES block (the block added if it has none), so the package's inflow carries the concentration Basin Ledger
+    sets on that auxiliary each day. A package the SSM already lists is left as it is. Returns the start-up's
+    notes."""
+    from pathlib import Path
+    ws = Path(ws)
+    nam, _, _ = _model_nam(ws, model)
+    ssm, _ = _package_file(ws, nam, ("SSM6",))
+    if ssm is None:
+        raise ValueError(f"{model}: the transport model has no SSM package to take {package}'s concentration")
+    lines = ssm.read_text().splitlines()
+    up = [x.split()[:2] for x in lines]
+    up = [[w.upper() for w in x] for x in up]
+    begin = next((i for i, x in enumerate(up) if x == ["BEGIN", "SOURCES"]), None)
+    if begin is not None:
+        end = next(i for i in range(begin, len(lines)) if up[i] == ["END", "SOURCES"])
+        if any(lines[i].split()[:1] and lines[i].split()[0].lower() == package.lower() for i in range(begin + 1, end)):
+            return []
+        lines = lines[:end] + [f"  {package}  AUX  {aux}"] + lines[end:]
+    else:
+        lines += ["", "BEGIN sources", f"  {package}  AUX  {aux}", "END sources"]
+    ssm.write_text("\n".join(lines) + "\n")
+    return [f"{model}: {package}'s inflow carries the concentration on its auxiliary {aux} (an SSM source Basin "
+            "Ledger adds to the run's copy)"]
 
 
 def _package_file(ws, nam, ftypes: tuple[str, ...]):

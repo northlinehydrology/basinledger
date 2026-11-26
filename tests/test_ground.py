@@ -1,7 +1,7 @@
 """Returns to the ground (route ``ground:<name>``, ``[[ground]]``): a septic drainfield or a system's leaks, water into
 an aquifer cell through a WEL entry Basin Ledger adds, injecting it.
 
-- the entries read, and what the start-up refuses (tier 1);
+- the entries read, and what the start-up refuses (tier 1; their mass with transport and salt is tests/test_ground_mass.py, in a replay tests/test_replay_routes.py);
 - coupled on the synthetic example, a house pumping its own well and returning 80% of it to a drainfield three cells
   away, against the same house returning it outside the basin (tier 2): the drainfield gets exactly the return every
   day, MODFLOW 6's budget closes with it, the capture analysis puts the return in the aquifer's water
@@ -86,13 +86,6 @@ def test_a_drainfield_returns_the_house_water_to_the_aquifer(swatplus, tmp_path)
     assert abs(c["total"]["residual"]) < 1e-6 * c["total"]["from_returns"]
     assert (h[20:] > h0[20:]).all()  # the water table under the field is higher
     assert "groundwater:boundary:wel_ground" not in t or not t["groundwater:boundary:wel_ground"].any()
-
-
-def test_a_return_to_the_ground_needs_modflow_and_no_transport(swatplus, tmp_path):
-    cfg = _config(tmp_path, "ground:field")
-    cfg.salt = {"cl": object()}
-    with pytest.raises(NotImplementedError, match=r"\[\[ground\]\] with transport or salt isn't built"):
-        Basin(cfg, run="ground-refused", days=2)
 
 
 def test_cells_read_inline_and_from_a_file(tmp_path):
