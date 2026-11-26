@@ -192,6 +192,7 @@ class MassBudget:
 
     recharge: float = 0.0                                      # in with recharge
     wells: dict[str, float] = field(default_factory=dict)      # out with each coupled well
+    grounds: dict[str, float] = field(default_factory=dict)    # in with each return to the ground's entry
     to_stream: dict[str, float] = field(default_factory=dict)  # out to each coupled channel (rivers' gains, drains)
     from_stream: dict[str, float] = field(default_factory=dict)  # in from each coupled channel (rivers' losses)
     leakage_m3: dict[str, float] = field(default_factory=dict)  # the water those losses carried, m3
@@ -368,9 +369,11 @@ class Transport:
         return self._get(F, "NODELIST")[: int(self._get(F, "NBOUND")[0])].astype(int) - 1
 
     def budget(self, recharge: str | None = None, wells: dict[str, tuple[str, int]] | None = None,
-               streams: list[tuple[str, np.ndarray, list[str]]] = (), gw_soil: str | None = None) -> MassBudget:
-        """The day's mass, kg, from the transport model's flows and concentrations after the solve. Each package's
-        entries' flow and mass are kept in ``last``."""
+               streams: list[tuple[str, np.ndarray, list[str]]] = (), gw_soil: str | None = None,
+               grounds: dict[str, tuple[str, int]] | None = None) -> MassBudget:
+        """The day's mass, kg, from the transport model's flows and concentrations after the solve. ``wells`` and
+        ``grounds``: entry name -> (package, entry), the users' wells (out) and the returns to the ground (in, at the
+        concentration set on the entry). Each package's entries' flow and mass are kept in ``last``."""
         b = MassBudget()
         net = 0.0
         x = self.concentration()
@@ -390,6 +393,10 @@ class Transport:
         for name, (pkg, i) in (wells or {}).items():
             q, m = flows[pkg.upper()]
             b.wells[name] = -float(m[i])
+            coupled[pkg.upper()][i] = True
+        for name, (pkg, i) in (grounds or {}).items():
+            q, m = flows[pkg.upper()]
+            b.grounds[name] = float(m[i])
             coupled[pkg.upper()][i] = True
         own_coupled: dict[str, np.ndarray] = {}  # the stream side's mass sources: their entries' channels
         for pkg, entry_channel, channels in streams:

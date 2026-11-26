@@ -1230,10 +1230,14 @@ class SaltBalance:
         internal = {STREAM_SOURCES} | ({soil_package.lower()} if soil_package else set())
         boundary = sum(m for p, m in b.boundary.items() if p not in internal)
         wells = sum(b.wells.values())
+        # the returns to the ground (septic water, leaks, users' returns): from outside the land, streams and aquifer,
+        # as a point source's mass is, since the water systems' and users' withdrawals leave it as sinks
+        ground = sum(b.grounds.values())
+        L.enter(k + "aquifer:from_ground", ground)
         total = self._outside()
         d = self._day
         change = (total - d["start"]) - b.storage_release
-        ext = d["in"] - d["out"] + boundary - wells
+        ext = d["in"] - d["out"] + boundary - wells + ground
         gross = d["gross"] + b.gross + abs(total - d["start"])
         L.enter(k + "closure_share", (change - ext) / max(gross, 1e-6))
         self.total = total

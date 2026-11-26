@@ -850,7 +850,13 @@ class ReplayBasin(Basin):
         self.surface, self._track_transport, self.swat_aquifer_ha = {}, False, {}
         self.rule_memory = saved["rule_memory"] if saved else {}
         self._wells_left_out = set()
+        if cfg.ground or any(w.cells for w in cfg.wells):
+            raise ReplayRefused("replay: returns to the ground and wells over several cells aren't built in a replay "
+                                "(it re-runs only the users who take in the aquifer's water)")
         wells = {w.name: (w.package, self._well_node(w)) for w in cfg.wells}
+        # the routes as the transport's links read them (driver.Basin's router): wells only
+        self.router = SimpleNamespace(wells=wells, grounds={}, groups={}, used=set(), req={})
+        self._ground_kg, self._ground_cfg, self._well_c = {}, {}, {}
 
         # users: those taking in the aquifer's water run again; the others' lines are the record's
         recorded = {u["name"]: u for u in info["users"]}
@@ -874,8 +880,7 @@ class ReplayBasin(Basin):
                 L.pair(f"user:{u.name}:withdrawal", [f"user:{u.name}:{x}" for x in ("consumption", "return",
                                                                                     "storage_less_gain")])
                 for sp in takes:
-                    self.intakes.append((u.name, wu, f"water_user_intake_water_{sp}__mass_concentration", sp,
-                                         wells[name][1]))
+                    self.intakes.append((u.name, wu, f"water_user_intake_water_{sp}__mass_concentration", sp, name))
             else:
                 self.users.append((u, _RecordedUser({c: c for c in r["constituents"]})))
         self._set_intakes()

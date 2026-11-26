@@ -251,9 +251,15 @@ class Basin:
                     cells = [(f"{w.name}#{i}", c) for i, (c, _) in enumerate(w.cells, 1)] or [(w.name, w.cell)]
                     by_model.setdefault((w.model or cfg.mf6_model).lower(), []).extend(
                         (n, w.package, c) for n, c in cells)
+            # a return to the ground carries each transport species' concentration on an auxiliary of its WEL entry
+            ground_aux = {g.package.lower(): list(cfg.transport) for g in cfg.ground if g.add and cfg.transport}
             for model, added in by_model.items():
-                for note in EX.add_wells(ws, model, added):
+                for note in EX.add_wells(ws, model, added, ground_aux):
                     warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            for sp, tc in cfg.transport.items():  # and each transport model's SSM takes it from that auxiliary
+                for package in ground_aux:
+                    for note in EX.add_ssm_sources(ws, tc.get("model") or f"gwt_{sp}", package, sp):
+                        warnings.warn(note, EX.TakeoverNote, stacklevel=2)
             for model in (cfg.mf6_models or [cfg.mf6_model]):  # storage, for a model handed over steady
                 if cfg.mf6_storage is not None:
                     st = cfg.mf6_storage
@@ -349,9 +355,10 @@ class Basin:
         wells, groups = {}, {}
         self._wells_left_out = set()  # a check's wells with a problem: listed once, not again by the users on them
         spread = [w for w in list(cfg.wells) + list(cfg.ground) if w.cells]
-        if spread and (cfg.transport or cfg.salt or cfg.replay_record):
-            self._problem(NotImplementedError(f"wells or ground returns over several cells ({spread[0].name}) with "
-                                              "transport, salt or a replay record aren't built"))
+        if (spread or cfg.ground) and cfg.replay_record:
+            self._problem(NotImplementedError(f"a replay record with returns to the ground or wells over several cells "
+                                              f"({(spread or cfg.ground)[0].name}) isn't built: the replay re-runs "
+                                              "only the users who take in the aquifer's water"))
         for w in cfg.wells:
             if w.cells:
                 self._spread(w, "well", wells, groups)
@@ -361,10 +368,12 @@ class Basin:
         grounds = {}  # returns to the ground: a WEL entry at the cell, injecting (route ground:<name>)
         if cfg.ground and self.mf6 is None:
             self._problem(ValueError("[[ground]] returns water to MODFLOW 6's aquifer; it needs a [modflow6] model"))
-        elif cfg.ground and (cfg.transport or cfg.salt):
-            self._problem(NotImplementedError("[[ground]] with transport or salt isn't built: what a return carries "
-                                              "into the aquifer needs its concentration on the WEL entry"))
         else:
+            for g in cfg.ground:
+                unknown = sorted(set(g.concentration) - set(cfg.transport))
+                if unknown:
+                    self._problem(ValueError(f"[[ground]] {g.name}: concentration for {unknown}, which aren't "
+                                             "transported"))
             for g in cfg.ground:
                 if g.cells:
                     self._spread(g, "ground", grounds, groups)
@@ -424,10 +433,11 @@ class Basin:
             for u in cfg.users:
                 self._part(f"user {u.name}", lambda u=u: self._add_user(u, L))
         # intakes from the aquifer: each user on a configured well, for each species its component takes
-        self.intakes = []  # (user, WaterUser, input variable, species, node)
+        self.intakes = []  # (user, WaterUser, input variable, species, well)
+        self._well_c = {}  # species -> well -> the concentration of the water it gave on the day just solved
         for u, wu in self.users:
             k, name = kind(u.withdrawal)
-            if k != "well" or name not in wells:
+            if k != "well" or (name not in wells and f"well:{name}" not in groups):
                 continue
             takes = set(wu.bmi.get_input_var_names())
             for sp in self.transport:
@@ -438,8 +448,20 @@ class Basin:
                     self._problem(ValueError(f"user {u.name}: {var} is set from the aquifer ([transport.{sp}]); "
                                              "remove its constant input"))
                     continue
-                self.intakes.append((u.name, wu, var, sp, wells[name][1]))
+                self.intakes.append((u.name, wu, var, sp, name))
         self._set_intakes()
+        # what a user's return to the ground carries: what its component reports, or the [[ground]] entry's stated
+        # concentration (docs/design.md, Mass through the human-system routes)
+        self._ground_cfg = {g.name: g for g in cfg.ground}
+        stated = {g.name: g.concentration for g in cfg.ground}
+        for u, wu in self.users:
+            k, name = kind(u.returns)
+            if k != "ground" or name not in stated:
+                continue
+            missing = [sp for sp in self.transport if sp not in wu.constituents and sp not in stated[name]]
+            if missing:
+                self._problem(ValueError(f"user {u.name} returns to ground:{name} reporting no {missing}, and "
+                                         f"[[ground]] {name} states no concentration for them"))
         users_by_name = {u.name: wu for u, wu in self.users}
         self.rules = []
         for r in cfg.rules:
@@ -923,19 +945,39 @@ class Basin:
         self.surface[sp] = sm
 
     def _set_intakes(self):
-        """Each intake user's concentration for the coming day: the aquifer's at its well now."""
+        """Each intake user's concentration for the coming day: the aquifer's at its well now (over several cells,
+        each cell's by what it gave on the day just solved; by the route's weights before any)."""
         self.intake = {}
         x = {sp: t.concentration() for sp, t in self.transport.items()}
-        for user, wu, var, sp, node in self.intakes:
-            c = float(x[sp][node])
+        for user, wu, var, sp, well in self.intakes:
+            c = self._well_concentration(sp, well, x[sp])
             wu.inputs[var] = (lambda value: (lambda t: value))(c)
             self.intake[(user, sp)] = c
+
+    def _well_concentration(self, sp: str, well: str, x: np.ndarray) -> float:
+        """A well's water's concentration, kg m-3: its cell's; over several cells, what they gave on the day just
+        solved over its water, or before any, the cells' by the route's weights."""
+        got = self._well_c.get(sp, {}).get(well)
+        if got is not None:
+            return got
+        subs = self.router.groups.get(f"well:{well}")
+        if subs:
+            return float(sum(w * x[self.router.wells[s.split(":", 1)[1]][1]] for s, w in subs))
+        return float(x[self.router.wells[well][1]])
 
     def _build_mass_links(self):
         """The transport's links, once MODFLOW 6 has read its first day: recharge, the wells and the streams."""
         rp = self.cfg.recharge_package
-        wells = {w.name: (w.package, self.mf6.entry(w.package, self.mf6.node(*w.cell, model=w.model)))
-                 for w in self.cfg.wells}
+        # the users' wells and the returns to the ground, an entry per cell (<name>#1, #2, ... over several)
+        wells = {n: (pkg, self.mf6.entry(pkg, node)) for n, (pkg, node) in self.router.wells.items()}
+        grounds = {n: (pkg, self.mf6.entry(pkg, node)) for n, (pkg, node) in self.router.grounds.items()}
+        for sp, t in self.transport.items():
+            for pkg in sorted({p for p, _ in grounds.values()}):
+                if not t.takes_inflow(pkg):
+                    raise ValueError(f"{t.model.lower()}: the returns to the ground's package {pkg!r} isn't an AUX "
+                                     f"source in SSM, so their water would carry no {sp} ([[ground]] add = false: "
+                                     "list it in add_transport's sources)")
+        self._ground_links = grounds
         streams = []
         if self.exchange is not None:
             streams.append((self.exchange.package, self.exchange.map.entry_channel, self.exchange.map.channels))
@@ -977,6 +1019,12 @@ class Basin:
                                      "(add_transport's stream_mass)")
         self._mass_links = (rp, wells, streams)
         L = self.ledger
+        for sp in self.transport:
+            for g in self.cfg.ground:
+                if f"ground:{g.name}" in self.router.used:
+                    k = f"transport:{sp}:ground:{g.name}:"
+                    L.pair(k + "due", [k + "sent", k + "no_water"])
+                    L.pair(k + "sent", k + "received")
         channels = self.exchange.map.channels if self.exchange is not None else []
         if self.exchange is not None and self.exchange.drains is not None:
             channels = list(dict.fromkeys(channels + self.exchange.drains[1].channels))
@@ -1021,6 +1069,7 @@ class Basin:
         rp, _, streams = self._mass_links
         self._recharge_mass = {}
         for sp, t in self.transport.items():
+            self._ground_inflows(L, sp, t)
             if sp in self.salt:  # from the land and the streams today (salt.py)
                 self._salt_inflows(sp, t, rp, streams)
                 continue
@@ -1056,6 +1105,34 @@ class Basin:
                     L.enter(k + f"stream:{c}:returned", back)                # the rest, back into the aquifer
             else:
                 t.set_inflow(self.exchange.package, float(tc["stream"]), entries=self.exchange.map.entry_channel >= 0)
+
+    def _ground_inflows(self, L, sp, t):
+        """Each return to the ground's concentration today, on its WEL entries (every cell of a route over several
+        the same, so its mass splits by the weights its water does): the mass sent to the route today (by the
+        systems' septic water and leaks and the users' returns, ``_ground_kg``) over its water."""
+        if not self._ground_links:
+            return
+        kg = self._ground_kg.get(sp, {})
+        c_entry: dict[str, dict[int, float]] = {}
+        for g in self.cfg.ground:
+            route = f"ground:{g.name}"
+            m, w = kg.get(route, 0.0), self.router.req.get(route, 0.0)
+            c = m / w if w > 0 else 0.0
+            for s in [s.split(":", 1)[1] for s, _ in self.router.groups.get(route, ())] or [g.name]:
+                if s in self._ground_links:
+                    pkg, i = self._ground_links[s]
+                    c_entry.setdefault(pkg, {})[i] = c
+            if route in self.router.used:
+                k = f"transport:{sp}:ground:{g.name}:"
+                L.enter(k + "due", m)
+                L.enter(k + "sent", c * w)
+                L.enter(k + "no_water", 0.0 if w > 0 else m)
+        for pkg, by_entry in c_entry.items():
+            n = t._copy(pkg)
+            c = np.zeros(int(t._get(f"FMI-FT{n}", "NBOUND")[0]))
+            for i, v in by_entry.items():
+                c[i] = v
+            t.set_inflow(pkg, c)
 
     def _entry_nodes(self, t, package: str) -> np.ndarray:
         """A flow package's entries' 0-based nodes as the transport model has them (-1 for none)."""
@@ -1112,7 +1189,7 @@ class Basin:
         rp, wells, streams = self._mass_links
         gs = self.gw_soil.package if self.gw_soil is not None else None
         for sp, t in self.transport.items():
-            b = t.budget(rp, wells, streams, gw_soil=gs)
+            b = t.budget(rp, wells, streams, gw_soil=gs, grounds=self._ground_links)
             x = t.concentration()
             k = f"transport:{sp}:"
             salt = self.salt.get(sp)
@@ -1120,9 +1197,25 @@ class Basin:
             if salt is not None:  # the HRUs' percolation mass (salt.py); other species book theirs with the inflows
                 L.enter(k + "recharge:sent", salt.perc_kg)
             L.enter(k + "recharge:received", b.recharge)
-            for w, m in b.wells.items():
+            for w, m in b.wells.items():  # each entry (over several cells, <name>#1, #2, ...)
                 L.enter(k + f"well:{w}:withdrawn", m)
-                L.enter(k + f"well:{w}:concentration", float(x[self.mf6.node(*self._well_cell(w))]))
+                L.enter(k + f"well:{w}:concentration", float(x[self.router.wells[w][1]]))
+            self._well_c[sp] = {}
+            for route, subs in self.router.groups.items():  # a well over several cells: what its cells gave
+                kd, name = kind(route)
+                if kd != "well":
+                    continue
+                parts = [s.split(":", 1)[1] for s, _ in subs]
+                m = sum(b.wells.get(s, 0.0) for s in parts)
+                water = -sum(float(t.last[wells[s][0].upper()][0][wells[s][1]]) for s in parts if s in wells)
+                c = m / water if water > 0 else self._well_concentration(sp, name, x)
+                L.enter(k + f"well:{name}:withdrawn", m)
+                L.enter(k + f"well:{name}:concentration", c)
+                self._well_c[sp][name] = c
+            for g in self.cfg.ground:  # the returns to the ground, as the transport model took them in
+                if f"ground:{g.name}" in self.router.used:
+                    parts = [s.split(":", 1)[1] for s, _ in self.router.groups.get(f"ground:{g.name}", ())] or [g.name]
+                    L.enter(k + f"ground:{g.name}:received", sum(b.grounds.get(s, 0.0) for s in parts))
             for c in b.to_stream:
                 L.enter(k + f"stream:{c}:to_stream", b.to_stream[c])
                 if salt is not None:
@@ -1176,9 +1269,6 @@ class Basin:
                 self._wells_left_out.add(w.name)
             subs.append((f"{kind_}:{sub}", weight))
         groups[f"{kind_}:{w.name}"] = subs
-
-    def _well_cell(self, name: str):
-        return next(w.cell for w in self.cfg.wells if w.name == name)
 
     def _well_node(self, w: C.WellConfig):
         """A well's node (a WEL well's cell), or ("maw", its 0-based number, its model) for a multi-aquifer well."""
@@ -1241,6 +1331,7 @@ class Basin:
 
         # 2-3. users and routing
         self._uses = {}
+        self._ground_kg = {}  # species -> ground route -> kg sent to it today (users' returns, systems' septic and leaks)
         for u, wu in self.users:
             use = wu.advance_day(d)
             self._uses[u.name] = use
@@ -1270,6 +1361,13 @@ class Basin:
             for name, v in use.reported.items():
                 L.enter(k + name, v)
             ret = use.returned if held is None else held["vol"]
+            if self.transport and kind(u.returns)[0] == "ground":  # what the return carries into the aquifer
+                reported = use.constituents if held is None else held["kg"]
+                stated = self._ground_cfg[kind(u.returns)[1]].concentration
+                for sp in self.transport:
+                    m = reported.get(sp, 0.0) if sp in wu.constituents else stated.get(sp, 0.0) * ret
+                    by = self._ground_kg.setdefault(sp, {})
+                    by[u.returns] = by.get(u.returns, 0.0) + m
             for route, vol, is_return in ((u.withdrawal, use.withdrawal, False), (u.returns, ret, True)):
                 kd, name = kind(route)
                 if kd == "utility":

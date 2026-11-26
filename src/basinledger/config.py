@@ -243,6 +243,8 @@ class WellConfig:
     model: str | None = None  # with several models coupled, the one it's in (the first if not given)
     well: int | None = None   # a multi-aquifer well (MAW): its number in the package, 1-based, in place of a cell
     cells: tuple = ()         # several cells, in place of cell: ((cell, weight), ...), the weights summing to 1
+    # [[ground]]: kg m-3 by transport species for the water of users that report none of it [A]
+    concentration: dict = field(default_factory=dict)
 
 
 def _flag(path: Path, where: str, v) -> bool:
@@ -307,16 +309,26 @@ def _ground(path: Path, g: dict) -> WellConfig:
     """A [[ground]] entry: a return to the ground at an aquifer cell, as a WEL entry injecting it (``WellConfig``;
     route ``ground:<name>``). Added by Basin Ledger in a package of its own unless ``add = false``."""
     where = f"[[ground]] {g.get('name')!r}"
-    if "name" not in g or set(g) - {"name", "cell", "cells", "package", "add", "model"}:
-        raise ValueError(f"{path}: {where} takes name and cell (or cells), and may have package, add and model; got "
-                         f"{sorted(g)}")
+    if "name" not in g or set(g) - {"name", "cell", "cells", "package", "add", "model", "concentration"}:
+        raise ValueError(f"{path}: {where} takes name and cell (or cells), and may have package, add, model and "
+                         f"concentration; got {sorted(g)}")
+    conc = _concentrations(path, f"{where} concentration", g.get("concentration", {}))
     if "cells" in g:
         if "cell" in g:
             raise ValueError(f"{path}: {where}: cell or cells, not both")
         return WellConfig(g["name"], g.get("package", "wel_ground"), None, _flag(path, f"{where} add",
-                          g.get("add", True)), g.get("model"), cells=_cells(path, where, g["cells"]))
+                          g.get("add", True)), g.get("model"), cells=_cells(path, where, g["cells"]),
+                          concentration=conc)
     return WellConfig(g["name"], g.get("package", "wel_ground"), _cell(path, where, g.get("cell")),
-                      _flag(path, f"{where} add", g.get("add", True)), g.get("model"))
+                      _flag(path, f"{where} add", g.get("add", True)), g.get("model"), concentration=conc)
+
+
+def _concentrations(path: Path, where: str, c) -> dict[str, float]:
+    """``{<species> = kg m-3}``: a stated concentration by transport species, none below zero."""
+    if not isinstance(c, dict) or any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0
+                                      for v in c.values()):
+        raise ValueError(f"{path}: {where} is {{<species> = kg m-3}}, none below zero; got {c!r}")
+    return {str(k): float(v) for k, v in c.items()}
 
 
 def _cell(path: Path, where: str, cell) -> tuple[int, ...]:
