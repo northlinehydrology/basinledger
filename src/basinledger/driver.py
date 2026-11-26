@@ -441,6 +441,14 @@ class Basin:
                 self.intakes.append((u.name, wu, var, sp, wells[name][1]))
         self._set_intakes()
         users_by_name = {u.name: wu for u, wu in self.users}
+        # operations (operations.py): transfers, and the reservoirs' pools and restrictions the rules read and set
+        from . import operations as OP
+        self.transfers = {}
+        held_t = (saved or {}).get("transfers_held") or {}
+        for x in cfg.transfers:
+            self._part(f"transfer {x['name']}", lambda x=x: self._add_transfer(x, held_t.get(x["name"], 0.0), L))
+        self.pools = OP.pools(swat_dir) if swat_dir is not None else {}
+        self.restricted = {}  # system -> its classes behind a restriction
         self.rules = []
         for r in cfg.rules:
             self._part(f"rule {r.get('name', r['kind'])}", lambda r=r: self._add_rule(r, users, users_by_name))
@@ -583,6 +591,28 @@ class Basin:
     def _add_rule(self, r, users, users_by_name):
         settings = {k: v for k, v in r.items() if k not in ("name", "kind")}
         fn = R.BUILT_IN.get(r["kind"]) or _example_function(self.cfg, r["kind"], "rule")
+        target = R.TARGET.get(r["kind"])
+        if target is not None:  # an operating rule: on a transfer, or a system's classes
+            where = f"rule {r.get('name', r['kind'])}"
+            R.check(r["kind"], settings, where)
+            if target == "transfer" and settings.get("transfer") not in self.transfers:
+                raise KeyError(f"{where}: no transfer {settings.get('transfer')!r} ([[transfers]])")
+            for res in [settings.get("reservoir")] + [s["when"].get("reservoir") for s in settings.get("stages", [])]:
+                if res is not None and res not in self.pools:
+                    raise KeyError(f"{where}: no reservoir {res!r} in SWAT+ (reservoir.res)")
+            if target == "utility":
+                name = settings.get("utility")
+                if name not in self.utilities:
+                    raise KeyError(f"{where}: no utility {name!r}")
+                from . import operations as OP
+                if name not in self.restricted:
+                    self.restricted[name] = OP.restrict(self.utilities[name])
+                    OP.declare_restricted(self.ledger, name, self.restricted[name])
+                unknown = sorted({c for s in settings["stages"] for c in s["cut"]} - set(self.restricted[name]))
+                if unknown:
+                    raise KeyError(f"{where}: utility {name!r} has no customers {unknown}")
+            self.rules.append(R.Rule(r.get("name", r["kind"]), fn, settings))
+            return
         if users and settings.get("user") not in users_by_name:
             raise KeyError(f"rule {r.get('name', r['kind'])}: no user {settings.get('user')!r}")
         need = {"curtailment": "limit", "drawdown_limit": "limit", "dry_mode": "dry_mode"}.get(r["kind"])
@@ -591,6 +621,17 @@ class Basin:
         if "cell" in settings and self.mf6 is not None:
             self.mf6.node(*settings["cell"])  # the cell is checked now, not on the first day it's read
         self.rules.append(R.Rule(r.get("name", r["kind"]), fn, settings))
+
+    def _add_transfer(self, x: dict, held: float, L):
+        from .operations import Transfer
+        if self.cfg.transport or self.cfg.salt or self.cfg.replay_record is not None:
+            raise NotImplementedError(f"transfer {x['name']}: transfers don't carry mass yet, nor go into a replay "
+                                      "record ([transport], [salt] or [replay] on)")
+        for route in (x["from"], x["to"]):
+            self.router.check(route)
+        t = Transfer(x["name"], x["from"], x["to"], x["capacity"], held)
+        t.declare(L)
+        self.transfers[t.name] = t
 
     def _salt(self, cfg, sp: str, swat_dir, restart):
         """A species' salt balance (salt.py), with its ledger's pairs and checks. What it can't carry yet is refused."""
@@ -1221,8 +1262,12 @@ class Basin:
                 raise ValueError("a drawdown rule needs a [modflow6] model")
             return float(heads[self.mf6.node(*c)])
 
+        volumes = {}
+        if self.pools and self.sw.has(LK.VOLUME):
+            volumes = dict(zip(self.sw.names(LK.VOLUME), self.sw.get(LK.VOLUME)))
         return R.State(day=self.day, flows=dict(zip(self.sw.names(S.QOUT), q)), head_at=head_at,
-                       memory=self.rule_memory)
+                       memory=self.rule_memory, volumes=volumes, pools=self.pools,
+                       capacities={n: t.capacity for n, t in self.transfers.items()})
 
     def step(self):
         d = self.day
@@ -1244,6 +1289,12 @@ class Basin:
             controls = R.combine(decisions)
             for u, wu in self.users:
                 wu.set_controls(**controls.get(u.name, {}))
+        else:
+            controls = {}
+        for name, classes in self.restricted.items():  # the day's cuts on a system's classes, none if no rule acts
+            cuts = controls.get(f"utility:{name}", {})
+            for c, cls in classes.items():
+                cls.cut = cuts.get(f"cut:{c}", 0.0)
 
         # 2-3. users and routing
         self._uses = {}
@@ -1297,9 +1348,14 @@ class Basin:
         for chain in self.utilities.values():  # what each system asks of its sources (chain.py)
             for route, vol in chain.plan(L, today, self.utilities).items():
                 rt.request(route, vol)
+        for name, classes in self.restricted.items():  # what the restrictions held back of the demand planned
+            from .operations import book_restricted
+            book_restricted(L, name, classes)
         for chain in self.utilities.values():  # yesterday's plant outflow, less reuse, and septic water and leaks
             for route, vol in chain.release(L).items():
                 rt.request(route, vol)
+        for n, tr in self.transfers.items():  # the day's transfers at the rules' rates, and yesterday's in
+            tr.before(L, rt, controls.get(f"transfer:{n}", {}).get("rate", 0.0))
         if not self.direct_exchange:
             for route, vol in exchange_requests(self.due).items():
                 rt.request(route, vol)
@@ -1322,6 +1378,8 @@ class Basin:
                 L.enter(f"transport:{sp}:gw_soil:due", soil)
         self.swat.update()
         rt.read_swat()
+        for tr in self.transfers.values():
+            tr.after_surface(L)
         if self._held:
             self._held_returns(L, rt)
         if self.lakes is not None:
@@ -1794,6 +1852,7 @@ class Basin:
             "surface_mass": {sp: sm.state() for sp, sm in self.surface.items()},
             "return_held": self._held,
             "utilities_held": {n: c.held for n, c in self.utilities.items()},
+            "transfers_held": {n: tr.held for n, tr in self.transfers.items()},
         }))
 
     # ---------- outputs ----------
