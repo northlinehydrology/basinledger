@@ -453,3 +453,137 @@ def test_pumped_storage_a_release_and_restrictions(swatplus, tmp_path):
     c.finalize()
     for a in [a for a in t if a.startswith(("transfer:", "utility:town:", "route:"))]:
         assert np.array_equal(t[a], tc[a], equal_nan=True), a
+
+
+# ---------- the operations' mass: salt, nitrate and phosphorus, and a replay ----------
+
+def _reservoir_project(tmp, swatplus):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("existing", ROOT / "examples" / "synthetic" / "existing.py")
+    ex = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ex)
+    return ex.reservoir_project(tmp / "osu_res", swatplus)
+
+
+def _operations(cfg, concentration=None):
+    cfg.places_of_use = [("pump", "cha01"), ("out", "res:res01")]
+    cfg.point_sources = [("fill", "res:res01"), ("back", "cha01")]
+    cfg.transfers = [{"name": "fill", "from": "swat:place_of_use:pump", "to": "swat:point_source:fill",
+                      "capacity": 0.002, "concentration": {}},
+                     {"name": "release", "from": "swat:place_of_use:out", "to": "swat:point_source:back",
+                      "capacity": 0.001, "concentration": concentration or {}}]
+    cfg.rules = [{"name": "fill", "kind": "pumped_storage", "transfer": "fill", "channel": "cha01", "above": 0.001,
+                  "reservoir": "res01", "below": 1.2},
+                 {"name": "release", "kind": "release", "transfer": "release", "channel": "cha01", "below": 0.01,
+                  "reservoir": "res01", "keep": 0.3}]
+    return cfg
+
+
+MASS_DAYS = 240
+
+
+def _salt_operations_config(tmp, swatplus, record=None):
+    """The salt example (chloride and weathering's ions) on Osu_1hru with res01: the pump and the release, and a town
+    on the well whose outdoor use a drought cuts, its plant passing the sewer's mass through."""
+    import dataclasses
+    from test_salt import salt_config
+    cfg = _operations(salt_config(swat_project=_reservoir_project(tmp, swatplus), users=[]))
+    cfg.salt = {sp: dataclasses.replace(s, point_sources={}) for sp, s in cfg.salt.items()}
+    cfg.utilities = [{"name": "town", "sources": [{"route": "well:pw1", "share": 1.0}], "outfall": "outfall:town",
+                      "effluent": {"chloride": "sewer", "weathering": "sewer"},
+                      "customers": [{"name": "outdoor", "demand": 0.0001, "consumed": 1.0},
+                                    {"name": "indoor", "demand": 0.0001, "sewered": 1.0}]}]
+    cfg.rules.append({"name": "drought", "kind": "restriction", "utility": "town",
+                      "stages": [{"when": {"channel": "cha01", "below": 0.003}, "cut": {"outdoor": 0.5}}]})
+    if record is not None:
+        cfg.replay_record, cfg.replay_precision = record, "float64"
+    return cfg
+
+
+@pytest.mark.slow
+def test_transfers_carry_salt_and_replay(swatplus, tmp_path):
+    """A pump carries the river's chloride into the reservoir and a release the reservoir's back to the river: what
+    each took out of salt's water body goes in the next day, the salt balance closing every day. A replay from the
+    record reproduces what the rules did, the transfers' mass and the restriction's cuts, bit for bit."""
+    import warnings
+    from basinledger.driver import Basin
+    cfg = _salt_operations_config(tmp_path, swatplus, record=RUNS / "ops-salt-record")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        b = Basin(cfg, run="ops-salt", days=MASS_DAYS)
+        b.run()
+    t, series = b.ledger.table(), {k: list(v) for k, v in b.series.items()}
+    b.finalize()
+    for sp in ("chloride", "weathering"):
+        f, r = f"transfer:fill:{sp}:", f"transfer:release:{sp}:"
+        assert t[f + "delivered:kg"].sum() > 0 and t[r + "delivered:kg"].sum() > 0, sp
+        for k in (f, r):  # held overnight: what went in today is what was taken out yesterday
+            assert np.array_equal(t[k + "sent:kg"][1:], t[k + "delivered:kg"][:-1]) and t[k + "sent:kg"][0] == 0
+        # the transfers are the only intakes and point sources: salt's water bodies lose what they took out, at
+        # their concentration, and gain what they put in
+        np.testing.assert_allclose(t[f"salt:{sp}:streams:withdrawn"], t[f + "delivered:kg"] + t[r + "delivered:kg"],
+                                   rtol=1e-9, atol=1e-12)
+        np.testing.assert_allclose(t[f"salt:{sp}:streams:point_sources"], t[f + "sent:kg"] + t[r + "sent:kg"],
+                                   rtol=1e-9, atol=1e-12)
+        np.testing.assert_allclose(t[f + "delivered:kg"], t["transfer:fill:delivered"] * t[f + "concentration"],
+                                   rtol=1e-12)
+        assert (np.abs(t[f"salt:{sp}:closure_share"]) <= 1e-6).all()
+    k = "utility:town:"
+    assert (t[k + "restricted:outdoor"] > 0).sum() > 5
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        rp = Basin(_salt_operations_config(tmp_path, swatplus), run="ops-salt-replay",
+                   replay=RUNS / "ops-salt-record")
+        rp.run()
+    tr, rs = rp.ledger.table(), {k: list(v) for k, v in rp.series.items()}
+    rp.finalize()
+    for a in [a for a in t if a.startswith(("transfer:", "utility:town:restricted", "utility:town:wanted",
+                                             "salt:chloride:streams"))]:
+        assert np.array_equal(t[a], tr[a], equal_nan=True), a
+    for c in [c for c in series if c.startswith("chloride_mg_l:")]:
+        assert series[c] == rs[c], c
+
+
+@pytest.mark.slow
+def test_transfers_carry_nitrate_and_phosphorus_as_point_source_loads(swatplus, tmp_path):
+    """Nitrate and soluble P: a pump from the channel carries SWAT+'s channel concentration; a release from the
+    reservoir, whose nitrate and P swatplus-bmi can't read, needs them stated, and is refused without. Each goes in the
+    next day as its point source's load."""
+    import warnings
+    from basinledger import config as C
+    from basinledger.driver import Basin
+    nitrate = ROOT / "examples" / "synthetic" / "nitrate.toml"
+
+    def config(conc):
+        cfg = C.load(nitrate)
+        cfg.run_folder, cfg.users = RUNS, []
+        cfg.swat_project = _reservoir_project(tmp_path, swatplus)
+        return _operations(cfg, conc)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ValueError, match="state concentration"):
+            Basin(config(None), run="ops-nitrate-refused", days=10)
+        b = Basin(config({"nitrate": 0.002, "phosphorus": 0.0001}), run="ops-nitrate", days=MASS_DAYS)
+        b.run(MASS_DAYS // 2)
+        b.save(tmp_path / "state")
+        b.run()
+    t = b.ledger.table()
+    b.finalize()
+    with warnings.catch_warnings():  # a restart carries the mass held overnight
+        warnings.simplefilter("ignore")
+        c = Basin(config({"nitrate": 0.002, "phosphorus": 0.0001}), run="ops-nitrate-restart", days=MASS_DAYS,
+                  restart=tmp_path / "state")
+        c.run()
+    tc = c.ledger.table()
+    c.finalize()
+    for a in [a for a in t if a.startswith(("transfer:", "transport:nitrate:point_source:"))]:
+        assert np.array_equal(t[a], tc[a], equal_nan=True), a
+    for sp in ("nitrate", "phosphorus"):
+        for n, p in (("fill", "fill"), ("release", "back")):
+            k = f"transfer:{n}:{sp}:"
+            assert np.array_equal(t[k + "sent:kg"][1:], t[k + "delivered:kg"][:-1])
+            np.testing.assert_allclose(t[f"transport:{sp}:point_source:{p}:sent"], t[k + "sent:kg"], rtol=1e-12)
+        assert t[f"transfer:fill:{sp}:delivered:kg"].sum() > 0
+        stated = {"nitrate": 0.002, "phosphorus": 0.0001}[sp]
+        assert (t[f"transfer:release:{sp}:concentration"] == stated).all()
