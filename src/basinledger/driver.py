@@ -547,7 +547,13 @@ class Basin:
         L.pair("recharge:sent", ["recharge:made", "recharge:by_the_map"])
 
     def _add_user(self, u, L):
-        comp = load_component(u.component)
+        if u.phases:  # its size on a dated schedule: a component per phase's config, stepped together (phases.py)
+            from .phases import PhasedUser
+            comp = PhasedUser(lambda: load_component(u.component), u.phases, self.start,
+                              self.folder / "users" / u.name, limit=(u.variables or {}).get("limit"),
+                              dry_mode=(u.variables or {}).get("dry_mode"))
+        else:
+            comp = load_component(u.component)
         wu = WaterUser(u.name, comp, str(u.config) if u.config else None,
                        variables=u.variables or None, constituents=u.constituents,
                        report=u.report or None)

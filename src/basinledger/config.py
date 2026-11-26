@@ -186,6 +186,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     # forcing = {source = "swatplus", station = "sta035"}         or from a SWAT+ station's daily files
     # inputs = {water_user_intake_water_chloride__mass_concentration = 0.012}   constant inputs [A]
     # report = {unremoved_heat_MWh = "data_center__unremoved_heat_power"}      booked as user:<name>:<key> daily
+    # phases = [{from = "2027-01-01", mw = 60}, {from = "2030-01-01", mw = 300}]  its size on a dated schedule, off
+    #                                   before the first: mw (CoolingWaterBmi's it_capacity_mw), config = {key = value}
+    #                                   (the component's config for the phase) or multiplier (phases.py)
 
 Routes also include ``offsite:<name>``: water from or to somewhere outside the basin (a Great Lakes intake, a plant on
 another river), entered in the ledger only.
@@ -232,6 +235,7 @@ class UserConfig:
     forcing: dict | None = None
     inputs: dict = field(default_factory=dict)   # constant inputs, e.g. intake concentrations [A]
     report: dict = field(default_factory=dict)   # other outputs booked each day (users.WaterUser)
+    phases: list | None = None                   # phases.Phase: its size on a dated schedule (phases.py)
 
 
 @dataclass
@@ -317,6 +321,20 @@ def _ground(path: Path, g: dict) -> WellConfig:
                           g.get("add", True)), g.get("model"), cells=_cells(path, where, g["cells"]))
     return WellConfig(g["name"], g.get("package", "wel_ground"), _cell(path, where, g.get("cell")),
                       _flag(path, f"{where} add", g.get("add", True)), g.get("model"))
+
+
+def _user(path: Path, base: Path, u: dict) -> UserConfig:
+    """A [[users]] table; its paths relative to ``base``. ``phases``: its size on a dated schedule (phases.py)."""
+    phases = None
+    if "phases" in u:
+        from .phases import parse
+        phases = parse(f"{path}: user {u.get('name')!r}", u["phases"])
+    return UserConfig(
+        name=u["name"], component=u["component"],
+        config=_path(base, u["config"]) if u.get("config") else None,
+        withdrawal=u["withdrawal"], returns=u["return"],
+        variables=u.get("variables", {}), constituents=u.get("constituents"), forcing=u.get("forcing"),
+        inputs=u.get("inputs", {}), report=u.get("report", {}), phases=phases)
 
 
 def _cell(path: Path, where: str, cell) -> tuple[int, ...]:
@@ -580,14 +598,7 @@ def load(path: str | Path) -> ExampleConfig:
     for r in c.get("rules", []):
         if r.get("kind") == "drawdown_limit":
             _cell(path, f"rule {r.get('name', r['kind'])!r}", r.get("cell"))
-    users = []
-    for u in c.get("users", []):
-        users.append(UserConfig(
-            name=u["name"], component=u["component"],
-            config=_path(base, u["config"]) if u.get("config") else None,
-            withdrawal=u["withdrawal"], returns=u["return"],
-            variables=u.get("variables", {}), constituents=u.get("constituents"), forcing=u.get("forcing"),
-            inputs=u.get("inputs", {}), report=u.get("report", {})))
+    users = [_user(path, base, u) for u in c.get("users", [])]
     return ExampleConfig(
         path=path, name=c["name"], description=c.get("description", ""),
         run_folder=_path(base, c.get("run", {}).get("folder", f"runs/{c['name']}")),
