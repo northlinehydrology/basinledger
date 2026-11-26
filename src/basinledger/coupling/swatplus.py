@@ -114,20 +114,28 @@ def add_places_of_use(project: Path, uses: list[tuple[str, str]], rate_max: floa
 
 
 def add_point_sources(project: Path, sources: list[tuple[str, str]]):
-    """Daily point sources (recall objects) into channels, zero flow in the files: [(name, channel), ...]."""
+    """Daily point sources (recall objects), zero flow in the files: [(name, destination), ...], the destination a
+    channel or "res:<reservoir>" (``place_source``): SWAT+ routes the recall object's water to it, and a reservoir
+    takes it with its other inflow (command.f90)."""
     project = Path(project)
     start, end = _period(project)
+    objects = {"cha": _channels(project), "res": _reservoirs(project)}
+    for name, dest in sources:
+        typ, obj = place_source(dest)
+        if obj not in objects[typ]:
+            raise ValueError(f"point source {name}: no {'channel' if typ == 'cha' else 'reservoir'} {obj!r} in the "
+                             f"SWAT+ project ({'chandeg.con' if typ == 'cha' else 'reservoir.con'})")
     if not (project / "recall.con").exists():
-        _no_recalls_yet(project, sources[0][1])
+        _no_recalls_yet(project, next((d for _, d in sources if place_source(d)[0] == "cha"), objects["cha"][0]))
     con = (project / "recall.con").read_text().splitlines()
     hdr = con[:2]
     template = con[2].split()
     rows = []
-    for i, (name, ch) in enumerate(sources, 1):
+    for i, (name, dest) in enumerate(sources, 1):
         f = list(template)
-        c = _channels(project).index(ch) + 1
+        typ, obj = place_source(dest)
         f[0], f[1], f[2], f[7] = str(i), name, str(i), str(i)
-        f[13], f[14] = "sdc", str(c)
+        f[13], f[14] = ("sdc" if typ == "cha" else "res"), str(objects[typ].index(obj) + 1)
         rows.append("  ".join(f))
     (project / "recall.con").write_text("\n".join(hdr + rows) + "\n")
     cnt = (project / "object.cnt").read_text().splitlines()
@@ -138,14 +146,16 @@ def add_point_sources(project: Path, sources: list[tuple[str, str]]):
     cnt[2] = "  ".join(f)
     (project / "object.cnt").write_text("\n".join(cnt) + "\n")
     rec = ["recall.rec: daily point sources (Basin Ledger)", "NUM     NAME    TYPE     FNAME"]
-    for i, (name, ch) in enumerate(sources, 1):
+    for i, (name, dest) in enumerate(sources, 1):
+        typ, ch = place_source(dest)
+        typ = "sdc" if typ == "cha" else "res"
         rec.append(f"   {i}    {name}      1    {name}.rec")
         lines = [f"{name}.rec: daily point source, zero in the file; set daily through BMI", "14",
                  "jday mo day_mo yr ob_typ ob_name flo sed orgn sedp no3 solp chla nh3 no2 "
                  "cbod dox san sil cla sag lag grv temp"]
         d = start
         while d <= end:
-            lines.append(f"{d.timetuple().tm_yday} {d.month} {d.day} {d.year} sdc {ch} 0 " + " ".join(["0"] * 17))
+            lines.append(f"{d.timetuple().tm_yday} {d.month} {d.day} {d.year} {typ} {ch} 0 " + " ".join(["0"] * 17))
             d += dt.timedelta(days=1)
         (project / f"{name}.rec").write_text("\n".join(lines) + "\n")
     (project / "recall.rec").write_text("\n".join(rec) + "\n")

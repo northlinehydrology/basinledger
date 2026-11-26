@@ -15,7 +15,7 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     places_of_use = [{name = "intake", channel = "cha01"}]    # added to the run's copy, set daily; or
                                         #   {name, reservoir = "res01"}; sharing a channel or reservoir, served in
                                         #   this order (the first is senior)
-    point_sources = [{name = "wwtp", channel = "cha01"}]
+    point_sources = [{name = "wwtp", channel = "cha01"}]   # or {name, reservoir = "res01"}: into a reservoir
 
     # or [nextgen]                      # the surface model: a finished NGIAB run, replayed (coupling/nextgen.py)
     # run = "{nextgen_michigan}/runs/scenarios/baseline"
@@ -155,6 +155,12 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     name = "city"
     sources = [{route = "well:pw1", share = 1.0}]
     outfall = "swat:point_source:wwtp"
+
+    [[transfers]]                       # optional: water moved from an intake to a point source at the rate the
+    name = "fill"                       #   rules set (pumped storage, a release; operations.py): held overnight
+    from = "swat:place_of_use:pump"
+    to = "swat:point_source:into_res"
+    capacity = 0.5                      # m3 s-1
 
     [[rules]]                           # optional: feedback rules (see rules.py)
     name = "low-flow cut"
@@ -368,7 +374,8 @@ class ExampleConfig:
     calibration_zones: Path | None = None
     calibration_pilot_points: dict | None = None  # {file, range, nugget}: MODFLOW 6 parameters by pilot point
     places_of_use: list[tuple[str, str]] = field(default_factory=list)
-    point_sources: list[tuple[str, str]] = field(default_factory=list)
+    point_sources: list[tuple[str, str]] = field(default_factory=list)  # (name, channel or "res:<reservoir>")
+    transfers: list[dict] = field(default_factory=list)  # name, from, to, capacity (operations.py)
     exchange: dict | None = None
     utilities: list[dict] = field(default_factory=list)
     rules: list[dict] = field(default_factory=list)
@@ -437,6 +444,32 @@ def _place_of_use(path: Path, x: dict) -> tuple[str, str]:
     return (x["name"], x["channel"]) if "channel" in x else (x["name"], "res:" + x["reservoir"])
 
 
+def _point_source(path: Path, x: dict) -> tuple[str, str]:
+    """``[swatplus] point_sources``' entry: {name, channel} or {name, reservoir}, as (name, destination) with a
+    reservoir written "res:<reservoir>" (as a place of use's source)."""
+    if not isinstance(x, dict) or "name" not in x or ("channel" in x) == ("reservoir" in x) or \
+            set(x) - {"name", "channel", "reservoir"}:
+        raise ValueError(f"{path}: [swatplus] point_sources: each needs a name and one of channel or reservoir; got "
+                         f"{x}")
+    return (x["name"], x["channel"]) if "channel" in x else (x["name"], "res:" + x["reservoir"])
+
+
+def _transfer(path: Path, x: dict) -> dict:
+    """A [[transfers]] table (operations.py)."""
+    if not isinstance(x, dict) or set(x) != {"name", "from", "to", "capacity"}:
+        raise ValueError(f"{path}: [[transfers]]: each has name, from (a SWAT+ intake), to (a point source, outfall: "
+                         f"or offsite:) and capacity (m3 s-1); got {sorted(x) if isinstance(x, dict) else x!r}")
+    if not str(x["from"]).startswith("swat:place_of_use:"):
+        raise ValueError(f"{path}: transfer {x['name']!r}: from is a SWAT+ intake (swat:place_of_use:<name>), on a "
+                         f"channel or a reservoir; got {x['from']!r}")
+    if not str(x["to"]).startswith(("swat:point_source:", "outfall:", "offsite:")):
+        raise ValueError(f"{path}: transfer {x['name']!r}: to is a point source (swat:point_source:<name>), "
+                         f"outfall: or offsite:; got {x['to']!r}")
+    if isinstance(x["capacity"], bool) or not isinstance(x["capacity"], (int, float)) or x["capacity"] < 0:
+        raise ValueError(f"{path}: transfer {x['name']!r}: capacity is a rate, m3 s-1 >= 0")
+    return {"name": x["name"], "from": x["from"], "to": x["to"], "capacity": float(x["capacity"])}
+
+
 def load(path: str | Path) -> ExampleConfig:
     path = Path(path).resolve()
     with open(path, "rb") as f:
@@ -444,7 +477,7 @@ def load(path: str | Path) -> ExampleConfig:
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
              "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather",
-             "groundwater_to_soil", "irrigation", "lakes", "salt", "replay", "ground"}
+             "groundwater_to_soil", "irrigation", "lakes", "salt", "replay", "ground", "transfers"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -621,7 +654,8 @@ def load(path: str | Path) -> ExampleConfig:
         calibration_zones=_path(base, c["calibration"]["zones"]) if c.get("calibration", {}).get("zones") else None,
         calibration_pilot_points=_pilot_points(path, base, c.get("calibration", {}).get("pilot_points")),
         places_of_use=[_place_of_use(path, x) for x in sw.get("places_of_use", [])],
-        point_sources=[(x["name"], x["channel"]) for x in sw.get("point_sources", [])],
+        point_sources=[_point_source(path, x) for x in sw.get("point_sources", [])],
+        transfers=[_transfer(path, x) for x in c.get("transfers", [])],
         exchange=c.get("exchange"),
         utilities=c.get("utilities", []),
         rules=c.get("rules", []),
