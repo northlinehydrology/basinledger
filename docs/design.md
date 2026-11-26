@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 25, 2026, release 0.14.0). Built and tested on synthetic examples:
+Status (Nov 25, 2026, release 0.15.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -23,6 +23,8 @@ Status (Nov 25, 2026, release 0.14.0). Built and tested on synthetic examples:
 - intakes on any channel or reservoir, several to one served senior first, a user returning only the share its intake
   delivered, the next day, and SWAT+'s own irrigation from its channels and reservoirs booked by source
   (swatplus-bmi 0.14.0; Irrigation from surface water), and users' returns to the ground, into an aquifer cell;
+- water systems with customers (towns as systems): customers by class, sources by share or priority with reuse,
+  shortfall and next-day returns (Water systems with customers);
 - scenarios from a shared warm-up, and restarts;
 - stream temperature as a reach heat balance, with users' returns carrying their heat;
 - water quality: groundwater transport (MODFLOW 6 GWT) with each species' mass in the ledger, and users' intake
@@ -295,12 +297,53 @@ Each route gets `requested` and `delivered` accounts in the ledger, paired every
 - **outfall:** a SWAT+ point source, with loads and temperature.
 
 Each link is a ledger pair. A user on municipal supply is routed `utility:<system>`, and the chain places the water.
-A user with its own wells or intake is routed directly. Still to add:
+A user with its own wells or intake is routed directly.
 
-- losses returned to the aquifer as recharge;
-- inflow and infiltration taken from the aquifer;
-- a daily demand series;
-- the plant's own consumption and loads.
+**Water systems with customers (designed and built Nov 25, 2026, for the Virginia study's towns; `chain.py`, `tests/test_chain.py`, `tests/test_systems.py`).** Andrew's principle:
+Basin Ledger is the link between the natural and human systems, so every water use goes through it, because a
+scenario changes users. A town is one system: its sources, its customers, and where their water goes. A new
+customer, a data center, adds to the system's demand and is drawn from the same sources. The `[[utilities]]` table
+grows, and an old config means what it did (its `demand` a class of existing customers, `sewered` its sewered
+share, the rest consumed).
+
+- **Customers** (`customers = [{name, demand, sewered, septic, septic_to, consumed}]`). A class's demand is a
+  constant (m3 s-1), 12 monthly values (m3 s-1, the same each day of the month) or a daily CSV (date, m3). Its water
+  splits three ways, summing to 1:
+  - `sewered`, to the plant;
+  - `septic`, to the ground through `septic_to` (a `ground:` route);
+  - `consumed`, outdoor use.
+
+  Users on the system (`utility:<name>`) add their withdrawal to the demand, and their return goes to the sewer.
+- **Losses.** `losses` is a share of production. `leaks = {share, to}` sends that share of the losses to the ground,
+  and the rest is unaccounted water, booked as consumed.
+- **Sources.** Either shares (a constant, or 12 monthly values that sum to 1 each month), so a reported history
+  reproduces, or `priority` and `capacity` (m3 s-1): the first source up to its capacity, then the next. Shares and
+  priorities don't mix within a system. Production asked = demand / (1 - losses). A source can be any withdrawal
+  route (`swat:place_of_use:`, `well:`, `offsite:`, an import), or `effluent:<system>`, another system's treated
+  plant outflow, taken before it reaches its outfall (reuse: a data center supplied from a town's plant).
+- **Shortfall.** What the sources delivered is known only after the models' day. So the system's day scales by
+  production delivered / asked:
+  - each class and user gets that share, and the rest is unmet;
+  - losses, sewer, septic and consumption scale with it;
+  - a user on the system scales as a user on a short intake does (0.13.0).
+
+  A priority system can't make up a short source the same day; the shortfall is booked.
+- **Returns leave the next day,** as a short intake's do (Andrew's choice for 0.13.0): the plant's outflow, septic
+  water and leaks are held overnight. So yesterday's sewer is today's plant outflow, less what other systems take
+  from it as reuse, which is known at the day's start. The plant's inflow beyond the customers' sewered water
+  (inflow and infiltration) stays out by default, since the models already carry it. `infiltration` (m3 s-1) still
+  adds it as water from outside where a study wants it.
+- **Ledger** (`utility:<name>:`), every day, closing:
+  - production asked and delivered by source, and the share;
+  - each class's demand, delivered, sewered, septic and consumed;
+  - losses as leaks and unaccounted;
+  - the sewer, the plant's outflow, its reuse and its outfall, and what is held overnight.
+
+  Pairs: production = delivered + losses; delivered = the classes' and users' delivered; each class's delivered =
+  sewered + septic + consumed; losses = leaks + unaccounted; and the plant's outflow = outfall + reuse. A restart
+  carries what is held.
+- **Not built:** a short source made up by the next in priority the same day; a plant's own consumption and loads;
+  constituents through the system.
 
 **Feedback rules** (`rules.py`) run at the pause before each day, on yesterday's state:
 

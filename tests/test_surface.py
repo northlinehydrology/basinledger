@@ -76,8 +76,11 @@ def test_the_utility_balances(with_users):
     np.testing.assert_allclose(t["route:well:pw1:delivered"], t["utility:city:produced"], rtol=1e-12)
     existing = 0.002 * DAY
     np.testing.assert_allclose(t["utility:city:produced"], (existing + t["user:plant:withdrawal"]) / 0.9, rtol=1e-12)
+    # the well delivers all it's asked, so the system's share is 1, and the plant sends yesterday's sewer (0.15.0)
+    np.testing.assert_allclose(t["utility:city:share"], 1.0, rtol=1e-12)
     sewer = existing * 0.8 + t["user:plant:return"] + 0.0001 * DAY
-    np.testing.assert_allclose(t["route:swat:point_source:wwtp:requested"], sewer, rtol=1e-12)
+    np.testing.assert_allclose(t["utility:city:sewer"], sewer, rtol=1e-12)
+    np.testing.assert_allclose(t["route:swat:point_source:wwtp:requested"], np.r_[0.0, sewer[:-1]], rtol=1e-12)
 
 
 def test_rules_act_on_yesterday(with_users):

@@ -391,10 +391,16 @@ class Basin:
             L.zero("swatplus:aquifer_outflow", atol=1e-9)
 
         # utilities, users, rules
-        self.utilities = {u["name"]: UtilityChain.from_config(u) for u in cfg.utilities}
+        self.utilities = {u["name"]: UtilityChain.from_config(u, cfg.path.parent) for u in cfg.utilities}
+        held = (saved or {}).get("utilities_held") or {}
         for u in self.utilities.values():
-            u.declare(L)
-            for route in [s.route for s in u.sources] + [u.outfall]:
+            u.declare(L, rtol=FLOAT32)
+            if u.name in held:
+                u.held = held[u.name]
+            for s in u.sources:
+                if s.effluent is not None and s.effluent not in self.utilities:
+                    self._problem(ValueError(f"utility {u.name}: source {s.route}: no utility {s.effluent!r}"))
+            for route in u.routes():
                 if route.removeprefix("well:") not in self._wells_left_out:
                     self._part(f"utility {u.name}", lambda r=route: self.router.check(r))
         self.users = []
@@ -544,14 +550,17 @@ class Basin:
         self.users.append((u, wu))
         k = f"user:{u.name}:"
         L.pair(k + "withdrawal", [k + "consumption", k + "return", k + "storage_less_gain"])
-        if kind(u.withdrawal)[0] == "swat:place_of_use":
-            # the intake's delivery is known only after SWAT+'s day, and the return enters SWAT+ before it: the day's
-            # use scales by the share delivered, and its return leaves the next day (_held_returns)
-            self._held[u.name] = self._held_saved.get(u.name) or {"vol": 0.0, "kg": {}, "heat": None}
+        supply, back = kind(u.withdrawal)[0], kind(u.returns)[0]
+        if supply in ("swat:place_of_use", "utility"):
+            # the intake's or the system's delivery is known only after the models' day, and the return enters them
+            # before it: the day's use scales by the share delivered (_user_share). Its return leaves the next day
+            # (held here), or, to a system's sewer, goes with that system's held outflow
             L.pair(k + "withdrawal", [k + "delivered", k + "unmet"], rtol=FLOAT32)
             L.pair(k + "delivered", [k + "consumption_met", k + "return_due", k + "storage_less_gain_met"],
                    rtol=FLOAT32)
-            L.pair(k + "return_due", [k + "return_sent", k + "return_held_gain"])
+            if not (supply == "utility" and back == "utility"):
+                self._held[u.name] = self._held_saved.get(u.name) or {"vol": 0.0, "kg": {}, "heat": None}
+                L.pair(k + "return_due", [k + "return_sent", k + "return_held_gain"])
 
     def _add_rule(self, r, users, users_by_name):
         settings = {k: v for k, v in r.items() if k not in ("name", "kind")}
@@ -638,6 +647,42 @@ class Basin:
         for i, _ in self.irrigation:
             self._irrigation_rest[i] = False
 
+    def _user_share(self, L, u, share: float) -> float:
+        """A user's day scaled by the share of its withdrawal delivered: booked, its return held overnight if it is,
+        and the return due returned."""
+        use, k = self._uses[u.name], f"user:{u.name}:"
+        L.enter(k + "delivered_share", share)
+        L.enter(k + "delivered", share * use.withdrawal)
+        L.enter(k + "unmet", (1.0 - share) * use.withdrawal)
+        L.enter(k + "consumption_met", share * use.consumption)
+        L.enter(k + "storage_less_gain_met", share * (use.storage_change - use.gain))
+        due = share * use.returned
+        L.enter(k + "return_due", due)
+        held = self._held.get(u.name)
+        if held is not None:
+            L.enter(k + "return_held_gain", due - held["vol"])
+            L.enter(k + "return_held", due)
+            self._held[u.name] = {
+                "vol": due, "kg": {c: share * kg for c, kg in use.constituents.items()},
+                "heat": None if use.return_temperature is None else due * use.return_temperature}
+        return due
+
+    def _systems_after(self, L):
+        """After the models' day: each system's share of production delivered, its users' days at that share (a
+        return to a system's sewer joins it), then each system's water by where it went (chain.py)."""
+        for chain in self.utilities.values():
+            chain.share(L, self.utilities)
+        for u, _ in self.users:
+            k, name = kind(u.withdrawal)
+            if k != "utility":
+                continue
+            due = self._user_share(L, u, self.utilities[name]._day["share"])
+            back, to = kind(u.returns)
+            if back == "utility" and u.name not in self._held:
+                self.utilities[to].add_return(due)
+        for chain in self.utilities.values():
+            chain.settle(L)
+
     def _held_returns(self, L, rt):
         """After SWAT+'s day, each user drawing from a SWAT+ intake: the share of its withdrawal delivered scales its
         day (consumption, gain, storage, return and the return's loads and heat, as a withdrawal limit does), what it
@@ -645,24 +690,11 @@ class Basin:
         never delivered (the Virginia study's Lake Pelham intake returned 829,326 m3 of the 8,697 it got, Nov 25,
         2026)."""
         for u, _ in self.users:
-            held = self._held.get(u.name)
-            if held is None:
+            if u.name not in self._held or kind(u.withdrawal)[0] != "swat:place_of_use":
                 continue
-            use, k, r = self._uses[u.name], f"user:{u.name}:", f"route:{u.withdrawal}:"
+            r = f"route:{u.withdrawal}:"
             asked, got = L.today(r + "requested"), L.today(r + "delivered")
-            share = min(got / asked, 1.0) if asked > 0 else 1.0
-            L.enter(k + "delivered_share", share)
-            L.enter(k + "delivered", share * use.withdrawal)
-            L.enter(k + "unmet", (1.0 - share) * use.withdrawal)
-            L.enter(k + "consumption_met", share * use.consumption)
-            L.enter(k + "storage_less_gain_met", share * (use.storage_change - use.gain))
-            due = share * use.returned
-            L.enter(k + "return_due", due)
-            L.enter(k + "return_held_gain", due - held["vol"])
-            L.enter(k + "return_held", due)
-            self._held[u.name] = {
-                "vol": due, "kg": {c: share * kg for c, kg in use.constituents.items()},
-                "heat": None if use.return_temperature is None else due * use.return_temperature}
+            self._user_share(L, u, min(got / asked, 1.0) if asked > 0 else 1.0)
 
     def _native_irrigation(self, cfg, swat_dir):
         """Book SWAT+'s own irrigation from its channels and reservoirs, where the project has any."""
@@ -1216,7 +1248,11 @@ class Basin:
             for route, vol, is_return in ((u.withdrawal, use.withdrawal, False), (u.returns, ret, True)):
                 kd, name = kind(route)
                 if kd == "utility":
-                    self.utilities[name].add_user(0.0 if is_return else vol, vol if is_return else 0.0)
+                    if not is_return:
+                        self.utilities[name].add_user(vol, 0.0)
+                    elif held is not None or kind(u.withdrawal)[0] != "utility":
+                        self.utilities[name].add_return(vol)
+                    # else: its delivered share goes to the sewer after the day (_systems_after)
                 else:
                     rt.request(route, vol)
                     if not is_return:
@@ -1226,8 +1262,12 @@ class Basin:
                             L.enter(f"route:{route}:heat_m3C", held["heat"])
                     elif use.return_temperature is not None:
                         L.enter(f"route:{route}:heat_m3C", vol * use.return_temperature)
-        for chain in self.utilities.values():
-            for route, vol in chain.close_day(L).items():
+        today = self.start + dt.timedelta(days=d)
+        for chain in self.utilities.values():  # what each system asks of its sources (chain.py)
+            for route, vol in chain.plan(L, today, self.utilities).items():
+                rt.request(route, vol)
+        for chain in self.utilities.values():  # yesterday's plant outflow, less reuse, and septic water and leaks
+            for route, vol in chain.release(L).items():
                 rt.request(route, vol)
         if not self.direct_exchange:
             for route, vol in exchange_requests(self.due).items():
@@ -1277,6 +1317,8 @@ class Basin:
         if self.mf6 is not None:
             self._modflow_day(L, rt)
         rt.close_day()
+        if self.utilities:
+            self._systems_after(L)
 
         # 6. outputs and checks
         q = self.sw.get(S.QOUT) if self._ch_index or self._nexus else None  # a project of HRUs only has no channels
@@ -1720,6 +1762,7 @@ class Basin:
             "gw_soil_due": self.gw_soil.due.tolist() if getattr(self, "gw_soil", None) is not None else None,
             "surface_mass": {sp: sm.state() for sp, sm in self.surface.items()},
             "return_held": self._held,
+            "utilities_held": {n: c.held for n, c in self.utilities.items()},
         }))
 
     # ---------- outputs ----------

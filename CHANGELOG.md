@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.15.0 (2026-11-25)
+
+- Water systems with customers: a town is one system (`[[utilities]]`, `chain.py`; docs/design.md, "Water systems
+  with customers"). A new customer, such as a data center, adds to its demand and is drawn from the same sources.
+  - **Customers** by class (`customers = [{name, demand, sewered, septic, septic_to, consumed}]`). Demand is a
+    constant, 12 monthly values or a daily CSV. Each class's water goes to the sewer, to the ground through a
+    `ground:` route (septic), or is consumed (outdoor use).
+  - **Losses**, with a share of them leaking to the ground (`leaks = {share, to}`).
+  - **Sources** by share (constant or monthly) or by priority up to a capacity, including `effluent:<system>`,
+    another system's treated plant outflow (reuse).
+  - **Shortfall:** each day scales by the share of production its sources delivered, for customers, users,
+    losses and returns. A user on the system scales with it.
+  - **Returns leave the next day,** as a short intake's do. The plant sends yesterday's sewer less what reuse
+    takes, and septic water and leaks go to the ground. A restart carries what is held.
+  - Every class, source and return is booked, with pairs closing every day.
+  - The first form of `[[utilities]]` still reads, but its plant outflow is now a day later. `tests/test_surface.py`
+    checks the synthetic city that way.
+  - Tested in `tests/test_chain.py` (by construction) and `tests/test_systems.py` (coupled on the synthetic
+    example). The coupled test runs a town on an intake and a well, with homes by month, septic, leaks, a data
+    center, and a second system reusing its effluent.
+
 ## 0.14.0 (2026-11-25)
 
 - Returns to the ground: a route `ground:<name>` puts a user's return into an aquifer cell (`[[ground]]` with a name
