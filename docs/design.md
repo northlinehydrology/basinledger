@@ -1759,6 +1759,87 @@ The set's folder holds `warm_up/` (its run and `state/`), `cases/<case>/` (each 
 - `daily_flow.csv`, `daily_heads.csv`: each day, the baseline and each case's change.
 - `tables.md`: the main tables, rounded, for a paper; a screening example says so at the top.
 
+**Operating rules for systems and reservoirs (designed and built Nov 25, 2026; Andrew approved adding them that
+day).** The study's scenarios also need the basin's operations:
+
+- **Pumped storage.** Motts Run Reservoir (res28) and Lake Mooney (res26) are filled from the river. Hunting Run
+  (res27) pumps from the Rapidan at high flow and releases back at low flow, so the intake downstream can keep
+  pumping. The refill isn't reported, so the study now pumps each month's draw from the river [A].
+- **Drought restrictions** on the systems.
+
+These are rules (`rules.py`) acting on two new things: transfers, and a system's customer classes.
+
+**A transfer** moves water from a withdrawal route to a return route, at the rate the rules set each day (0 when no
+rule acts). It is accounting, as a system is:
+
+    [swatplus]
+    places_of_use = [{name = "hunting_pump", channel = "cha40"}, {name = "hunting_out", reservoir = "res27"}]
+    point_sources = [{name = "hunting_in", reservoir = "res27"}, {name = "hunting_back", channel = "cha40"}]
+
+    [[transfers]]
+    name = "hunting_fill"
+    from = "swat:place_of_use:hunting_pump"   # a SWAT+ intake on a channel or a reservoir
+    to = "swat:point_source:hunting_in"       # a point source into a reservoir or a channel (or outfall:, offsite:)
+    capacity = 0.6                            # m3 s-1, the pump's
+
+A point source may now go into a reservoir (`{name, reservoir}`): SWAT+'s recall object is routed to it, and the
+reservoir takes it with its other inflow. A transfer's withdrawal is known only after SWAT+'s day, and a point
+source is set before it. So the water delivered today goes into `to` tomorrow, as an intake user's return does. It
+is held overnight and carried by a restart. A transfer on a shared intake gets its part of what the intake delivered.
+The ledger books, under `transfer:<name>:`:
+
+- `requested` = `delivered` + `shortfall`;
+- `delivered` = `sent` + `held_gain` (what went in today is yesterday's delivery).
+
+Each route's own pairs hold as before. Not built with transport or salt (refused): the water would need its mass.
+
+**The rules,** each read at the pause from yesterday's flows and the reservoirs' volumes:
+
+    [[rules]]
+    kind = "pumped_storage"
+    transfer = "hunting_fill"
+    channel = "cha40"                 # the river pumped
+    above = 2.0                       # m3 s-1: only the flow above this is pumped
+    reservoir = "res27"
+    below = 1.0                       # fill up to this share of the reservoir's normal pool
+    # pool = 1.2e6                    # m3; default SWAT+'s principal spillway volume (hydrology.res vol_ps, ha-m)
+
+    [[rules]]
+    kind = "release"
+    transfer = "hunting_release"      # from the reservoir's intake to a point source on the channel
+    channel = "cha52"                 # the channel kept up (the downstream intake's)
+    below = 1.0                       # m3 s-1: release up to its deficit below this
+    reservoir = "res27"
+    keep = 0.3                        # never below this share of the pool (optional)
+
+    [[rules]]
+    kind = "restriction"
+    utility = "culpeper"
+    stages = [{when = {channel = "cha12", below = 1.5}, cut = {outdoor = 0.5}},
+              {when = {reservoir = "res30", below = 0.6}, cut = {outdoor = 1.0, indoor = 0.1}}]
+
+- **`pumped_storage`** sets the rate when the river is above `above` and the reservoir below `below` x pool. The
+  rate is the smallest of the capacity, the river's flow above the threshold, and the room left to the target
+  volume over a day.
+- **`release`** sets the rate when the channel is below `below`. The rate is the smallest of the capacity, the
+  channel's deficit, and what the reservoir holds above `keep` x pool over a day.
+
+  The released water reaches the channel the day after it leaves the reservoir, so the release answers the day
+  before yesterday's low flow.
+- **`restriction`** cuts a system's customer classes by share. Each day the last stage whose trigger held yesterday
+  applies: a channel's flow below a threshold, or a reservoir below a share of its pool. A class asks for its demand
+  times (1 - cut). The ledger books it as a restriction, not a shortfall, under `utility:<name>:`:
+  - `wanted:<class>` = `demand:<class>` + `restricted:<class>`;
+  - `restricted`, the day's total.
+
+  `unmet` stays what the sources didn't deliver. A user on the system isn't cut: its withdrawal is its component's,
+  and curtailment and dry mode act on it. The stages have no hysteresis yet: a stage ends the day after its trigger
+  stops.
+
+When several rules set one transfer's rate, the smallest wins. When several cut one class, the largest cut wins. A
+scenario may add transfers (`[[scenario.transfers]]`) and rules. Their intakes and point sources go into every case,
+as wells do.
+
 **What the study supplies.** Each campus as a user: its CoolingWaterBmi config (design, plant, parameters), its
 phases from the tracker records (date and MW), its weather station, and its source and return: the system it joins,
 or its own well, intake or reuse. Wells and intakes need their cells and channels. The channels and cells to report.
