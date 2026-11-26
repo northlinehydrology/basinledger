@@ -84,6 +84,28 @@ def _example_function(cfg: C.ExampleConfig, spec: str, default: str):
     return getattr(m, fn or default)
 
 
+def add_route_wells(cfg: C.ExampleConfig, ws: Path) -> list[str]:
+    """The run's copy of MODFLOW 6 given the users' wells and the returns to the ground Basin Ledger adds (``add``):
+    a WEL package of its own per package named, in each model that has them, an entry per cell (``<name>#1``, ...
+    over several). A return to the ground carries each transport species' concentration on an auxiliary of its
+    entries, and each transport model's SSM takes it from there. The same for a run and its replay. Returns the
+    notes."""
+    from .coupling import existing as EX
+    by_model: dict[str, list] = {}
+    for w in list(cfg.wells) + list(cfg.ground):
+        if w.add:
+            cells = [(f"{w.name}#{i}", c) for i, (c, _) in enumerate(w.cells, 1)] or [(w.name, w.cell)]
+            by_model.setdefault((w.model or cfg.mf6_model).lower(), []).extend((n, w.package, c) for n, c in cells)
+    ground_aux = {g.package.lower(): list(cfg.transport) for g in cfg.ground if g.add and cfg.transport}
+    notes = []
+    for model, added in by_model.items():
+        notes += EX.add_wells(ws, model, added, ground_aux)
+    for sp, tc in cfg.transport.items():
+        for package in ground_aux:
+            notes += EX.add_ssm_sources(ws, tc.get("model") or f"gwt_{sp}", package, sp)
+    return notes
+
+
 class Basin:
     def __init__(self, cfg: C.ExampleConfig, run: str = "base", users: bool = True, days: int | None = None,
                  restart: str | Path | None = None, prepare=None, heads: np.ndarray | None = None,
@@ -245,21 +267,8 @@ class Basin:
                 for what, on in (("transport", cfg.transport),):
                     if on:
                         raise ValueError(f"{what} with several groundwater models coupled isn't built")
-            by_model: dict[str, list] = {}  # new users' wells, a package of its own in each model that has them
-            for w in list(cfg.wells) + list(cfg.ground):  # users' wells and returns to the ground
-                if w.add:
-                    cells = [(f"{w.name}#{i}", c) for i, (c, _) in enumerate(w.cells, 1)] or [(w.name, w.cell)]
-                    by_model.setdefault((w.model or cfg.mf6_model).lower(), []).extend(
-                        (n, w.package, c) for n, c in cells)
-            # a return to the ground carries each transport species' concentration on an auxiliary of its WEL entry
-            ground_aux = {g.package.lower(): list(cfg.transport) for g in cfg.ground if g.add and cfg.transport}
-            for model, added in by_model.items():
-                for note in EX.add_wells(ws, model, added, ground_aux):
-                    warnings.warn(note, EX.TakeoverNote, stacklevel=2)
-            for sp, tc in cfg.transport.items():  # and each transport model's SSM takes it from that auxiliary
-                for package in ground_aux:
-                    for note in EX.add_ssm_sources(ws, tc.get("model") or f"gwt_{sp}", package, sp):
-                        warnings.warn(note, EX.TakeoverNote, stacklevel=2)
+            for note in add_route_wells(cfg, ws):
+                warnings.warn(note, EX.TakeoverNote, stacklevel=2)
             for model in (cfg.mf6_models or [cfg.mf6_model]):  # storage, for a model handed over steady
                 if cfg.mf6_storage is not None:
                     st = cfg.mf6_storage
@@ -355,13 +364,6 @@ class Basin:
         wells, groups = {}, {}
         self._wells_left_out = set()  # a check's wells with a problem: listed once, not again by the users on them
         spread = [w for w in list(cfg.wells) + list(cfg.ground) if w.cells]
-        if (spread or cfg.ground) and cfg.replay_record:
-            self._problem(NotImplementedError(f"a replay record with returns to the ground or wells over several cells "
-                                              f"({(spread or cfg.ground)[0].name}) isn't built: the replay re-runs "
-                                              "only the users who take in the aquifer's water"))
-        if cfg.utilities and cfg.transport and cfg.replay_record:
-            self._problem(NotImplementedError("a replay record with water systems carrying mass isn't built: the "
-                                              "replay re-runs only the users who take in the aquifer's water"))
         for w in cfg.wells:
             if w.cells:
                 self._spread(w, "well", wells, groups)
@@ -795,7 +797,7 @@ class Basin:
         self._system_species = species
         for u, wu in self.users:  # the users on a system take in its water's concentration of the day before
             k, name = kind(u.withdrawal)
-            if k != "utility":
+            if k != "utility" or getattr(wu, "bmi", None) is None:  # (a replay's recorded user runs no component)
                 continue
             takes = set(wu.bmi.get_input_var_names())
             for sp in species:
