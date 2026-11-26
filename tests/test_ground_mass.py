@@ -137,6 +137,9 @@ def test_a_return_with_no_mass_for_a_species_is_refused(swatplus, tmp_path):
 
 def test_with_salt_the_whole_system_closes(swatplus, tmp_path):
     cfg = _config("salt.toml", tmp_path, 90, {"chloride": SEPTIC, "weathering": 0.2})
+    for s in cfg.salt["chloride"].sources:  # the example's septic land source covers homes the drainfield isn't
+        if s.group == "septic":
+            s.outside_routes = True
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         b = Basin(cfg, run="ground-mass-salt", days=90)

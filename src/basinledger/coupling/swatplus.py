@@ -53,6 +53,18 @@ def place_source(source: str) -> tuple[str, str]:
     return ("res", source[len(RESERVOIR):]) if source.startswith(RESERVOIR) else ("cha", source)
 
 
+def septic_land_uses(project: Path) -> list[str]:
+    """The land uses in ``landuse.lum`` with a septic system (its ``sep`` column not null)."""
+    f = Path(project) / "landuse.lum"
+    if not f.exists():
+        return []
+    lines = [x.split() for x in f.read_text().splitlines()[1:] if x.strip()]
+    if not lines or "sep" not in lines[0]:
+        return []
+    i = lines[0].index("sep")
+    return [r[0] for r in lines[1:] if len(r) > i and r[i].lower() != "null"]
+
+
 def places_of_use_problems(uses: list[tuple[str, str]]) -> list[str]:
     """What an older SWAT+ would get wrong in places of use [(name, source), ...]: with swatplus-bmi before 0.14.0,
     only places of use on one channel or reservoir take their own demands (``places_of_use_fixed``)."""

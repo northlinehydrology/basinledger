@@ -359,6 +359,9 @@ class Basin:
             self._problem(NotImplementedError(f"a replay record with returns to the ground or wells over several cells "
                                               f"({(spread or cfg.ground)[0].name}) isn't built: the replay re-runs "
                                               "only the users who take in the aquifer's water"))
+        if cfg.utilities and cfg.transport and cfg.replay_record:
+            self._problem(NotImplementedError("a replay record with water systems carrying mass isn't built: the "
+                                              "replay re-runs only the users who take in the aquifer's water"))
         for w in cfg.wells:
             if w.cells:
                 self._spread(w, "well", wells, groups)
@@ -472,6 +475,11 @@ class Basin:
         self.salt = {}
         for sp in cfg.salt:
             self._part(f"[salt.{sp}]", lambda sp=sp: self._salt(cfg, sp, swat_dir, restart))
+        # the mass through the water systems and into SWAT+'s point sources (docs/design.md, Mass through the
+        # human-system routes)
+        self._system_species, self._ps_species, self.system_intakes = [], {}, []
+        if self.transport:
+            self._part("the water systems' mass", lambda: self._systems_mass(cfg, swat_dir))
 
         # outputs
         out = cfg.outputs
@@ -629,6 +637,19 @@ class Basin:
             k, name = kind(u.returns)
             if k == "swat:point_source":
                 direct.setdefault(name, []).append((u.name, set(wu.constituents)))
+        outfalls: dict[str, list[str]] = {}  # point source -> the water systems whose plants discharge there
+        for chain in getattr(self, "utilities", {}).values():
+            k, name = kind(chain.outfall)
+            if k == "swat:point_source":
+                outfalls.setdefault(name, []).append(chain.name)
+        # septic chloride once (docs/design.md, Mass through the human-system routes, part 3): septic water on a
+        # ground: route carries its own; a land source in group septic only what no route carries, and says so
+        routed = self._routed_septic()
+        land = [x.name for x in cfg.salt[sp].sources if x.group == "septic" and not x.outside_routes]
+        if routed and land:
+            raise ValueError(f"[salt.{sp}] land source {land[0]} (group septic) and septic water on ground: routes "
+                             f"({', '.join(routed[:3])}) would count the same septic {sp} twice: build the land source "
+                             "without the routes' customers and say so with outside_routes = true, or drop one")
         saved = None
         if restart:
             with np.load(Path(restart) / f"salt_{sp}.npz") as z:
@@ -649,7 +670,7 @@ class Basin:
             settings.check_groups(mult, f"[salt.{sp}] calibration parameters")
             settings = dataclasses.replace(settings, multipliers={**settings.multipliers, **mult})
         s = SaltBalance(sp, settings, self.sw, swat_dir, self.map, hru_area, cfg.places_of_use, direct,
-                        self.gw_soil, saved, start=self.start, days=self.days)
+                        self.gw_soil, saved, start=self.start, days=self.days, system_outfalls=outfalls)
         L, k = self.ledger, f"salt:{sp}:"
         L.pair(k + "land:to_streams", k + "streams:from_land")
         L.pair(k + "streams:losses", k + "aquifer:from_streams")
@@ -710,12 +731,182 @@ class Basin:
             k, name = kind(u.withdrawal)
             if k != "utility":
                 continue
-            due = self._user_share(L, u, self.utilities[name]._day["share"])
+            share = self.utilities[name]._day["share"]
+            due = self._user_share(L, u, share)
             back, to = kind(u.returns)
             if back == "utility" and u.name not in self._held:
-                self.utilities[to].add_return(due)
+                self.utilities[to].add_return(due, {c: share * kg for c, kg in self._uses[u.name].constituents.items()})
         for chain in self.utilities.values():
             chain.settle(L)
+        if self._system_species:
+            today = self.start + dt.timedelta(days=self.day)
+            for chain in self.utilities.values():
+                chain.mass_settle(L, today, self._system_species, self._source_concentrations(chain),
+                                  self._system_scale())
+            self._set_system_intakes()
+
+    # ---------- the mass through the water systems (chain.py) and into SWAT+'s point sources ----------
+    def _systems_mass(self, cfg, swat_dir):
+        """At start-up: the species the systems carry, each system's concentrations checked (what Basin Ledger can't
+        work out must be stated), their pairs, the users on them taking in their water, and SWAT+'s point source
+        loads for the species it carries in its streams."""
+        species = list(self.transport)
+        points = list(self.sw.names(S.POINT)) if self.sw.has(S.POINT) else []
+        routed = self._routed_septic()
+        if routed and self.surface and swat_dir is not None:  # SWAT+'s own septic systems carry nitrate and P
+            septic = S.septic_land_uses(swat_dir)
+            if septic:
+                raise ValueError(f"SWAT+'s land uses {septic[:3]} have septic systems (landuse.lum sep), and septic "
+                                 f"water reaches the ground on routes ({', '.join(routed[:3])}) carrying "
+                                 f"{sorted(self.surface)}: the same septic mass would be counted twice; turn SWAT+'s "
+                                 "septic off where the routes carry it, or drop the routes' septic")
+        if points:
+            self._ps_species = {sp: sm.x for sp, sm in self.surface.items()
+                                if self.sw.has(f"point_source_water_{sm.x}__mass_flow_rate")}
+        for sp in self._ps_species:  # point sources carrying water no one reports and no concentration is stated for
+            stated = self.cfg.transport[sp].get("point_sources", {})
+            if set(stated) - set(points):
+                raise ValueError(f"[transport.{sp}] point_sources names {sorted(set(stated) - set(points))}, which "
+                                 "SWAT+ doesn't have")
+            silent = sorted({kind(u.returns)[1] for u, wu in self.users if kind(u.returns)[0] == "swat:point_source"
+                             and sp not in wu.constituents and kind(u.returns)[1] not in stated})
+            if silent:
+                warnings.warn(f"[transport.{sp}]: point sources {silent[:5]}{' ...' if len(silent) > 5 else ''} take "
+                              f"water from users reporting no {sp}, with no point_sources concentration stated: that "
+                              "water carries none into SWAT+ (booked as unstated_m3)", S.StartWarning, stacklevel=3)
+        if not self.utilities:
+            return
+        returning = {kind(u.returns)[1] for u in cfg.users if kind(u.returns)[0] == "utility"}
+        bad = []
+        for chain in self.utilities.values():
+            derivable = {s.route: self._derivable(s.route, species) for s in chain.sources}
+            for m in chain.missing(species, chain.name in returning, derivable):
+                bad.append(f"utility {chain.name}: {m}")
+        if bad:
+            raise ValueError("\n- ".join(["the water systems' mass needs stated concentrations (kg m-3; docs/design.md, "
+                                          "Mass through the human-system routes):"] + bad))
+        for chain in self.utilities.values():
+            chain.declare_mass(self.ledger, species)
+        self._system_species = species
+        for u, wu in self.users:  # the users on a system take in its water's concentration of the day before
+            k, name = kind(u.withdrawal)
+            if k != "utility":
+                continue
+            takes = set(wu.bmi.get_input_var_names())
+            for sp in species:
+                var = f"water_user_intake_water_{sp}__mass_concentration"
+                if var in takes and var not in (u.inputs or {}):
+                    self.system_intakes.append((u.name, wu, var, sp, name))
+        self._set_system_intakes()
+
+    def _routed_septic(self) -> list[str]:
+        """The ground: routes carrying septic water: a system's septic classes', and a user's return to the ground."""
+        out = [c.septic_to for chain in getattr(self, "utilities", {}).values() for c in chain.customers
+               if c.septic > 0]
+        out += [u.returns for u in self.cfg.users if kind(u.returns)[0] == "ground"]
+        return list(dict.fromkeys(out))
+
+    def _derivable(self, route: str, species: list[str]) -> set[str]:
+        """The species whose concentration Basin Ledger works out for a source's water (the rest need one stated)."""
+        k, name = kind(route) if not route.startswith("effluent:") else ("effluent", route)
+        if k in ("well", "effluent"):
+            return set(species)
+        if k != "swat:place_of_use":
+            return set()
+        typ, _ = S.place_source(dict(self.cfg.places_of_use).get(name, ""))
+        out = set()
+        for sp in species:
+            tc = self.cfg.transport[sp]
+            if sp in self.cfg.salt:
+                out.add(sp)  # salt.py's channels and reservoirs
+            elif sp in self.surface:
+                if typ == "cha" and self.cfg.surface == "swatplus" and \
+                        self.sw.has(f"channel_water_{self.surface[sp].x}__mass_concentration"):
+                    out.add(sp)  # SWAT+'s outflow concentration; a reservoir's isn't readable
+            elif isinstance(tc.get("stream"), (int, float)):
+                out.add(sp)  # stage 1's stated stream concentration
+        return out
+
+    def _route_concentration(self, sp: str, route: str) -> float:
+        """A source's water's concentration today, kg m-3 (one Basin Ledger can work out, ``_derivable``)."""
+        k, name = kind(route)
+        if k == "well":
+            return self._well_concentration(sp, name, self.transport[sp].concentration())
+        if sp in self.salt:
+            return self.salt[sp].place_concentration(name)
+        if sp in self.surface:
+            _, ch = S.place_source(dict(self.cfg.places_of_use)[name])
+            var = f"channel_water_{self.surface[sp].x}__mass_concentration"
+            return float(self.sw.get(var)[list(self.sw.names(var)).index(ch)])
+        return float(self.cfg.transport[sp]["stream"])
+
+    def _source_concentrations(self, chain) -> dict[str, dict[str, float]]:
+        out = {}
+        for s in chain.sources:
+            out[s.route] = {}
+            for sp in self._system_species:
+                if sp in s.concentration:
+                    c = s.concentration[sp]
+                elif s.effluent is not None:
+                    c = self.utilities[s.effluent].effluent_concentration(sp)
+                else:
+                    c = self._route_concentration(sp, s.route)
+                out[s.route][sp] = c
+        return out
+
+    def _system_scale(self) -> dict:
+        """Salt's multipliers on the systems' stated concentrations: septic effluent by the septic group, the plants'
+        effluent by point_sources."""
+        return {sp: {"septic": s.s.multiplier("septic"), "effluent": s.s.multiplier("point_sources")}
+                for sp, s in self.salt.items()}
+
+    def _systems_release(self, L, chain, today):
+        """A system's plant outflow and ground returns' mass at the day's start: to its outfall (a SWAT+ point source's
+        load, salt.py's, or booked as leaving) and to its ground routes."""
+        got = chain.mass_release(L, today, self._system_species, self._system_scale())
+        for route, by in got["ground"].items():
+            for sp, m in by.items():
+                g = self._ground_kg.setdefault(sp, {})
+                g[route] = g.get(route, 0.0) + m
+        if kind(chain.outfall)[0] == "swat:point_source":
+            for sp in self._ps_species:
+                self._point_add(sp, chain.outfall, got["outfall"].get(sp, 0.0),
+                                L.today(f"utility:{chain.name}:outfall"))
+
+    def _point_add(self, sp: str, route: str, kg: float, m3: float):
+        self._point_kg.setdefault(sp, {})[route] = self._point_kg.get(sp, {}).get(route, 0.0) + kg
+        self._point_m3.setdefault(sp, {})[route] = self._point_m3.get(sp, {}).get(route, 0.0) + m3
+
+    def _point_source_loads(self, L):
+        """SWAT+'s point source loads for the species it carries, before its day: the systems' outfall mass and the
+        users' reported mass, and ``[transport.<sp>] point_sources``' stated concentration times the rest of the
+        water [A]; water no one reports with none stated carries none (booked, ``unstated_m3``)."""
+        names = list(self.sw.names(S.POINT))
+        for sp, x in self._ps_species.items():
+            stated = self.cfg.transport[sp].get("point_sources", {})
+            rate = np.zeros(len(names))
+            for i, p in enumerate(names):
+                route = f"swat:point_source:{p}"
+                if route not in self.router.used or (not self.direct_exchange and p.startswith("gw_")):
+                    continue
+                water = self.router.req.get(route, 0.0)
+                kg = self._point_kg.get(sp, {}).get(route, 0.0)
+                rest = water - self._point_m3.get(sp, {}).get(route, 0.0)
+                rest = rest if rest > 1e-9 * max(water, 1.0) else 0.0
+                if p in stated:
+                    kg += stated[p] * rest
+                rate[i] = kg / DAY
+                k = f"transport:{sp}:point_source:{p}:"
+                L.enter(k + "sent", kg)
+                L.enter(k + "unstated_m3", 0.0 if p in stated else rest)
+            self.sw.set(f"point_source_water_{x}__mass_flow_rate", rate)
+
+    def _set_system_intakes(self):
+        for user, wu, var, sp, system in self.system_intakes:
+            chain = self.utilities[system]
+            c = chain.concentration.get(sp, chain.held.get("concentration", {}).get(sp, 0.0))
+            wu.inputs[var] = (lambda value: (lambda t: value))(c)
+            self.intake[(user, sp)] = c
 
     def _held_returns(self, L, rt):
         """After SWAT+'s day, each user drawing from a SWAT+ intake: the share of its withdrawal delivered scales its
@@ -1332,6 +1523,7 @@ class Basin:
         # 2-3. users and routing
         self._uses = {}
         self._ground_kg = {}  # species -> ground route -> kg sent to it today (users' returns, systems' septic and leaks)
+        self._point_kg, self._point_m3 = {}, {}  # species -> point source route -> the reported kg and its water
         for u, wu in self.users:
             use = wu.advance_day(d)
             self._uses[u.name] = use
@@ -1361,8 +1553,12 @@ class Basin:
             for name, v in use.reported.items():
                 L.enter(k + name, v)
             ret = use.returned if held is None else held["vol"]
+            reported = use.constituents if held is None else held["kg"]  # the return's mass, kg
+            if self._ps_species and kind(u.returns)[0] == "swat:point_source":  # a load SWAT+ carries in the stream
+                for sp in self._ps_species:
+                    if sp in wu.constituents:
+                        self._point_add(sp, u.returns, reported.get(sp, 0.0), ret)
             if self.transport and kind(u.returns)[0] == "ground":  # what the return carries into the aquifer
-                reported = use.constituents if held is None else held["kg"]
                 stated = self._ground_cfg[kind(u.returns)[1]].concentration
                 for sp in self.transport:
                     m = reported.get(sp, 0.0) if sp in wu.constituents else stated.get(sp, 0.0) * ret
@@ -1374,7 +1570,7 @@ class Basin:
                     if not is_return:
                         self.utilities[name].add_user(vol, 0.0)
                     elif held is not None or kind(u.withdrawal)[0] != "utility":
-                        self.utilities[name].add_return(vol)
+                        self.utilities[name].add_return(vol, reported)
                     # else: its delivered share goes to the sewer after the day (_systems_after)
                 else:
                     rt.request(route, vol)
@@ -1392,11 +1588,16 @@ class Basin:
         for chain in self.utilities.values():  # yesterday's plant outflow, less reuse, and septic water and leaks
             for route, vol in chain.release(L).items():
                 rt.request(route, vol)
+        for chain in self.utilities.values():  # and their mass (chain.py, mass_release)
+            if self._system_species:
+                self._systems_release(L, chain, today)
         if not self.direct_exchange:
             for route, vol in exchange_requests(self.due).items():
                 rt.request(route, vol)
 
         # 4. the surface model (SWAT+ live, or the next day of a NextGen run)
+        if self._ps_species:
+            self._point_source_loads(L)
         rt.apply_swat()
         gw_soil = getattr(self, "gw_soil", None)
         if gw_soil is not None:  # yesterday's groundwater, into the soil layers today

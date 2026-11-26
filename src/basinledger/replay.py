@@ -850,9 +850,10 @@ class ReplayBasin(Basin):
         self.surface, self._track_transport, self.swat_aquifer_ha = {}, False, {}
         self.rule_memory = saved["rule_memory"] if saved else {}
         self._wells_left_out = set()
-        if cfg.ground or any(w.cells for w in cfg.wells):
-            raise ReplayRefused("replay: returns to the ground and wells over several cells aren't built in a replay "
-                                "(it re-runs only the users who take in the aquifer's water)")
+        if cfg.ground or any(w.cells for w in cfg.wells) or cfg.utilities:
+            raise ReplayRefused("replay: returns to the ground, wells over several cells and water systems carrying "
+                                "mass aren't built in a replay (it re-runs only the users who take in the aquifer's "
+                                "water)")
         wells = {w.name: (w.package, self._well_node(w)) for w in cfg.wells}
         # the routes as the transport's links read them (driver.Basin's router): wells only
         self.router = SimpleNamespace(wells=wells, grounds={}, groups={}, used=set(), req={})
