@@ -1582,6 +1582,190 @@ source). All of them start from one warm-up:
 Scenarios then run in parallel, each in its own process. `branch()` (fork) isn't used by the driver yet, because
 libmf6 lives in the driver's process. A branch would need MODFLOW 6 restarted from heads in the child process.
 
+## Scenarios of water users, and what each one does to the basin (designed Nov 25, 2026, for the Virginia study)
+
+Basin Ledger exists to model and investigate the basin-scale effects of individual and multiple water users. The
+Virginia study (the Rappahannock above Fredericksburg) has the basin's existing water use as 25 systems and about 80
+users. Its scenarios add the proposed data centers to that system: Culpeper's technology zone, Remington and
+Wilderness Crossing, each in phases. It reports each campus's effect and their combined effect. The warm-up scenarios
+above change the weather. These change users. Andrew asked for them on Nov 25, 2026.
+
+**A scenario is a set of changes to users, on top of the existing system.** The baseline is the example as it is:
+its users, systems and rules. A scenario says what it adds and changes. A set of scenarios is one TOML file beside
+the example (`scenarios.py`, `basinledger scenarios <file>`):
+
+    name = "data-centers"
+    example = "basin.toml"                 # the existing system, the baseline
+    # folder = "../runs/data-centers"      # default: the example's run folder, then the set's name
+
+    [warm_up]
+    days = 5479                            # the cases carry on from the end of these days
+    users = true                           # the existing users run in the warm-up (default)
+
+    [run]
+    days = 0                               # the run's days in all, warm-up included (0: the example's)
+    workers = 4                            # cases at once, each in its own process
+    nice = 10                              # each worker's niceness (default 10)
+    checkpoint_days = 365                  # a case saves its state this often; a stopped case resumes there (0: never)
+
+    [compare]
+    channels = ["cha045", "cha112"]        # flow out of these channels
+    heads = [{name = "tz_well", cell = [0, 120, 88]}]
+    # from = "2027-01-01"                  # the period compared (default: the warm-up's end to the run's end)
+    # to = "2045-12-31"
+    low_flow = {days = 7, return_period = 10, year_start = "04-01"}   # the default: 7Q10, climatic years from April 1
+    exceedance = [0.10, 0.50, 0.90, 0.95, 0.99]                       # flow duration points (the default)
+    units = "SI"                           # or "US": cfs, ft, million gallons
+
+    [[scenario]]
+    name = "culpeper"
+    description = "The technology zone's campuses, on the town's system"
+
+      [[scenario.users]]                   # added: a [[users]] table as in the example
+      name = "culpeper_tz1"
+      component = "waterledger_models.datacenter.bmi:CoolingWaterBmi"
+      config = "users/culpeper_tz1.yaml"
+      withdrawal = "utility:culpeper"      # a customer of an existing system
+      return = "utility:culpeper"
+      forcing = {source = "swatplus", station = "sta012"}
+      phases = [{from = "2027-01-01", mw = 60}, {from = "2030-01-01", mw = 300}]
+
+      [[scenario.scale]]                   # an existing user or system, scaled
+      utility = "culpeper"                 # or user = "<name>"
+      multiplier = 1.15                    # from the scenario's start; or from = "<date>"; or phases = [...]
+      # customers = ["homes"]              # a system's classes only (default: all of them)
+
+    [[scenario]]
+    name = "remington"
+    remove = ["user:old_quarry"]           # an existing user or system, scaled to zero from the scenario's start
+
+      [[scenario.users]]                   # a user with its own source
+      name = "remington_dc"
+      withdrawal = "well:rem1"
+      ...
+
+      [[scenario.wells]]                   # its well: a [[wells]] table, added to every case's model
+      name = "rem1"
+      cell = [0, 64, 40]
+      add = true
+
+      [[scenario.utilities]]               # a system's sources changed: the keys given replace the example's
+      name = "fauquier"
+      sources = [{route = "swat:place_of_use:rem_intake", priority = 1, capacity = 0.05}, {route = "well:rem1", priority = 2}]
+
+    [[combination]]                        # the scenarios together, compared with each alone
+    name = "all"
+    scenarios = ["culpeper", "remington", "wilderness"]
+
+What a scenario may hold:
+
+- `users`: users added, `[[users]]` tables (their paths relative to the set's file). A user is a customer of a
+  system (`utility:<name>`) or has its own source: a well, an intake on a channel or reservoir
+  (`swat:place_of_use:<name>`), or reuse (a system of its own whose source is `effluent:<system>`).
+- `wells`, `ground`, `places_of_use`, `point_sources`: the models' new parts, as in the example. A restart carries on
+  the same models, so these are added to every case and to the warm-up, at zero where a case doesn't use them. The
+  baseline has them too, and nothing reaches them.
+- `utilities`: a name the example doesn't have adds a system. A name it has changes that system: the keys given
+  replace its own (`sources`, `shares`, `losses`, `leaks`, `customers`, `outfall`). New `sources` drop a dated
+  `shares` table unless the scenario gives one. A change of shares or priority is a change of `sources`.
+- `scale`: `{user = ... or utility = ..., multiplier}`, from the scenario's start, from `from`, or by `phases`. A
+  user's water, mass and power scale (below). A system's customers' demand scales, all classes or the ones named.
+  Its users scale only when they are named themselves.
+- `remove`: `"user:<name>"` or `"utility:<name>"`, scaled to zero from the scenario's start. A user is kept and
+  stepped, not deleted, so whatever it held overnight at the warm-up's end still leaves the next day, and the ledger
+  closes. A system removed keeps its sources and plant, which carry yesterday's water out and then sit at zero. Its
+  users must be removed with it, or the start refuses.
+- `rules`: `[[rules]]` tables added (a curtailment on a new user).
+
+A combination's changes are its scenarios' together. Two scenarios that change the same user or system in the
+combination are refused, as is a name added twice.
+
+**Phased growth.** A user's size follows a dated schedule:
+
+    phases = [{from = "2027-01-01", mw = 60}, {from = "2030-01-01", mw = 300, config = {design = "hybrid"}}]
+
+Each phase starts on its date and lasts until the next. Before the first, the user is off. A phase may give:
+
+- `mw`: the IT capacity, CoolingWaterBmi's `it_capacity_mw`;
+- `config`: any keys of the component's config for the phase (`mw = 60` is `config = {it_capacity_mw = 60}`);
+- `multiplier`: a factor on everything the user takes, returns and uses (default 1).
+
+A phase without `mw` or `config` keeps the config before it. CoolingWaterBmi takes its capacity only at initialize,
+and its interface isn't Basin Ledger's to change. So a phased user is one component per distinct config, each built
+from the user's config file with the phase's keys put in (written to the run's `users/<name>/`, in the file's own
+format). They are all stepped together from the run's start, with the same weather, and each is dropped once its last
+phase has passed. Every phase is therefore exactly the component at that size, whatever state or calendar it keeps.
+The active phase gets the limits and dry mode from the rules; the others run without them, and no one reads them.
+The user is routed as one user, and its accounts are one user's. A schedule of multipliers alone uses one component
+built from the file as given. A ReportedUser grows that way.
+
+The multiplier scales the outputs whose units are a volume, a volume flux, a mass flux or a power. A temperature isn't
+scaled, and neither is a running total of time (CoolingWaterBmi's hours with heat not removed), which counts the
+active phase's hours. A withdrawal limit reaches the component divided by the multiplier, so the limit binds on what
+the user takes. The user's balance holds step by step, since every term of it is multiplied together. A
+`scale` on a user with phases of its own multiplies the two schedules.
+
+**What is compared.** Every case is the baseline with the changes, run from one warm-up through the same weather.
+Over the compared period, each case against the baseline:
+
+- **Flow** at each channel in `[compare]`: the daily change, and the change in these statistics. The mean. The
+  flow exceeded 10, 50, 90, 95 and 99% of days, from the flow duration curve. The lowest 7-day mean flow in the
+  period. The mean of each climatic year's lowest 7-day mean, and the 7Q10: the lowest 7-day mean expected once in
+  10 years, by log-Pearson type III on the complete climatic years' minima (USGS practice; the frequency factor by
+  Wilson and Hilferty's approximation, the skew the sample's), with the number of years beside it. A 7Q10 from fewer
+  than 10 years extrapolates, and the table says how many it had; below 3 it is left out. If a year's minimum is zero,
+  log-Pearson can't be fitted, so the empirical quantile (Weibull plotting positions) is given instead, marked. Each
+  case's flow duration curve is a table of its own.
+- **Heads** at each cell in `[compare]`: the daily change; the change in the mean; the largest drawdown and its
+  date; the change on the last day.
+- **Capture** of the case's extra pumping (`analysis.capture`, every well's pumping, a system's included): from
+  storage, streams, the boundary, recharge, the soil and returns to the ground, and the residual, which is zero.
+- **Use:** each user the case adds or changes, its withdrawal, delivery, shortfall, consumption and return, and its
+  energy, as totals and mean rates. Each system's production by source, its unmet demand and its outfall: how a new
+  customer's water is found and where its wastewater goes.
+
+**Do effects add up?** Each scenario runs alone, and each combination runs its scenarios together. For any
+statistic m, a case's effect is E(case) = m(case) - m(baseline). A combination's interaction is
+
+    I = E(together) - (E(first alone) + E(second alone) + ...)
+
+It is zero when the users don't affect each other: their cones of depression don't overlap, a shared source doesn't
+run short, a stream doesn't go dry, a rule doesn't fire. The table gives each scenario's effect, their sum, the
+effect together, and I, both as a value and as a share of the effect together. For the daily flow and heads it also
+gives the share of the combination's day-by-day change that isn't the sum of the parts (the sum of |I| over the sum of
+|E|) and the largest |I| on a day. The users' own water adds exactly when nothing feeds back on them (no rule, and no
+limited source), and the test holds it to the last bit.
+
+**The runner.** `basinledger scenarios data-centers.toml [--workers 4] [--cases culpeper,all] [--fresh]` runs the
+warm-up once, then the baseline, each scenario and each combination, in parallel processes (spawned, one case per
+process, since libmf6 and SWAT+ hold one model a process), each at the worker's niceness. Then it writes the tables.
+It is restartable. The warm-up and each case record a fingerprint when done: the example's file, its parameter file,
+the set's model parts and comparison points, and the case's own changes and the contents of its users' config files.
+A case whose fingerprint matches is not run again. A case stopped part way resumes from its last checkpoint. Adding a
+scenario runs only the new scenario. Adding a well or a head to compare changes every case's models, so everything
+runs again, and the runner says why. `--fresh` runs everything. A model file the example reads that changes under
+the same names isn't seen: use `--fresh`.
+
+The set's folder holds `warm_up/` (its run and `state/`), `cases/<case>/` (each run's outputs), `checkpoints/` and
+`tables/`:
+
+- `flow.csv`, `flow_duration.csv`, `heads.csv`, `capture.csv`, `use.csv`, `systems.csv`, `interaction.csv`: one row
+  per case and point (or user, or system), the baseline's value, the case's and the change, in the units named in
+  each column's header.
+- `daily_flow.csv`, `daily_heads.csv`: each day, the baseline and each case's change.
+- `tables.md`: the main tables, rounded, for a paper; a screening example says so at the top.
+
+**What the study supplies.** Each campus as a user: its CoolingWaterBmi config (design, plant, parameters), its
+phases from the tracker records (date and MW), its weather station, and its source and return: the system it joins,
+or its own well, intake or reuse. Wells and intakes need their cells and channels. The channels and cells to report.
+The warm-up's length. The compared period's dates, which are on the run's calendar: a build-out in 2027 to 2035 run on
+past weather sets the phases on the past dates that stand for those years.
+
+Built and tested on the synthetic example (`tests/test_user_scenarios.py`). A phased user matches the component
+built at each phase's size, day by day, to the bit. One user added alone and with a second, and together, with the
+interaction. Every case's ledger closes every day, and the capture's residual is zero. The runner skips what is done
+and resumes what isn't.
+
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
 **Decided (Andrew).** Basin Ledger gets a second way in: take a MODFLOW 6 model someone already has (a consultant's,
