@@ -66,6 +66,11 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     # well = 3                          # or, for a multi-aquifer well (package a MAW package), its number there,
                                         #   from 1, in place of cell: its rate is set and what it pumped read
 
+    [[ground]]                          # optional: a return to the ground (route ground:<name>): a septic
+    name = "drainfield1"                #   drainfield, a system's leaks. Its water goes into this aquifer cell,
+    cell = [0, 20, 31]                  #   through a WEL entry Basin Ledger adds (package "wel_ground" unless named;
+                                        #   add = false for an entry the model has), and MODFLOW 6's budget takes it
+
     [irrigation]                        # optional: SWAT+'s irrigation pumped from MODFLOW 6's wells (coupling/
     wells = [{hru = "hru0001", well = "irr1", share = 1.0}]  # irrigation.py; swatplus-bmi 0.11.0): each day, the
                                         #   water irrigation put on each HRU, from the [[wells]] named, in their
@@ -266,6 +271,16 @@ def _well(path: Path, w: dict) -> WellConfig:
                       _flag(path, f"{where} add", w.get("add", False)), w.get("model"))
 
 
+def _ground(path: Path, g: dict) -> WellConfig:
+    """A [[ground]] entry: a return to the ground at an aquifer cell, as a WEL entry injecting it (``WellConfig``;
+    route ``ground:<name>``). Added by Basin Ledger in a package of its own unless ``add = false``."""
+    where = f"[[ground]] {g.get('name')!r}"
+    if "name" not in g or set(g) - {"name", "cell", "package", "add", "model"}:
+        raise ValueError(f"{path}: {where} takes name and cell, and may have package, add and model; got {sorted(g)}")
+    return WellConfig(g["name"], g.get("package", "wel_ground"), _cell(path, where, g.get("cell")),
+                      _flag(path, f"{where} add", g.get("add", True)), g.get("model"))
+
+
 def _cell(path: Path, where: str, cell) -> tuple[int, ...]:
     """A cell as configured: 0-based layer, row, col (DIS) or layer, icell2d (DISV). Which one the model's grid takes
     is checked when MODFLOW 6 starts (``Modflow6.node``)."""
@@ -318,6 +333,7 @@ class ExampleConfig:
     mf6_storage: dict | None = None  # sy, ss (per meter), iconvert: storage for a model handed over steady
     irrigation: dict[str, list[tuple[str, float]]] | None = None  # HRU -> its wells and shares (coupling/irrigation.py)
     lakes: list = field(default_factory=list)  # LakeConfig: a SWAT+ reservoir coupled to a LAK lake (coupling/lakes.py)
+    ground: list = field(default_factory=list)  # WellConfig: returns to the ground, into an aquifer cell (route ground:)
     replay_record: Path | None = None   # [replay] record: the folder a run records its flow side into (replay.py)
     replay_precision: str = "float32"   # of MODFLOW 6's flows in the record: float32 or float64
     replay_mantissa_bits: int | None = None  # float32's mantissa rounded to these bits (replay.Precision)
@@ -372,7 +388,7 @@ def load(path: str | Path) -> ExampleConfig:
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
              "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather",
-             "groundwater_to_soil", "irrigation", "lakes", "salt", "replay"}
+             "groundwater_to_soil", "irrigation", "lakes", "salt", "replay", "ground"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -574,6 +590,7 @@ def load(path: str | Path) -> ExampleConfig:
         groundwater_to_soil=dict(gs) if gs is not None else None,
         irrigation=irrigation,
         lakes=lakes,
+        ground=[_ground(path, g) for g in c.get("ground", [])],
         replay_record=_path(base, rp["record"]) if rp.get("record") else None,
         replay_precision=rp.get("precision", "float32"),
         replay_mantissa_bits=rp.get("mantissa_bits"),

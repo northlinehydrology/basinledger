@@ -9,8 +9,9 @@ Over the area the surface model covers:
   ``irrigation_from_streams``, ``irrigation_from_lakes`` and the application's ``irrigation_loss``, which leaves
   the basin; the rest of ``irr`` is water from outside, or pumped from MODFLOW 6's wells (``[irrigation]``);
 - **the link** (the ledger): what SWAT+'s aquifers recharged, what MODFLOW 6 received, and what the map added;
-- **groundwater** (the ledger): recharge + boundary inflow + release from storage = discharge to the coupled streams
-  + pumping + water up into the soil (``gw_soil:sent``), which closes by MODFLOW 6's budget;
+- **groundwater** (the ledger): recharge + boundary inflow + users' returns to the ground (``route:ground:``) +
+  release from storage = discharge to the coupled streams + pumping + water up into the soil (``gw_soil:sent``),
+  which closes by MODFLOW 6's budget;
 - **channels and lakes**: runoff + groundwater SWAT+'s channels received (the exchange as applied, gains less
   losses) + precipitation on lakes and channels + water users' returns to the streams + inflow from elsewhere =
   evaporation from lakes and channels + withdrawals from the streams + irrigation from the streams and lakes +
@@ -95,6 +96,7 @@ def basin_balance(run: str | Path, outlet: str) -> dict[str, float]:
         "groundwater_to_streams": float(np.nansum(_sum(t, "exchange:", ":to_stream"))),
         "groundwater_into_channels": float(np.nansum(_sum(t, "exchange:", ":applied"))),
         "pumping": float(np.nansum(_sum(t, "route:well:", ":delivered"))),
+        "returns_to_ground": float(np.nansum(_sum(t, "route:ground:", ":delivered"))),
         "returns_to_streams": float(np.nansum(_sum(t, "route:swat:point_source:", ":delivered"))),
         "withdrawals_from_streams": float(np.nansum(_sum(t, "route:swat:place_of_use:", ":delivered"))),
         "irrigation": to_m3(mm("irr")) if "irr" in col else 0.0,
@@ -112,7 +114,7 @@ def basin_balance(run: str | Path, outlet: str) -> dict[str, float]:
     b["withdrawals_from_streams"] -= float(np.nansum(_sum(t, "route:swat:place_of_use:seep_", ":delivered")))
     b["land_residual"] = (b["precipitation_land"] + b["irrigation"] + b["groundwater_into_soil"] - b["et_land"] - b["runoff_to_channels"] - b["percolation"]
                           - b["soil_water_gain"] - b["snow_gain"])
-    b["groundwater_residual"] = (b["recharge_received"] + b["groundwater_boundary_in"]
+    b["groundwater_residual"] = (b["recharge_received"] + b["groundwater_boundary_in"] + b["returns_to_ground"]
                                  + b["groundwater_storage_release"] - b["groundwater_to_streams"] - b["pumping"]
                                  - b["groundwater_to_soil_sent"])
     b["lake_storage_gain"] = _storage_gain(sw / "reservoir_day.txt")

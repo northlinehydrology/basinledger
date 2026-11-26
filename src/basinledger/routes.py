@@ -5,6 +5,8 @@ A route is a string naming a source or sink:
     well:<name>                   a MODFLOW 6 well (withdrawal)
     swat:place_of_use:<name>      a SWAT+ water allocation place of use, taking from its channel (withdrawal)
     swat:point_source:<name>      a SWAT+ daily point source into its channel (discharge)
+    ground:<name>                 water into an aquifer cell, through a WEL entry injecting it (discharge): a septic
+                                  drainfield, a system's leaks ([[ground]])
     outfall:<name>                recorded in the ledger only (discharge)
     offsite:<name>                water from or to outside the basin, recorded in the ledger only (either way)
 
@@ -25,7 +27,7 @@ from .coupling import swatplus as S
 from .ledger import FLOAT32
 from .units import DAY
 
-KINDS = ("well", "swat:place_of_use", "swat:point_source", "outfall", "offsite")
+KINDS = ("well", "swat:place_of_use", "swat:point_source", "ground", "outfall", "offsite")
 
 
 def kind(route: str) -> tuple[str, str]:
@@ -38,8 +40,10 @@ def kind(route: str) -> tuple[str, str]:
 
 
 class Router:
-    def __init__(self, swat: S.Swat, mf6, wells: dict[str, tuple[str, int]], ledger):
+    def __init__(self, swat: S.Swat, mf6, wells: dict[str, tuple[str, int]], ledger,
+                 grounds: dict[str, tuple[str, int]] | None = None):
         self.swat, self.mf6, self.wells, self.ledger = swat, mf6, wells, ledger
+        self.grounds = grounds or {}  # returns to the ground: name -> (WEL package, node)
         self.places = swat.names(S.DEMAND) if swat.has(S.DEMAND) else []
         self.points = swat.names(S.POINT) if swat.has(S.POINT) else []
         self.req: dict[str, float] = defaultdict(float)
@@ -47,7 +51,8 @@ class Router:
 
     def check(self, route: str):
         k, name = kind(route)
-        known = {"well": self.wells, "swat:place_of_use": self.places, "swat:point_source": self.points}.get(k)
+        known = {"well": self.wells, "swat:place_of_use": self.places, "swat:point_source": self.points,
+                 "ground": self.grounds}.get(k)
         if known is not None and name not in known:
             raise KeyError(f"route {route!r}: no {k} named {name!r}")
         if k in KINDS and route not in self.used:
@@ -106,10 +111,13 @@ class Router:
 
     def apply_wells(self):
         if self.mf6 is None:
-            self._entries = {}
+            self._entries, self._ground_entries = {}, {}
             return
         self._entries = {name: (pkg, node if self._maw(node) else self.mf6.entry(pkg, node))
                          for name, (pkg, node) in self.wells.items()}
+        self._ground_entries = {name: (pkg, self.mf6.entry(pkg, node)) for name, (pkg, node) in self.grounds.items()}
+        for name, (pkg, i) in self._ground_entries.items():  # injected: positive into the aquifer
+            self.mf6.set_well(pkg, i, self.req.get(f"ground:{name}", 0.0))
         for name, (pkg, i) in self._entries.items():
             q = -self.req.get(f"well:{name}", 0.0)
             maw = self._maw(i)
@@ -119,6 +127,11 @@ class Router:
                 self.mf6.set_well(pkg, i, q)
 
     def read_wells(self):
+        for name, (pkg, i) in self._ground_entries.items():
+            r = f"ground:{name}"
+            if r in self.used:
+                self.ledger.enter(f"route:{r}:requested", self.req.get(r, 0.0))
+                self.ledger.enter(f"route:{r}:delivered", self.mf6.simvals(pkg)[i])
         for name, (pkg, i) in self._entries.items():
             r = f"well:{name}"
             if r in self.used:

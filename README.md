@@ -27,13 +27,13 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.13.0).** Built and tested:
+**Status: early (0.14.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
 - routes: MODFLOW 6 wells, SWAT+ water allocation intakes (on any channel or reservoir, several to one served senior
   first, with swatplus-bmi 0.14.0; a user drawing from one returns only what it got, the next day) and point sources,
-  outfalls, water from and to outside the basin;
+  outfalls, returns to the ground (an aquifer cell: septic drainfields, leaks), water from and to outside the basin;
 - the utility chain: sources, losses, sewer, plant outfall;
 - feedback rules: curtailment, dry mode, drawdown limit;
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
@@ -330,6 +330,7 @@ and returns that share the next day. See [docs/design.md](docs/design.md#water-u
 | Physics | pumping draws down most at the well, and depletes the river by less than it pumps, more over time |
 | Surface routes | SWAT+ takes what was asked (or reports the shortfall); the channel's flow changes the same day by what the users put in and took out |
 | Intakes | several on one channel, through the file's second point of diversion: the senior gets its demand or the day's outflow, the junior its demand of the rest; the route pairs close, nothing overdrawn, and the channel loses exactly what they took. On a reservoir, its daily balance closes with what they took. A short intake's user returns its delivered share the next day, never more than it got |
+| Returns to the ground | a house pumping its well and returning 80% to a drainfield: the field gets exactly the return each day, MODFLOW 6's budget closes, and against the same house returning offsite, the capture analysis puts the difference in the returns with no residual |
 | Irrigation from streams | SWAT+'s own irrigation from its channel: what the channel gave = what the HRU took = what reached the field + the loss, every day; the whole-basin balance's channels close with it |
 | Utility chain | production = delivery + losses = the sum of its sources; sewer = plant outfall |
 | Rules | act on exactly the days after the trigger; a curtailed user takes nothing; dry mode uses less water and more electricity |
