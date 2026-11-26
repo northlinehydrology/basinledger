@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Operating rules for systems and reservoirs (`operations.py`, `rules.py`; docs/design.md, "Operating rules for
+  systems and reservoirs"), for the Virginia study's pumped storage (Motts Run, Lake Mooney, Hunting Run) and its
+  drought restrictions. Andrew approved adding them on Nov 25, 2026.
+  - **Transfers** (`[[transfers]]`: name, from a SWAT+ intake, to a point source, outfall or offsite, capacity).
+    Water moves at the rate the rules set, 0 when none does. What the intake delivered goes in the next day, held
+    overnight and carried by a restart, with `requested` = `delivered` + `shortfall` and `delivered` = `sent` +
+    `held_gain`.
+  - A point source may now go into a reservoir (`point_sources = [{name, reservoir}]`), so a pump can fill one.
+  - **`pumped_storage`:** pump the river's flow above a threshold into a reservoir below a share of its pool. The
+    pool is SWAT+'s principal spillway volume unless given.
+  - **`release`:** release a channel's deficit below a threshold, keeping a share of the pool.
+  - **`restriction`:** staged cuts on a system's customer classes, triggered by a channel's flow or a reservoir's
+    share of pool. Booked as `wanted:<class>` = `demand:<class>` + `restricted:<class>`, apart from a shortfall.
+  - The smallest rate and the largest cut win. Scenarios may add transfers (`[[scenario.transfers]]`).
+  - Not built with transport or salt (refused).
+  - Tested in `tests/test_user_scenarios.py`:
+    - the rules by construction;
+    - Osu_1hru with a reservoir: a pump fills it at high flow (its inflow is the channel's and the pump's), a
+      release keeps the channel up at low flow, and a town's outdoor and indoor use is cut in two stages;
+    - a restart, bit for bit.
+
 - Scenarios of water users on the existing system, and what each user does to the basin (`scenarios.py`,
   `phases.py`, `attribution.py`; docs/design.md, "Scenarios of water users"). Andrew asked for them on Nov 25,
   2026, for the Virginia study's data centers.

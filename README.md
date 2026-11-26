@@ -64,6 +64,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   system's sources changed, and a user grows in dated phases. The runner reports each scenario's and all
   together's effect on flow, low flows (7Q10) and the flow duration curve, heads, capture and water, and whether
   the effects add up. It runs the cases in parallel processes and is restartable (`basinledger scenarios`);
+- operating rules for systems and reservoirs (unreleased): pumped storage, releases and staged drought restrictions,
+  with transfers from an intake to a point source, now into a reservoir too;
 - weather written into SWAT+'s gage records from a run's first day (swatplus-bmi 0.7.0): a
   series per gage from a CSV, gridded data mapped to gages, and a scenario's change (wetter, drier, warmer; monthly
   factors and shifts);

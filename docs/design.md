@@ -1849,7 +1849,10 @@ past weather sets the phases on the past dates that stand for those years.
 Built and tested on the synthetic example (`tests/test_user_scenarios.py`). A phased user matches the component
 built at each phase's size, day by day, to the bit. One user added alone and with a second, and together, with the
 interaction. Every case's ledger closes every day, and the capture's residual is zero. The runner skips what is done
-and resumes what isn't.
+and resumes what isn't. The operating rules are tested by construction and on Osu_1hru with a reservoir below its
+channel. A pump fills the reservoir at high flow, and its inflow is the channel's and the pump's. A release keeps
+the channel up at low flow, never below its keep. A town's outdoor and indoor use is cut in two stages, booked apart
+from a shortfall. A restart matches, bit for bit.
 
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
