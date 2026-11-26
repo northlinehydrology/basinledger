@@ -317,7 +317,11 @@ share, the rest consumed).
 - **Losses.** `losses` is a share of production. `leaks = {share, to}` sends that share of the losses to the ground,
   and the rest is unaccounted water, booked as consumed.
 - **Sources.** Either shares (a constant, or 12 monthly values that sum to 1 each month), so a reported history
-  reproduces, or `priority` and `capacity` (m3 s-1): the first source up to its capacity, then the next. Shares and
+  reproduces, or `priority` and `capacity` (m3 s-1): the first source up to its capacity, then the next. Shares
+  can also come from a dated table (`shares = "file.csv"`: a date, then a column per source's route, each row
+  summing to 1 and held until the next date; Nov 25, 2026). A system whose split changes over the years uses it:
+  Culpeper's wells start in 2015, Lake Mooney's plant in 2018, and Motts Run's river and reservoir split moves
+  year to year. A day before the table's first date is refused. Shares and
   priorities don't mix within a system. Production asked = demand / (1 - losses). A source can be any withdrawal
   route (`swat:place_of_use:`, `well:`, `offsite:`, an import), or `effluent:<system>`, another system's treated
   plant outflow, taken before it reaches its outfall (reuse: a data center supplied from a town's plant).

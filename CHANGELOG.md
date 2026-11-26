@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- A water system's source shares from a dated table: `shares = "file.csv"`, with a date and then a column per
+  source's route. Each row sums to 1 and holds until the next date, and the sources are then given as `{route}`
+  alone. So a history whose split changes over the years reproduces by source: in the Virginia study, Culpeper's
+  wells start in 2015, Lake Mooney's plant in 2018, and Motts Run's river and reservoir split moves year to year.
+  - A day before the table's first date is refused, as are rows that don't sum to 1, and columns that aren't the
+    system's sources.
+  - Tested in `tests/test_chain.py`.
+
 ## 0.15.0 (2026-11-25)
 
 - Water systems with customers: a town is one system (`[[utilities]]`, `chain.py`; docs/design.md, "Water systems
