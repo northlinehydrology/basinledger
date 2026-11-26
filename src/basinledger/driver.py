@@ -385,7 +385,12 @@ class Basin:
                 else:
                     self._part(f"[[ground]] {g.name}", lambda g=g: grounds.__setitem__(g.name, (g.package,
                                                                                                 self._well_node(g))))
-        self.router = Router(self.sw, self.mf6, wells, L, grounds)
+        lands = {}  # water onto SWAT+'s fields (route land:<name>): each route's HRUs by weight
+        self._land_cfg, self._land_kg = {}, {}
+        self._land_held = dict((saved or {}).get("land_held") or {})  # user -> species -> kg held overnight
+        if cfg.land:
+            self._part("[[land]]", lambda: lands.update(self._lands(cfg, swat_dir)))
+        self.router = Router(self.sw, self.mf6, wells, L, grounds, lands)
         self.router.groups = groups
 
         # irrigation pumped from MODFLOW 6's wells (coupling/irrigation.py): the HRUs mapped and their wells
@@ -490,6 +495,13 @@ class Basin:
         self._system_species, self._ps_species, self.system_intakes = [], {}, []
         if self.transport:
             self._part("the water systems' mass", lambda: self._systems_mass(cfg, swat_dir))
+        if self._land_cfg and self.transport:
+            self._part("[[land]]", self._land_users_check)
+            for sp in self.transport:
+                for name in self._land_cfg:
+                    if f"land:{name}" in self.router.used and sp in self.surface:
+                        L.pair(f"transport:{sp}:land:{name}:sent", f"transport:{sp}:land:{name}:received",
+                               rtol=FLOAT32)
         if self.transfers and (self.salt or self.surface):
             self._part("the transfers' mass", self._transfers_mass)
 
@@ -611,7 +623,12 @@ class Basin:
         k = f"user:{u.name}:"
         L.pair(k + "withdrawal", [k + "consumption", k + "return", k + "storage_less_gain"])
         supply, back = kind(u.withdrawal)[0], kind(u.returns)[0]
-        if supply in ("swat:place_of_use", "utility"):
+        if back == "land" and supply not in ("well", "swat:place_of_use", "utility"):
+            raise ValueError(f"user {u.name}: water onto the land comes from a well, an intake or a water system, "
+                             f"not {u.withdrawal}")
+        if supply in ("swat:place_of_use", "utility") or back == "land":
+            # (a return to the land is held overnight whatever its supply: its mass is the delivered water's, known
+            # only after the models' day; docs/design.md, Mass through the human-system routes, part 4)
             # the intake's or the system's delivery is known only after the models' day, and the return enters them
             # before it: the day's use scales by the share delivered (_user_share). Its return leaves the next day
             # (held here), or, to a system's sewer, goes with that system's held outflow
@@ -992,6 +1009,153 @@ class Basin:
             c = chain.concentration.get(sp, chain.held.get("concentration", {}).get(sp, 0.0))
             wu.inputs[var] = (lambda value: (lambda t: value))(c)
             self.intake[(user, sp)] = c
+
+    # ---------- water onto SWAT+'s fields (route land:) ----------
+    def _lands(self, cfg, swat_dir) -> dict:
+        """Each [[land]] route's HRUs (their indexes in SWAT+'s hru grid) and weights, checked: swatplus-bmi 0.15.0's
+        irrigation applied from outside, HRUs SWAT+ has, none a wetland or paddy (SWAT+ puts their irrigation into
+        the ponded water) and none pumped for SWAT+'s own decision tables too ([irrigation])."""
+        from .routes import LAND_MASS, LAND_RUNOFF, LAND_SOIL
+        if cfg.surface != "swatplus" or not (self.sw.has(LAND_SOIL) and self.sw.has(LAND_RUNOFF)):
+            raise ValueError("[[land]] puts water on SWAT+'s fields through swatplus-bmi 0.15.0's irrigation applied "
+                             "from outside (land_irrigation_water__infiltration_volume_flow_rate)")
+        names = list(self.sw.names(LAND_SOIL))
+        ponded = S.ponded_hrus(swat_dir) if swat_dir is not None else set()
+        pumped = set(cfg.irrigation or {})
+        out, bad = {}, []
+        for g in cfg.land:
+            rows = []
+            for h, w in g.hrus:
+                if h not in names:
+                    bad.append(f"[[land]] {g.name}: SWAT+ has no HRU {h!r}")
+                elif h in ponded:
+                    bad.append(f"[[land]] {g.name}: HRU {h} is a wetland or paddy (surf_stor in hru-data.hru); "
+                               "SWAT+ puts its irrigation into the ponded water")
+                elif h in pumped:
+                    bad.append(f"[[land]] {g.name}: HRU {h} is irrigated by SWAT+'s decision tables from wells "
+                               "([irrigation]) too; one field's water by one rule")
+                else:
+                    rows.append((names.index(h), w))
+            out[g.name] = (g, rows)
+            unknown = sorted(set(g.concentration) - set(cfg.transport))
+            if unknown:
+                bad.append(f"[[land]] {g.name}: concentration for {unknown}, which aren't transported")
+        for sp, sm in self.surface.items():
+            if not self.sw.has(LAND_MASS.format(x=sm.x)):
+                bad.append(f"[[land]] carries {sp} through {LAND_MASS.format(x=sm.x)}, which this swatplus-bmi lacks")
+        if bad:
+            raise ValueError("\n- ".join(["the land routes can't be set as configured:"] + bad))
+        self._land_cfg = {g.name: g for g in cfg.land}
+        return out
+
+    def _land_users_check(self):
+        """What a user's water onto the land carries, per transport species: its component's report, the [[land]]
+        entry's stated concentration, or its source's water's (a well's, an intake's, a system's). One with none
+        is refused."""
+        species = list(self.transport)
+        for u, wu in self.users:
+            back, name = kind(u.returns)
+            if back != "land" or not species:
+                continue
+            derivable = set(species) if kind(u.withdrawal)[0] == "utility" else self._derivable(u.withdrawal, species)
+            missing = [sp for sp in species if sp not in wu.constituents
+                       and sp not in self._land_cfg[name].concentration and sp not in derivable]
+            if missing:
+                raise ValueError(f"user {u.name} puts water on land:{name} with no {missing}: its component reports "
+                                 f"none, [[land]] {name} states none, and its source's ({u.withdrawal}) isn't known")
+
+    def _land_hold(self, L):
+        """At the day's end, each user's water onto the land held overnight carries its withdrawal's whole delivered
+        mass (its consumption, the application's loss, is evaporation and carries none) [A]: what its component
+        reported, scaled by the share delivered; else the [[land]] entry's stated concentration, or its source's
+        water's today, times what was delivered. Read from the day's ledger lines, so a replay holds it alike."""
+        x = {sp: t.concentration() for sp, t in self.transport.items()}
+        for u, wu in self.users:
+            back, name = kind(u.returns)
+            if back != "land" or not self.transport:
+                continue
+            k = f"user:{u.name}:"
+            delivered, share = L.today(k + "delivered"), L.today(k + "delivered_share")
+            stated = self._land_cfg[name].concentration
+            kg = {}
+            for sp in self.transport:
+                if sp in wu.constituents:
+                    kg[sp] = share * L.today(k + f"{sp}:kg_reported")
+                    continue
+                if sp in stated:
+                    c = stated[sp]
+                else:
+                    supply, src = kind(u.withdrawal)
+                    if supply == "utility":
+                        c = self.utilities[src].concentration.get(sp, 0.0)
+                    elif supply == "well":
+                        c = self._well_concentration(sp, src, x[sp])
+                    else:
+                        c = self._route_concentration(sp, u.withdrawal)
+                kg[sp] = c * delivered
+                L.enter(k + f"land:{sp}:concentration", c)
+            for sp, m in kg.items():
+                L.enter(k + f"land:{sp}:kg_held", m)
+            self._land_held[u.name] = kg
+
+    def _land_mass_today(self, L):
+        """Today's mass onto the fields, by species and land route (what the users held overnight), set in SWAT+ for
+        the species it carries (after the water: swatplus-bmi refuses a mass with no water into the soil) and
+        handed to salt.py for the salted ones, HRU by HRU by each route's weights."""
+        from .routes import LAND_MASS
+        for u, _ in self.users:
+            back, name = kind(u.returns)
+            if back == "land":
+                for sp, m in self._land_held.get(u.name, {}).items():
+                    by = self._land_kg.setdefault(sp, {})
+                    by[name] = by.get(name, 0.0) + m
+        for sp in self.transport:
+            by = self._land_kg.get(sp, {})
+            for name in self._land_cfg:
+                if f"land:{name}" in self.router.used:
+                    L.enter(f"transport:{sp}:land:{name}:sent", by.get(name, 0.0))
+            if sp in self.surface:
+                v = np.zeros(len(self.router.hrus))
+                for name, (_, rows) in self.router.lands.items():
+                    for i, w in rows:
+                        v[i] += by.get(name, 0.0) * w
+                self.sw.set(LAND_MASS.format(x=self.surface[sp].x), v / DAY)
+            if sp in self.salt:
+                s = self.salt[sp]
+                at = {h: i for i, h in enumerate(s.hrus)}
+                v = np.zeros(len(s.hrus))
+                for name, g in self._land_cfg.items():
+                    for h, w in g.hrus:
+                        v[at[h]] += by.get(name, 0.0) * w
+                s.irrigation = v
+
+    def _land_mass_read(self, L):
+        """After SWAT+'s day: the mass SWAT+ reports went into the fields' top layers, each HRU's shared among the
+        routes by what each sent there."""
+        from .routes import LAND_MASS
+        for sp, sm in self.surface.items():
+            got = self.sw.get(LAND_MASS.format(x=sm.x)) * DAY
+            by = self._land_kg.get(sp, {})
+            sent = np.zeros(len(got))
+            parts = {}
+            for name, (_, rows) in self.router.lands.items():
+                v = np.zeros(len(got))
+                for i, w in rows:
+                    v[i] += by.get(name, 0.0) * w
+                parts[name] = v
+                sent += v
+            f = np.divide(got, sent, out=np.zeros_like(got), where=sent > 0)
+            for name, v in parts.items():
+                if f"land:{name}" in self.router.used:
+                    L.enter(f"transport:{sp}:land:{name}:received", float((v * f).sum()))
+
+    def _land_after_modflow(self, L):
+        """A user on a well putting its water on the land: its day at the share its well delivered, held overnight."""
+        for u, _ in self.users:
+            if kind(u.returns)[0] == "land" and kind(u.withdrawal)[0] == "well":
+                r = f"route:{u.withdrawal}:"
+                asked, got = L.today(r + "requested"), L.today(r + "delivered")
+                self._user_share(L, u, min(got / asked, 1.0) if asked > 0 else 1.0)
 
     def _held_returns(self, L, rt):
         """After SWAT+'s day, each user drawing from a SWAT+ intake: the share of its withdrawal delivered scales its
@@ -1620,6 +1784,7 @@ class Basin:
         self._uses = {}
         self._ground_kg = {}  # species -> ground route -> kg sent to it today (users' returns, systems' septic and leaks)
         self._point_kg, self._point_m3 = {}, {}  # species -> point source route -> the reported kg and its water
+        self._land_kg = {}  # species -> land route -> kg onto the fields today
         for u, wu in self.users:
             use = wu.advance_day(d)
             self._uses[u.name] = use
@@ -1707,6 +1872,8 @@ class Basin:
         if self._ps_species:
             self._point_source_loads(L)
         rt.apply_swat()
+        if self._land_cfg and self.transport:  # the mass with the water onto the fields (after it: see the method)
+            self._land_mass_today(L)
         gw_soil = getattr(self, "gw_soil", None)
         if gw_soil is not None:  # yesterday's groundwater, into the soil layers today
             L.enter("gw_soil:due", gw_soil.before_swat())
@@ -1723,6 +1890,8 @@ class Basin:
                 L.enter(f"transport:{sp}:gw_soil:due", soil)
         self.swat.update()
         rt.read_swat()
+        if self._land_cfg and self.surface:
+            self._land_mass_read(L)
         for tr in self.transfers.values():
             tr.after_surface(L)
         if self._held:
@@ -1753,8 +1922,12 @@ class Basin:
         if self.mf6 is not None:
             self._modflow_day(L, rt)
         rt.close_day()
+        if self._land_cfg:
+            self._land_after_modflow(L)
         if self.utilities:
             self._systems_after(L)
+        if self._land_cfg and self.transport:
+            self._land_hold(L)
 
         # 6. outputs and checks
         q = self.sw.get(S.QOUT) if self._ch_index or self._nexus else None  # a project of HRUs only has no channels
@@ -2198,6 +2371,7 @@ class Basin:
             "gw_soil_due": self.gw_soil.due.tolist() if getattr(self, "gw_soil", None) is not None else None,
             "surface_mass": {sp: sm.state() for sp, sm in self.surface.items()},
             "return_held": self._held,
+            "land_held": self._land_held,
             "utilities_held": {n: c.held for n, c in self.utilities.items()},
             "transfers_held": {n: tr.state() for n, tr in self.transfers.items()},
         }))

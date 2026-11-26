@@ -112,9 +112,9 @@ def _canonical(x, folder: Path, files: dict):
 
 def _flow_side(name: str, value):
     """A config field without what only moves mass (docs/design.md, Mass through the human-system routes): a return to
-    the ground's stated concentration, a water system's effluent, septic effluent and its sources' stated
+    the ground's or the land's stated concentration, a water system's effluent, septic effluent and its sources' stated
     concentrations. A replay may change them."""
-    if name == "ground":
+    if name in ("ground", "land"):
         return [dataclasses.replace(g, concentration={}) for g in value]
     if name == "utilities":
         out = []
@@ -896,6 +896,10 @@ class ReplayBasin(Basin):
                                       req={}, points=[])
         self._ground_kg, self._well_c = {}, {}
         self._ground_cfg = {g.name: g for g in cfg.ground}
+        # water onto the fields (land: routes): its mass held overnight, worked out again from the replay's own
+        # concentrations; salt takes it HRU by HRU (the water is the record's)
+        self._land_cfg, self._land_kg = {g.name: g for g in cfg.land}, {}
+        self._land_held = dict((saved or {}).get("land_held") or {})
         self._point_kg, self._point_m3 = {}, {}
 
         # the water systems: their water again from the routes' recorded lines (chain.py is accounting), and their
@@ -930,6 +934,9 @@ class ReplayBasin(Basin):
                 if u.forcing:
                     raise ReplayRefused(f"replay: user {u.name} takes in the aquifer's water and has forcing; running it "
                                         "again from a record isn't built")
+                if D.kind(u.returns)[0] == "land":
+                    raise ReplayRefused(f"replay: user {u.name} takes in the aquifer's or a system's water and puts "
+                                        "it on the land; running it again from a record isn't built")
                 if k == "utility" and D.kind(u.returns)[0] != "utility":
                     raise ReplayRefused(f"replay: user {u.name} takes in its water system's water and returns it "
                                         "elsewhere, held overnight; running it again from a record isn't built")
@@ -1011,7 +1018,7 @@ class ReplayBasin(Basin):
             k = f"user:{u.name}:"
             if u.name not in self.rerun:
                 for a, v in j["ledger"].items():
-                    if a.startswith(k):
+                    if a.startswith(k) and not a.startswith(k + "land:"):  # (the land's mass is the replay's own)
                         L.enter(a, v)
                 continue
             wu.set_controls(**j["controls"].get(u.name, {}))
@@ -1045,7 +1052,7 @@ class ReplayBasin(Basin):
             cuts = j["restrictions"].get(f"utility:{name}", {})
             for c, cls in classes.items():
                 cls.cut = cuts.get(f"cut:{c}", 0.0)
-        if self.utilities or self._ground_cfg:
+        if self.utilities or self._ground_cfg or self._land_cfg:
             self._routes_before(L, date)
         for name, classes in self.restricted.items():
             OP.book_restricted(L, name, classes)
@@ -1088,6 +1095,8 @@ class ReplayBasin(Basin):
             self._transport_accounts(L)
         if self.utilities:
             self._systems_after_replay(L, date)
+        if self._land_cfg and self.transport:
+            self._land_hold(L)
         t3 = time.perf_counter()
 
         for k in self.series:
@@ -1138,6 +1147,9 @@ class ReplayBasin(Basin):
         for chain in self.utilities.values():
             if self._system_species:
                 self._systems_release(L, chain, today)
+        self._land_kg = {}
+        if self._land_cfg and self.transport:  # yesterday's water onto the fields, its mass for the salt today
+            self._land_mass_today(L)
 
     def _systems_after_replay(self, L, today):
         """After the transport's day, as Basin._systems_after: each system's share from the routes' recorded lines,
@@ -1180,6 +1192,7 @@ class ReplayBasin(Basin):
         (folder / "basin.json").write_text(json.dumps({
             "day": self.day, "ledger": self.ledger.state(), "series": self.series, "rule_memory": self.rule_memory,
             "utilities_held": {n: c.held for n, c in self.utilities.items()}, "replay": str(self.record.folder),
+            "land_held": self._land_held,
             "transfers_held": {n: tr.state() for n, tr in self.transfers.items()}}))
 
     def write_outputs(self, folder: str | Path | None = None) -> Path:

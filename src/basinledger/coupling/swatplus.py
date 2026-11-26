@@ -53,6 +53,17 @@ def place_source(source: str) -> tuple[str, str]:
     return ("res", source[len(RESERVOIR):]) if source.startswith(RESERVOIR) else ("cha", source)
 
 
+def ponded_hrus(project: Path) -> set[str]:
+    """The HRUs ``hru-data.hru`` gives a surface storage (``surf_stor`` not null): wetlands and paddies, whose
+    irrigation SWAT+ puts into the ponded water (swatplus-bmi 0.15.0 refuses irrigation set on them)."""
+    f = Path(project) / "hru-data.hru"
+    lines = [x.split() for x in f.read_text().splitlines()[1:] if x.strip()] if f.exists() else []
+    if not lines or "surf_stor" not in lines[0]:
+        return set()
+    i, n = lines[0].index("surf_stor"), lines[0].index("name")
+    return {r[n] for r in lines[1:] if len(r) > i and r[i].lower() != "null"}
+
+
 def septic_land_uses(project: Path) -> list[str]:
     """The land uses in ``landuse.lum`` with a septic system (its ``sep`` column not null)."""
     f = Path(project) / "landuse.lum"

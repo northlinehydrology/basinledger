@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 25, 2026, release 0.17.0). Built and tested on synthetic examples:
+Status (Nov 26, 2026, release 0.18.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -1578,7 +1578,7 @@ SWAT+'s own septic systems: a project with septic in `landuse.lum` and septic wa
 refused.
 
 **4. Reported irrigation applied on the land model's fields (designed Nov 25, 2026, approved by Andrew the same day;
-waits on swatplus-bmi request 9).** The Virginia study's irrigators are golf courses, a turf farm, a nursery and a
+built Nov 26 on swatplus-bmi 0.15.0, its request 9; 0.18.0).** The Virginia study's irrigators are golf courses, a turf farm, a nursery and a
 school's fields. They report monthly withdrawals to DEQ, from channels, ponds and wells, and today the study counts
 that water as consumed at the source. It should land on the HRUs it irrigates, so that SWAT+ makes its ET,
 percolation and runoff, and carries the nutrients and salt in it. Unreported farm irrigation, from USGS's monthly
@@ -1611,19 +1611,40 @@ HUC-12 estimates, takes the same path.
   the soil link's water and mass by layer, and the weather; the soil link's variables are groundwater from below,
   not water on the field, so they aren't borrowed.
 - **Mass.** The whole withdrawal's mass goes on the land: its consumption is evaporation and carries none. It is the
-  water's concentration at its source as part 2 works it out (a well's cells by what they gave, a channel's or a
-  reservoir's), or the user's reported return mass if its component reports one. Nitrate and soluble P go through
+  user's reported return mass if its component reports one (scaled by the share delivered); else the `[[land]]`
+  entry's stated `concentration` [A]; else its source's water's as part 2 works it out (a well's cells by what they
+  gave, a channel's or a reservoir's for salt, SWAT+'s channel outflow for nitrate and P, a water system's mix),
+  times the water delivered. A source with none of these (a reservoir intake's nitrate and P) is refused at
+  start-up. The mass is fixed at the day's end (`user:<u>:land:<sp>:kg_held`, its `concentration` beside it) and
+  goes on with the water the next day. It all goes into the top layer, the runoff's share too [A]: swatplus-bmi
+  0.15.0 puts set mass there and refuses mass without water into the soil, so `runoff` stays below 1. Nitrate and soluble P go through
   request 9's mass variables. A salted species goes into the HRUs' soil stores in salt.py (`salt:<sp>:land:
   irrigation`), an input from outside the land like a land source, while its withdrawal leaves the streams or the
   aquifer as a sink, so the whole-system closure holds as with the ground returns.
-- **Booked:** `route:land:<name>:requested` (what was set) and `:delivered` (request 9's read-back of what SWAT+
-  added), per HRU and summed; the held water and mass overnight (`user:<u>:return_held`, carried by a restart);
-  `transport:<sp>:land:<name>:sent` and SWAT+'s read-back. In the whole-basin balance the water is SWAT+'s own
-  irrigation (`irr`, what reached the soil), less the part request 8 books from SWAT+'s channels and reservoirs; the
-  rest of `irr` is these routes and `[irrigation]`'s wells, by account.
-- **Refused:** a route's HRU that SWAT+ doesn't have; weights not positive; the same HRU irrigated by `[irrigation]`
-  (wells pumped for SWAT+'s decision tables) and a `land:` route at once, since the two would mix two rules for one
-  field's water; and, until request 9 is released, any `land:` route.
+- **Booked:** `route:land:<name>:requested` (what was set) = `:delivered` (swatplus-bmi's read-back of what went
+  in, an HRU's shared among the routes on it by what each set) = `:into_soil` + `:runoff`; the held water and mass
+  overnight (`user:<u>:return_held`, `land_held` in a restart); `transport:<sp>:land:<name>:sent` = `:received`
+  (SWAT+'s read-back) for nitrate and P; `salt:<sp>:land:source:irrigation` for a salted species. In the whole-basin
+  balance the water into the soil is in SWAT+'s `irr`, and the runoff share, which SWAT+ prints in its runoff
+  (`surq_cont`) rather than `irr`, is a land input of its own (`irrigation_runoff_from_routes`).
+- **What 0.15.0 does with it, documented there and not changed:** on a day with rain, SWAT+ 62.0.1 takes an
+  irrigation's runoff out of the rain's infiltration (`precip_eff - surfq`), so the runoff adds water to the HRU only
+  by what exceeds that; a sprinkler's `runoff` is best left at 0.
+- **Refused:** a route's HRU that SWAT+ doesn't have; a wetland or paddy HRU (`surf_stor` in `hru-data.hru`: SWAT+
+  puts its irrigation into the ponded water); weights not positive, `runoff` outside [0, 1); the same HRU irrigated
+  by `[irrigation]` (wells pumped for SWAT+'s decision tables) and a `land:` route at once, since the two would mix
+  two rules for one field's water; a land user drawing from anything but a well, an intake or a water system; and
+  a swatplus-bmi before 0.15.0.
+- **In a replay** the water is the record's; the mass is worked out again from the replay's own concentrations and
+  goes to salt's land stores, and a `[[land]]` entry's stated concentration may change. A user taking in the aquifer's
+  or a system's water and putting it on the land is refused there.
+- **Tested** (tests/test_land.py), on Osu_1hru made upland:
+  - a golf course on an intake (its delivery short on some days) and a farm on a well over two cells;
+  - each day's delivered water lands the next day, split into the soil and the runoff, all of it taken;
+  - the mass is what the stream and the aquifer gave up, reaching salt's land the next day, with every closure
+    held;
+  - nitrate and soluble P reach the top layer as set;
+  - a restart and a float64 replay are bit for bit.
 
 **5. In a replay (built Nov 25, 2026; the study's salt calibration runs by replay).**
 - **The record** holds each day's route lines (`route:<r>:requested`, `:delivered`, `:shortfall`) beside the users',

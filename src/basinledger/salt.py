@@ -907,6 +907,7 @@ class SaltBalance:
             raise ValueError(f"salt: point sources {missing_route} aren't in recall.con")
         self.direct_returns = direct_returns  # point source -> (user, its constituents, its water's account)
         self.system_outfalls = system_outfalls or {}  # point source -> the water systems whose plants discharge there
+        self.irrigation = None  # kg per HRU put on the fields today with land: routes' water (the driver sets it)
         self.reported_points: dict[str, list[tuple[str, str]]] = {}  # point source -> (kg account, its water's) of
         #   others sending it mass the driver books (a transfer's, operations.py)
         self.places = sw.names(WITHDRAWN) if sw.has(WITHDRAWN) else []
@@ -1057,6 +1058,9 @@ class SaltBalance:
         dep = c_rain * np.clip(w["precip"], 0.0, None) / 1000.0 * self.area
         road = self.road_today(w, day)
         sources = self.sources_today(day, reads)
+        if self.irrigation is not None:  # water put on the fields today (land: routes), its mass into the soil store
+            sources = {**sources, "irrigation": self.irrigation}
+            self.irrigation = None
         to_soil = sum(sources.values()) if sources else 0.0
         land0 = self.m_soil.sum() + self.m_surface.sum()
         r = land_day(self.m_soil, self.m_surface, self.area, w, perc_m * 1000.0, store, dep, road, self.soil_due,
