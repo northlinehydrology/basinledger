@@ -833,7 +833,7 @@ class SaltBalance:
       tomorrow, and the system's closure."""
 
     def __init__(self, species: str, settings: Settings, sw, swat_dir: Path, recharge_map, hru_area, places,
-                 direct_returns: dict[str, list[tuple[str, set]]], gw_soil=None, saved: dict | None = None,
+                 direct_returns: dict[str, list[tuple[str, set, str]]], gw_soil=None, saved: dict | None = None,
                  start: dt.date | None = None, days: int = 0, system_outfalls: dict[str, list[str]] | None = None):
         from .coupling import swatplus as S
         self.sp, self.s, self.sw, self.gw_soil = species, settings, sw, gw_soil
@@ -905,7 +905,7 @@ class SaltBalance:
         missing_route = [p for p in self.points if p not in self.route.points]
         if missing_route:
             raise ValueError(f"salt: point sources {missing_route} aren't in recall.con")
-        self.direct_returns = direct_returns  # point source -> (user, its constituents) returning to it directly
+        self.direct_returns = direct_returns  # point source -> (user, its constituents, its water's account)
         self.system_outfalls = system_outfalls or {}  # point source -> the water systems whose plants discharge there
         self.places = sw.names(WITHDRAWN) if sw.has(WITHDRAWN) else []
         to_ch = dict(places)
@@ -1109,9 +1109,9 @@ class SaltBalance:
             for p, v in zip(self.points, vol):
                 if v <= 0:
                     continue
-                users = [u for u, reported in self.direct_returns.get(p, []) if self.sp in reported]
-                kg_u = sum(L.today(f"user:{u}:{self.sp}:kg") for u in users)
-                v_u = sum(L.today(f"user:{u}:return") for u in users)
+                users = [(u, water) for u, reported, water in self.direct_returns.get(p, []) if self.sp in reported]
+                kg_u = sum(L.today(f"user:{u}:{self.sp}:kg") for u, _ in users)
+                v_u = sum(L.today(water) for _, water in users)  # the water it sent today (held: yesterday's)
                 for s in self.system_outfalls.get(p, []):  # a plant's outflow at its effluent concentration
                     kg_u += L.today(f"utility:{s}:{self.sp}:outfall:kg")
                     v_u += L.today(f"utility:{s}:outfall")

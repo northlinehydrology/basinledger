@@ -632,11 +632,16 @@ class Basin:
             raise NotImplementedError(f"[salt.{sp}] with {', '.join(why)} isn't built")
         if sp not in self.transport or self.recharge is None:
             raise ValueError(f"[salt.{sp}] needs the transport model gwt_{sp} and the recharge link")
-        direct: dict[str, list[tuple[str, set]]] = {}  # point source -> its direct users and what they report
+        # point source -> its direct users, what they report, and the account of the water they send it today: a
+        # return held overnight (a user on an intake or a system) sends yesterday's (return_sent), not today's
+        direct: dict[str, list[tuple[str, set, str]]] = {}
         for u, wu in self.users:
             k, name = kind(u.returns)
             if k == "swat:point_source":
-                direct.setdefault(name, []).append((u.name, set(wu.constituents)))
+                supply = kind(u.withdrawal)[0]
+                held = supply in ("swat:place_of_use", "utility")
+                direct.setdefault(name, []).append((u.name, set(wu.constituents),
+                                                    f"user:{u.name}:{'return_sent' if held else 'return'}"))
         outfalls: dict[str, list[str]] = {}  # point source -> the water systems whose plants discharge there
         for chain in getattr(self, "utilities", {}).values():
             k, name = kind(chain.outfall)

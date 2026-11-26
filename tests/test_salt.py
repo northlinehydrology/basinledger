@@ -615,3 +615,21 @@ def test_lakes_at_a_fixed_stage_carry_salt(swatplus):
     assert np.nansum(t[k + "aquifer:from_streams"]) > 0
     np.testing.assert_allclose(t[k + "streams:losses"], t[k + "aquifer:from_streams"], rtol=1e-9, atol=1e-12)
     assert len(r["salt"].loss_q) == 10 + 4  # the river's entries, then the lake's
+
+
+def test_a_held_return_carries_the_water_it_sent(swatplus):
+    """A user on an intake returns yesterday's water, scaled by what its intake delivered (held overnight). The point
+    source's water no user reports takes the stated concentration, so the user's part is what it sent today
+    (return_sent), not what it reported today."""
+    cfg = salt_config(places_of_use=[("plant_intake", "cha01")])
+    plant = next(u for u in cfg.users if u.name == "plant")
+    plant.withdrawal = "swat:place_of_use:plant_intake"
+    t = salt_run(cfg, "salt-held-return", 120)["table"]
+    k = "user:plant:"
+    assert np.nanmax(np.abs(t[k + "return"] - t[k + "return_sent"])) > 1.0  # the two differ, so the test bites
+    water = t["route:swat:point_source:wwtp:delivered"]
+    rest = np.where(water - t[k + "return_sent"] > 1e-6 * np.maximum(water, 1.0), water - t[k + "return_sent"], 0.0)
+    np.testing.assert_allclose(t["salt:chloride:streams:point_sources"], t[k + "chloride:kg"] + 0.08 * rest,
+                               rtol=1e-6, atol=1e-9)
+    np.testing.assert_allclose(t["salt:weathering:streams:point_sources"], 0.15 * water, rtol=1e-6, atol=1e-9)
+    assert np.nanmax(np.abs(t["salt:chloride:closure_share"])) < 1e-9
