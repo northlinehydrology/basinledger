@@ -615,8 +615,12 @@ class Recorder:
         if gs is not None and gs.rule == "gwflow":
             d["soil:row_planned"] = self.cast(gs.row_planned)
         L = basin.ledger
-        # the users' lines, and the routes' (what the water systems' shares and the returns to the ground read)
-        lines = {k: L.today(k) for k in L.rows if k.startswith(("user:", "route:")) and len(L.rows[k]) > L.days}
+        # the users' lines, the routes' (what the water systems' shares and the returns to the ground read), and
+        # the transfers' water (operations.py: what the operating rules did)
+        from .operations import WATER
+        lines = {k: L.today(k) for k in L.rows if len(L.rows[k]) > L.days and (
+            k.startswith(("user:", "route:")) or
+            k.startswith("transfer:") and k.count(":") == 2 and k.rsplit(":", 1)[-1] in WATER)}
         lines["recharge:sent"] = L.today("recharge:sent")
         d["json"] = {"ledger": lines, "controls": {u.name: dict(wu.controls) for u, wu in basin.users},
                      "series": {k: basin.series[k][-1] for k in basin.series
@@ -949,6 +953,17 @@ class ReplayBasin(Basin):
         self._system_species, self._ps_species, self.system_intakes = [], {}, []
         if self.transport:
             self._systems_mass(cfg, None)
+        # transfers (operations.py): their water the record's, what the rules did; their mass from the replayed salt
+        from .operations import Transfer
+        held_t = (saved or {}).get("transfers_held") or {}
+        self.transfers = {}
+        for x in cfg.transfers:
+            tr = Transfer(x["name"], x["from"], x["to"], x["capacity"], held_t.get(x["name"], 0.0),
+                          x.get("concentration"))
+            tr.declare(L)
+            self.transfers[tr.name] = tr
+        if self.transfers and self.salt:
+            self._transfers_mass()
 
         # outputs: the recorded series, and the salt's
         channels = rec.info["surface"].get("channel_water__volume_outflow_rate", [])
@@ -1013,9 +1028,21 @@ class ReplayBasin(Basin):
         date = self.start + dt.timedelta(days=d)
         if self.utilities or self._ground_cfg:
             self._routes_before(L, date)
+        from .operations import WATER
+        for n, tr in self.transfers.items():  # the recorded run's water, as its rules moved it
+            for a in WATER:
+                acct = f"transfer:{n}:{a}"
+                if acct not in j["ledger"]:
+                    raise ReplayRefused(f"replay day {d}: the record has no {acct} (a record made before transfers "
+                                        "were recorded: make a new one)")
+                L.enter(acct, j["ledger"][acct])
+            if tr.species:
+                tr.mass_before(L)
         reads = {}
         for s in self.salt.values():
             s.after_surface(L, date, reads)
+        if self.transfers:
+            self._transfers_after(L)
         t2 = time.perf_counter()
 
         self.mf6.prepare_day()
@@ -1132,7 +1159,8 @@ class ReplayBasin(Basin):
             np.savez(folder / f"salt_{sp}.npz", **s.state())
         (folder / "basin.json").write_text(json.dumps({
             "day": self.day, "ledger": self.ledger.state(), "series": self.series, "rule_memory": self.rule_memory,
-            "utilities_held": {n: c.held for n, c in self.utilities.items()}, "replay": str(self.record.folder)}))
+            "utilities_held": {n: c.held for n, c in self.utilities.items()}, "replay": str(self.record.folder),
+            "transfers_held": {n: tr.state() for n, tr in self.transfers.items()}}))
 
     def write_outputs(self, folder: str | Path | None = None) -> Path:
         out = super().write_outputs(folder)

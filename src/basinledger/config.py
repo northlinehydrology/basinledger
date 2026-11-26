@@ -169,6 +169,7 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     from = "swat:place_of_use:pump"
     to = "swat:point_source:into_res"
     capacity = 0.5                      # m3 s-1
+    # concentration = {nitrate = 0.001}  # kg m-3 [A], over the intake's (a reservoir's nitrate and P must be stated)
 
     [[rules]]                           # optional: feedback rules (see rules.py)
     name = "low-flow cut"
@@ -476,9 +477,15 @@ def _point_source(path: Path, x: dict) -> tuple[str, str]:
 
 def _transfer(path: Path, x: dict) -> dict:
     """A [[transfers]] table (operations.py)."""
-    if not isinstance(x, dict) or set(x) != {"name", "from", "to", "capacity"}:
+    if not isinstance(x, dict) or not {"name", "from", "to", "capacity"} <= set(x) or \
+            set(x) - {"name", "from", "to", "capacity", "concentration"}:
         raise ValueError(f"{path}: [[transfers]]: each has name, from (a SWAT+ intake), to (a point source, outfall: "
-                         f"or offsite:) and capacity (m3 s-1); got {sorted(x) if isinstance(x, dict) else x!r}")
+                         f"or offsite:) and capacity (m3 s-1), and may have concentration = {{<species> = kg m-3}}; got "
+                         f"{sorted(x) if isinstance(x, dict) else x!r}")
+    conc = x.get("concentration", {})
+    if not isinstance(conc, dict) or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0
+                                             for v in conc.values()):
+        raise ValueError(f"{path}: transfer {x['name']!r}: concentration is {{<species> = kg m-3 >= 0}}")
     if not str(x["from"]).startswith("swat:place_of_use:"):
         raise ValueError(f"{path}: transfer {x['name']!r}: from is a SWAT+ intake (swat:place_of_use:<name>), on a "
                          f"channel or a reservoir; got {x['from']!r}")
@@ -487,7 +494,8 @@ def _transfer(path: Path, x: dict) -> dict:
                          f"outfall: or offsite:; got {x['to']!r}")
     if isinstance(x["capacity"], bool) or not isinstance(x["capacity"], (int, float)) or x["capacity"] < 0:
         raise ValueError(f"{path}: transfer {x['name']!r}: capacity is a rate, m3 s-1 >= 0")
-    return {"name": x["name"], "from": x["from"], "to": x["to"], "capacity": float(x["capacity"])}
+    return {"name": x["name"], "from": x["from"], "to": x["to"], "capacity": float(x["capacity"]),
+            "concentration": {k: float(v) for k, v in conc.items()}}
 
 
 def load(path: str | Path) -> ExampleConfig:

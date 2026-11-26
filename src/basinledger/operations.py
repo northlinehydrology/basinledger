@@ -8,6 +8,12 @@ SWAT+'s day and a point source is set before it, so what was delivered goes into
 (carried by a restart). Under ``transfer:<name>:`` the ledger books ``rate`` (m3 s-1), ``requested`` = ``delivered``
 + ``shortfall`` and ``delivered`` = ``sent`` + ``held_gain``.
 
+Its water carries the intake's concentration of each species salt or SWAT+ carries: salt's channel or reservoir that
+day, SWAT+'s channel outflow concentration for nitrate and soluble P, or ``concentration = {<species> = kg m-3}``
+stated on the transfer [A] (needed for a reservoir's nitrate and P, which swatplus-bmi can't read). The mass is held
+overnight with the water and goes in with it: into salt's water body, or SWAT+'s point source load. Booked under
+``transfer:<name>:<species>:``: ``concentration``, ``delivered:kg`` = ``sent:kg`` + ``held_gain:kg``.
+
 **A restriction** (rule ``restriction``) cuts a system's customer classes by share. Each class's demand asked is its
 demand times (1 - cut); under ``utility:<name>:`` the ledger books ``wanted:<class>`` = ``demand:<class>`` +
 ``restricted:<class>``, and ``restricted`` for the day, apart from what the sources didn't deliver (``unmet``).
@@ -45,11 +51,47 @@ def pools(project: str | Path) -> dict[str, float]:
     return out
 
 
+WATER = ("rate", "requested", "delivered", "shortfall", "sent", "held_gain")  # a transfer's water accounts
+
+
 class Transfer:
-    def __init__(self, name: str, frm: str, to: str, capacity: float, held: float = 0.0):
+    def __init__(self, name: str, frm: str, to: str, capacity: float, held=0.0, concentration: dict | None = None):
         self.name, self.frm, self.to, self.capacity = name, frm, to, float(capacity)
-        self.held = float(held)  # delivered yesterday, into ``to`` today
+        held = held if isinstance(held, dict) else {"vol": held, "kg": {}}
+        self.held = float(held["vol"])  # delivered yesterday, into ``to`` today
+        self.held_kg = dict(held.get("kg", {}))  # its mass, by species
+        self.stated = dict(concentration or {})  # species -> kg m-3 [A], over the intake's
+        self.species: list[str] = []  # the species it carries (set by the driver)
         self._req = self._sent = 0.0
+
+    def state(self) -> dict:
+        return {"vol": self.held, "kg": self.held_kg}
+
+    def declare_mass(self, ledger, species: list[str]):
+        self.species = list(species)
+        for sp in self.species:
+            k = f"transfer:{self.name}:{sp}:"
+            ledger.pair(k + "delivered:kg", [k + "sent:kg", k + "held_gain:kg"])
+
+    def mass_before(self, ledger) -> dict[str, float]:
+        """At the day's start: yesterday's mass, into ``to`` with its water (kg, by species)."""
+        out = {sp: self.held_kg.get(sp, 0.0) for sp in self.species}
+        for sp, kg in out.items():
+            ledger.enter(f"transfer:{self.name}:{sp}:sent:kg", kg)
+        return out
+
+    def mass_after(self, ledger, concentration: dict[str, float]):
+        """After the surface's day: the mass of what was delivered, at the intake's concentration (or the stated
+        one), held for tomorrow."""
+        got = ledger.today(f"transfer:{self.name}:delivered")
+        for sp in self.species:
+            k = f"transfer:{self.name}:{sp}:"
+            c = self.stated.get(sp, concentration.get(sp))
+            kg = got * c
+            ledger.enter(k + "concentration", c)
+            ledger.enter(k + "delivered:kg", kg)
+            ledger.enter(k + "held_gain:kg", kg - ledger.today(k + "sent:kg"))
+            self.held_kg[sp] = kg
 
     def declare(self, ledger):
         k = f"transfer:{self.name}:"
@@ -69,10 +111,12 @@ class Transfer:
         router.request(self.to, self._sent)
 
     def after_surface(self, ledger):
-        """After SWAT+'s day: its part of what the intake delivered, held for tomorrow."""
+        """After SWAT+'s day: its part of what the intake delivered, held for tomorrow. Its part of the water SWAT+
+        took, not capped at what it asked: SWAT+'s 4-byte rounding can give a hair more, and the mass leaves the
+        channel or reservoir with all of it."""
         k = f"transfer:{self.name}:"
         asked = ledger.today(f"route:{self.frm}:requested")
-        got = self._req * min(ledger.today(f"route:{self.frm}:delivered") / asked, 1.0) if asked > 0 else 0.0
+        got = self._req * (ledger.today(f"route:{self.frm}:delivered") / asked) if asked > 0 else 0.0
         ledger.enter(k + "delivered", got)
         ledger.enter(k + "shortfall", self._req - got)
         ledger.enter(k + "held_gain", got - self._sent)

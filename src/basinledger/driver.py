@@ -490,6 +490,8 @@ class Basin:
         self._system_species, self._ps_species, self.system_intakes = [], {}, []
         if self.transport:
             self._part("the water systems' mass", lambda: self._systems_mass(cfg, swat_dir))
+        if self.transfers and (self.salt or self.surface):
+            self._part("the transfers' mass", self._transfers_mass)
 
         # outputs
         out = cfg.outputs
@@ -656,14 +658,43 @@ class Basin:
 
     def _add_transfer(self, x: dict, held: float, L):
         from .operations import Transfer
-        if self.cfg.transport or self.cfg.salt or self.cfg.replay_record is not None:
-            raise NotImplementedError(f"transfer {x['name']}: transfers don't carry mass yet, nor go into a replay "
-                                      "record ([transport], [salt] or [replay] on)")
         for route in (x["from"], x["to"]):
             self.router.check(route)
-        t = Transfer(x["name"], x["from"], x["to"], x["capacity"], held)
+        t = Transfer(x["name"], x["from"], x["to"], x["capacity"], held, x.get("concentration"))
         t.declare(L)
         self.transfers[t.name] = t
+
+    def _transfers_mass(self):
+        """Each transfer's species (salt's and SWAT+'s), each one's intake concentration checked (what Basin Ledger
+        can't work out must be stated), and its point source's mass reported to salt."""
+        species = list(self.salt) + [sp for sp in self.surface if sp not in self.salt]
+        bad = []
+        for n, tr in self.transfers.items():
+            k, name = kind(tr.to)
+            unknown = sorted(set(tr.stated) - set(self.transport))
+            if unknown:
+                bad.append(f"transfer {n}: concentration names {unknown}, which aren't transported")
+            missing = [sp for sp in species if sp not in tr.stated and sp not in self._derivable(tr.frm, species)]
+            if missing:
+                bad.append(f"transfer {n}: {missing} at {tr.frm} can't be read (a reservoir's nitrate and P): state "
+                           "concentration = {<species> = kg m-3}")
+            if k == "swat:point_source":
+                for sp in self.surface:
+                    if sp not in self._ps_species and sp not in self.salt:
+                        bad.append(f"transfer {n}: SWAT+ takes no {sp} load on its point sources "
+                                   f"(point_source_water_{self.surface[sp].x}__mass_flow_rate)")
+                for sp, s in self.salt.items():
+                    s.reported_points.setdefault(name, []).append((f"transfer:{n}:{sp}:sent:kg", f"transfer:{n}:sent"))
+            tr.declare_mass(self.ledger, species)
+        if bad:
+            raise ValueError("\n- ".join(["the transfers' mass (operations.py):"] + bad))
+
+    def _transfers_after(self, L):
+        """After the surface's day (salt's included): each transfer's delivered water's mass, held overnight."""
+        for tr in self.transfers.values():
+            if tr.species:
+                tr.mass_after(L, {sp: self._route_concentration(sp, tr.frm) for sp in tr.species
+                                  if sp not in tr.stated})
 
     def _salt(self, cfg, sp: str, swat_dir, restart):
         """A species' salt balance (salt.py), with its ledger's pairs and checks. What it can't carry yet is refused."""
@@ -1579,6 +1610,7 @@ class Basin:
                 wu.set_controls(**controls.get(u.name, {}))
         else:
             controls = {}
+        self._controls = controls  # the day's, for a replay record (the restrictions' cuts)
         for name, classes in self.restricted.items():  # the day's cuts on a system's classes, none if no rule acts
             cuts = controls.get(f"utility:{name}", {})
             for c, cls in classes.items():
@@ -1660,6 +1692,13 @@ class Basin:
                 self._systems_release(L, chain, today)
         for n, tr in self.transfers.items():  # the day's transfers at the rules' rates, and yesterday's in
             tr.before(L, rt, controls.get(f"transfer:{n}", {}).get("rate", 0.0))
+            if tr.species and kind(tr.to)[0] == "swat:point_source":  # its mass, a load SWAT+ carries
+                kgs = tr.mass_before(L)
+                for sp in self._ps_species:
+                    if sp not in self.salt:
+                        self._point_add(sp, tr.to, kgs[sp], L.today(f"transfer:{n}:sent"))
+            elif tr.species:
+                tr.mass_before(L)
         if not self.direct_exchange:
             for route, vol in exchange_requests(self.due).items():
                 rt.request(route, vol)
@@ -1707,6 +1746,8 @@ class Basin:
         reads = {}  # SWAT+'s day, read once for every species
         for s in self.salt.values():  # the land and the streams, from SWAT+'s day (salt.py)
             s.after_surface(L, self.start + dt.timedelta(days=d), reads)
+        if self.transfers:
+            self._transfers_after(L)
 
         # 5. MODFLOW 6
         if self.mf6 is not None:
@@ -2158,7 +2199,7 @@ class Basin:
             "surface_mass": {sp: sm.state() for sp, sm in self.surface.items()},
             "return_held": self._held,
             "utilities_held": {n: c.held for n, c in self.utilities.items()},
-            "transfers_held": {n: tr.held for n, tr in self.transfers.items()},
+            "transfers_held": {n: tr.state() for n, tr in self.transfers.items()},
         }))
 
     # ---------- outputs ----------

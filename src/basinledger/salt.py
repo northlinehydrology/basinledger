@@ -907,6 +907,8 @@ class SaltBalance:
             raise ValueError(f"salt: point sources {missing_route} aren't in recall.con")
         self.direct_returns = direct_returns  # point source -> (user, its constituents, its water's account)
         self.system_outfalls = system_outfalls or {}  # point source -> the water systems whose plants discharge there
+        self.reported_points: dict[str, list[tuple[str, str]]] = {}  # point source -> (kg account, its water's) of
+        #   others sending it mass the driver books (a transfer's, operations.py)
         self.places = sw.names(WITHDRAWN) if sw.has(WITHDRAWN) else []
         to_ch = dict(places)
         for p in self.places:
@@ -1115,6 +1117,9 @@ class SaltBalance:
                 for s in self.system_outfalls.get(p, []):  # a plant's outflow at its effluent concentration
                     kg_u += L.today(f"utility:{s}:{self.sp}:outfall:kg")
                     v_u += L.today(f"utility:{s}:outfall")
+                for kg_a, m3_a in self.reported_points.get(p, []):  # a transfer's water and its mass
+                    kg_u += L.today(kg_a)
+                    v_u += L.today(m3_a)
                 rest = v - v_u
                 rest = rest if rest > 1e-6 * max(v, 1.0) else 0.0  # SWAT+'s 4-byte rounding of the users' water
                 if rest > 0.0 and p not in self.s.point_sources:
