@@ -100,7 +100,7 @@ what, why, and how Basin Ledger copes until then. Written Nov 4, 2026.
    62.0.1 computes its delivery from the storage already reduced. Basin Ledger then books SWAT+'s own surface
    irrigation by source and closes the whole-basin balance (docs/design.md, "Irrigation from surface water").
 
-9. **Irrigation applied to HRUs from outside SWAT+ (Nov 25, 2026; for the Virginia study's reported irrigators).**
+9. **Irrigation applied to HRUs from outside SWAT+ (Nov 25, 2026; for the Virginia study's reported irrigators; done in swatplus-bmi 0.15.0, used by the `land:` route in Basin Ledger 0.18.0).**
    Settable, per HRU, for the coming day; swatplus-bmi adds them inside the HRU's day:
    - `land_irrigation_water__infiltration_volume_flow_rate` (m3 s-1): water onto the field that enters the soil.
      Its depth (mm = m3 / (area_ha x 10)) is added to `irrig(j)%applied` in hru_control.f90, after `mgt_operatn`

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.18.0 (unreleased)
+
+- **Water onto SWAT+'s fields: the `land:` route** (`[[land]] name, hrus = [{hru, weight}, ...]` or a CSV, `runoff`,
+  `concentration`; docs/design.md, "Mass through the human-system routes", part 4). It needs swatplus-bmi 0.15.0's
+  irrigation applied from outside. A reported irrigator (a golf course, a turf farm, a nursery, a HUC-12's estimated
+  farm irrigation) withdraws through a well (over several cells too), an intake or a water system, and its return
+  goes on its HRUs by weight. Its consumption is the application's loss.
+  - **The next day.** The water delivered on day d is applied on day d+1, held overnight as an intake's return is,
+    so water and mass close exactly. It is split between the soil and runoff (`runoff`, a share [A]), and SWAT+'s
+    read-back books what went in.
+  - **Its mass.** The whole withdrawal's mass goes on the land: the user's reported mass, a stated concentration,
+    or its source's water's (a well's cells, salt's channel or reservoir, SWAT+'s channel outflow, a system's mix).
+    Nitrate and soluble P go into the top layer through swatplus-bmi. Chloride and weathering's ions go into salt's
+    land stores, as a source from outside (`land:source:irrigation`). It works in a replay too.
+  - **Balance.** The whole-basin balance takes the runoff share as a land input, since SWAT+ prints it in its
+    runoff, not `irr`.
+  - **Refused:** paddy and wetland HRUs, HRUs also irrigated from wells for SWAT+'s decision tables
+    (`[irrigation]`), `runoff` of 1 or more, a source whose concentration isn't known, and swatplus-bmi before
+    0.15.0.
+  - Tested in `tests/test_land.py`. Tested with swatplus-bmi 0.15.0.
+
 ## 0.17.1 (2026-11-26)
 
 0.17.0 was tagged but never published: its tests failed on Windows. 0.17.1 is 0.17.0 with these fixes, and the first

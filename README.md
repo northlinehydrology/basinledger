@@ -88,6 +88,9 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   carry their concentrations; a water system's sources mixed by what each delivered and each class's returns at a
   stated septic or plant effluent concentration (a DMR's months); the plants' and users' loads on SWAT+'s point
   sources for nitrate and soluble P; septic counted once beside salt's land sources; all of it in a replay;
+- reported irrigation on SWAT+'s fields (`land:` routes, unreleased; swatplus-bmi 0.15.0): an irrigator's water put
+  on its HRUs by weight the day after it is withdrawn, with its mass (nitrate and soluble P into the top layer,
+  chloride into salt's land);
 - replay (`[replay] record`, `--replay`): a coupled run's flow side recorded once, compactly, and the salt run again
   from it as often as a calibration needs, with MODFLOW 6's flow model left unsolved and no SWAT+: bit for bit from a
   float64 record, to float32's rounding from the default; anything that would change the flow refused;
@@ -110,8 +113,6 @@ Examples:
 
 Still to come ([docs/design.md](docs/design.md)):
 
-- reported irrigation applied on SWAT+'s fields with its mass (a `land:` route; it waits on swatplus-bmi's settable
-  irrigation, docs/requests.md item 9);
 - SWAT+ built on the NextGen hydrofabric, for water quality on the same catchments;
 - AORC forcing;
 - USGS groundwater levels as observations.
