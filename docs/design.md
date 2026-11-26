@@ -281,7 +281,10 @@ A component with a daily or other step works the same way. The driver only asks 
   - Chosen over a return into an HRU's soil: a drainfield is below the root zone, so its water belongs to the aquifer
     cell, and swatplus-bmi sets no soil water. The cell's layer is the study's to give (the top active layer, as a
     rule).
-  - Transport and salt with it aren't built: a return's concentration would go on the WEL entry;
+  - Transport and salt with it aren't built: a return's concentration would go on the WEL entry.
+  - Over several cells (`cells = [[layer, row, col, weight], ...]` or a CSV; `[[wells]]` too; Nov 25, 2026): the
+    route's request splits by weight into a WEL entry per cell, and its delivered is their sum. This serves a
+    town's septic water and leaks across its service area, and domestic wells grouped by HUC-12;
 - `outfall:<name>`: a return entered in the ledger only;
 - `utility:<name>`: the utility chain.
 
