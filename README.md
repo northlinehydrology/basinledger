@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.17.1).** Built and tested:
+**Status: early (0.18.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -88,7 +88,7 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   carry their concentrations; a water system's sources mixed by what each delivered and each class's returns at a
   stated septic or plant effluent concentration (a DMR's months); the plants' and users' loads on SWAT+'s point
   sources for nitrate and soluble P; septic counted once beside salt's land sources; all of it in a replay;
-- reported irrigation on SWAT+'s fields (`land:` routes, unreleased; swatplus-bmi 0.15.0): an irrigator's water put
+- reported irrigation on SWAT+'s fields (`land:` routes; swatplus-bmi 0.15.0): an irrigator's water put
   on its HRUs by weight the day after it is withdrawn, with its mass (nitrate and soluble P into the top layer,
   chloride into salt's land);
 - replay (`[replay] record`, `--replay`): a coupled run's flow side recorded once, compactly, and the salt run again
