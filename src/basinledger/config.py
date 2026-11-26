@@ -72,6 +72,12 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
                                         #   add = false for an entry the model has), and MODFLOW 6's budget takes it
     # concentration = {chloride = 0.08}  # with transport: kg m-3 for water from users that report none of it [A]
 
+    [[land]]                            # optional: water put on SWAT+'s fields (route land:<name>; swatplus-bmi
+    name = "golf1"                      #   0.15.0): a reported irrigator's return, the day after it was withdrawn,
+    hrus = [{hru = "hru0012", weight = 1.0}]  # over HRUs by weight (or a CSV of hru, weight); runoff = 0.0 the share
+                                        #   that runs off [A]; concentration = {nitrate = 0.002} for a source Basin
+                                        #   Ledger can't work out [A]
+
     [irrigation]                        # optional: SWAT+'s irrigation pumped from MODFLOW 6's wells (coupling/
     wells = [{hru = "hru0001", well = "irr1", share = 1.0}]  # irrigation.py; swatplus-bmi 0.11.0): each day, the
                                         #   water irrigation put on each HRU, from the [[wells]] named, in their
@@ -324,6 +330,44 @@ def _cells(path: Path, where: str, cells) -> tuple:
     return tuple((c, w / total) for c, w in out)
 
 
+@dataclass
+class LandConfig:
+    """A ``[[land]]`` entry: water put on SWAT+'s fields (route ``land:<name>``), a reported irrigator's, over HRUs by
+    weight (normalized), the day after it was withdrawn (docs/design.md, Mass through the human-system routes, part
+    4). ``runoff``: the share of it that runs off the field [A]; ``concentration``: kg m-3 by transport species of
+    the withdrawal's water, for users that report none and a source Basin Ledger can't work out [A]."""
+    name: str
+    hrus: tuple                 # ((hru, weight), ...), the weights summing to 1
+    runoff: float = 0.0
+    concentration: dict = field(default_factory=dict)
+
+
+def _land(path: Path, x: dict) -> LandConfig:
+    where = f"[[land]] {x.get('name')!r}"
+    if not isinstance(x, dict) or "name" not in x or "hrus" not in x or \
+            set(x) - {"name", "hrus", "runoff", "concentration"}:
+        raise ValueError(f"{path}: {where} takes name and hrus, and may have runoff and concentration; got "
+                         f"{sorted(x) if isinstance(x, dict) else x!r}")
+    hrus = x["hrus"]
+    if isinstance(hrus, str):
+        with open(_path(path.parent, hrus), newline="") as f:
+            hrus = [{"hru": r["hru"], "weight": float(r["weight"])} for r in csv.DictReader(f)]
+    if not isinstance(hrus, list) or not hrus or any(
+            not isinstance(h, dict) or set(h) != {"hru", "weight"} or isinstance(h["weight"], bool)
+            or not isinstance(h["weight"], (int, float)) or h["weight"] <= 0 for h in hrus):
+        raise ValueError(f"{path}: {where} hrus is [{{hru, weight}}, ...] with positive weights, or a CSV of hru, "
+                         "weight")
+    names = [str(h["hru"]) for h in hrus]
+    if len(set(names)) != len(names):
+        raise ValueError(f"{path}: {where} hrus: an HRU is listed twice")
+    total = sum(float(h["weight"]) for h in hrus)
+    runoff = x.get("runoff", 0.0)
+    if isinstance(runoff, bool) or not isinstance(runoff, (int, float)) or not 0 <= runoff < 1:
+        raise ValueError(f"{path}: {where} runoff is a share from 0 up to (not including) 1; got {runoff!r}")
+    return LandConfig(x["name"], tuple((n, float(h["weight"]) / total) for n, h in zip(names, hrus)), float(runoff),
+                      _concentrations(path, f"{where} concentration", x.get("concentration", {})))
+
+
 def _ground(path: Path, g: dict) -> WellConfig:
     """A [[ground]] entry: a return to the ground at an aquifer cell, as a WEL entry injecting it (``WellConfig``;
     route ``ground:<name>``). Added by Basin Ledger in a package of its own unless ``add = false``."""
@@ -418,6 +462,7 @@ class ExampleConfig:
     irrigation: dict[str, list[tuple[str, float]]] | None = None  # HRU -> its wells and shares (coupling/irrigation.py)
     lakes: list = field(default_factory=list)  # LakeConfig: a SWAT+ reservoir coupled to a LAK lake (coupling/lakes.py)
     ground: list = field(default_factory=list)  # WellConfig: returns to the ground, into an aquifer cell (route ground:)
+    land: list = field(default_factory=list)    # LandConfig: water onto SWAT+'s fields, HRUs by weight (route land:)
     replay_record: Path | None = None   # [replay] record: the folder a run records its flow side into (replay.py)
     replay_precision: str = "float32"   # of MODFLOW 6's flows in the record: float32 or float64
     replay_mantissa_bits: int | None = None  # float32's mantissa rounded to these bits (replay.Precision)
@@ -505,7 +550,7 @@ def load(path: str | Path) -> ExampleConfig:
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
              "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather",
-             "groundwater_to_soil", "irrigation", "lakes", "salt", "replay", "ground", "transfers"}
+             "groundwater_to_soil", "irrigation", "lakes", "salt", "replay", "ground", "transfers", "land"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -705,6 +750,7 @@ def load(path: str | Path) -> ExampleConfig:
         irrigation=irrigation,
         lakes=lakes,
         ground=[_ground(path, g) for g in c.get("ground", [])],
+        land=[_land(path, x) for x in c.get("land", [])],
         replay_record=_path(base, rp["record"]) if rp.get("record") else None,
         replay_precision=rp.get("precision", "float32"),
         replay_mantissa_bits=rp.get("mantissa_bits"),

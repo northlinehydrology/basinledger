@@ -7,6 +7,8 @@ A route is a string naming a source or sink:
     swat:point_source:<name>      a SWAT+ daily point source into its channel (discharge)
     ground:<name>                 water into an aquifer cell, through a WEL entry injecting it (discharge): a septic
                                   drainfield, a system's leaks ([[ground]])
+    land:<name>                   water put on SWAT+'s fields, HRUs by weight, some of it running off ([[land]];
+                                  swatplus-bmi 0.15.0's irrigation applied from outside)
     outfall:<name>                recorded in the ledger only (discharge)
     offsite:<name>                water from or to outside the basin, recorded in the ledger only (either way)
 
@@ -27,7 +29,10 @@ from .coupling import swatplus as S
 from .ledger import FLOAT32
 from .units import DAY
 
-KINDS = ("well", "swat:place_of_use", "swat:point_source", "ground", "outfall", "offsite")
+KINDS = ("well", "swat:place_of_use", "swat:point_source", "ground", "land", "outfall", "offsite")
+LAND_SOIL = "land_irrigation_water__infiltration_volume_flow_rate"  # m3 s-1 per HRU, set for the next day, read back
+LAND_RUNOFF = "land_irrigation_water__runoff_volume_flow_rate"     # m3 s-1 per HRU, the same
+LAND_MASS = "land_irrigation_water_{x}__mass_flow_rate"            # kg s-1 per HRU into the top layer (no3, solp)
 
 
 def kind(route: str) -> tuple[str, str]:
@@ -41,9 +46,12 @@ def kind(route: str) -> tuple[str, str]:
 
 class Router:
     def __init__(self, swat: S.Swat, mf6, wells: dict[str, tuple[str, int]], ledger,
-                 grounds: dict[str, tuple[str, int]] | None = None):
+                 grounds: dict[str, tuple[str, int]] | None = None, lands: dict | None = None):
         self.swat, self.mf6, self.wells, self.ledger = swat, mf6, wells, ledger
         self.grounds = grounds or {}  # returns to the ground: name -> (WEL package, node)
+        # water onto the fields: name -> (LandConfig, [(HRU index in SWAT+'s hru grid, weight)])
+        self.lands = lands or {}
+        self.hrus = swat.names(LAND_SOIL) if self.lands else []
         # a well or ground return over several cells: its route -> [(each cell's own route, weight)]; each cell is
         # an entry of its own above (<name>#1, #2, ...), and the route's request is split among them by weight
         self.groups: dict[str, list[tuple[str, float]]] = {}
@@ -60,7 +68,7 @@ class Router:
             return
         k, name = kind(route)
         known = {"well": self.wells, "swat:place_of_use": self.places, "swat:point_source": self.points,
-                 "ground": self.grounds}.get(k)
+                 "ground": self.grounds, "land": self.lands}.get(k)
         if known is not None and name not in known:
             raise KeyError(f"route {route!r}: no {k} named {name!r}")
         if k in KINDS and route not in self.used:
@@ -71,6 +79,9 @@ class Router:
                 self.ledger.zero(r + "overdraw")
             elif k == "swat:point_source":
                 self.ledger.pair(r + "requested", r + "delivered", rtol=FLOAT32)
+            elif k == "land":  # what SWAT+ reports went in: into the soil, and running off
+                self.ledger.pair(r + "requested", r + "delivered", rtol=FLOAT32)
+                self.ledger.pair(r + "delivered", [r + "into_soil", r + "runoff"])
             else:
                 self.ledger.pair(r + "requested", r + "delivered")
 
@@ -80,7 +91,25 @@ class Router:
         for sub, w in self.groups.get(route, ()):
             self.req[sub] += m3 * w
 
+    def land_split(self) -> dict[str, np.ndarray]:
+        """Each land route's water today on each of SWAT+'s HRUs (m3), by its weights."""
+        out = {}
+        for name, (_, rows) in self.lands.items():
+            v = np.zeros(len(self.hrus))
+            for i, w in rows:
+                v[i] += self.req.get(f"land:{name}", 0.0) * w
+            out[name] = v
+        return out
+
     def apply_swat(self):
+        if self.lands:  # the water onto the fields: into the soil, and running off by each route's share
+            soil, off = np.zeros(len(self.hrus)), np.zeros(len(self.hrus))
+            for name, v in self.land_split().items():
+                share = self.lands[name][0].runoff
+                soil += (1.0 - share) * v
+                off += share * v
+            self.swat.set(LAND_SOIL, soil / DAY)
+            self.swat.set(LAND_RUNOFF, off / DAY)
         if self.places:
             d = np.zeros(len(self.places))
             for i, n in enumerate(self.places):
@@ -94,6 +123,22 @@ class Router:
 
     def read_swat(self):
         L = self.ledger
+        if self.lands:  # what went in, each HRU's shared among the routes on it by what each asked there
+            soil, off = self.swat.get(LAND_SOIL) * DAY, self.swat.get(LAND_RUNOFF) * DAY
+            split = self.land_split()
+            asked_soil = sum((1.0 - self.lands[n][0].runoff) * v for n, v in split.items())
+            asked_off = sum(self.lands[n][0].runoff * v for n, v in split.items())
+            f_soil = np.divide(soil, asked_soil, out=np.zeros_like(soil), where=asked_soil > 0)
+            f_off = np.divide(off, asked_off, out=np.zeros_like(off), where=asked_off > 0)
+            for name, v in split.items():
+                r = f"land:{name}"
+                if r in self.used:
+                    share = self.lands[name][0].runoff
+                    into, run = float(((1.0 - share) * v * f_soil).sum()), float((share * v * f_off).sum())
+                    L.enter(f"route:{r}:requested", self.req.get(r, 0.0))
+                    L.enter(f"route:{r}:delivered", into + run)
+                    L.enter(f"route:{r}:into_soil", into)
+                    L.enter(f"route:{r}:runoff", run)
         if self.places:
             got = self.swat.get(S.WITHDRAWN) * DAY
             for i, n in enumerate(self.places):

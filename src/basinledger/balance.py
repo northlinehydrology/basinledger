@@ -7,7 +7,9 @@ Over the area the surface model covers:
   in it). Irrigation is SWAT+'s ``irr``, what reached the soil, from any source. What SWAT+'s own irrigation took
   from its channels and reservoirs (swatplus-bmi 0.14.0, booked by the driver) is reported beside it:
   ``irrigation_from_streams``, ``irrigation_from_lakes`` and the application's ``irrigation_loss``, which leaves
-  the basin; the rest of ``irr`` is water from outside, or pumped from MODFLOW 6's wells (``[irrigation]``);
+  the basin; the rest of ``irr`` is water from outside, pumped from MODFLOW 6's wells (``[irrigation]``), or put on
+  the fields by ``land:`` routes (``irrigation_from_routes``), whose runoff share SWAT+ prints in its runoff, not in
+  ``irr``, and the land takes as an input (``irrigation_runoff_from_routes``);
 - **the link** (the ledger): what SWAT+'s aquifers recharged, what MODFLOW 6 received, and what the map added;
 - **groundwater** (the ledger): recharge + boundary inflow + users' returns to the ground (``route:ground:``) +
   release from storage = discharge to the coupled streams + pumping + water up into the soil (``gw_soil:sent``),
@@ -103,6 +105,10 @@ def basin_balance(run: str | Path, outlet: str) -> dict[str, float]:
         "irrigation_from_streams": float(np.nansum(_sum(t, "irrigation:native:from_channels"))),
         "irrigation_from_lakes": float(np.nansum(_sum(t, "irrigation:native:from_reservoirs"))),
         "irrigation_loss": float(np.nansum(_sum(t, "irrigation:native:loss"))),
+        # water put on the fields by land: routes: into the soil (in irr) and running off (SWAT+ prints it in
+        # surq_cont, not irr, so the land takes it here)
+        "irrigation_from_routes": float(np.nansum(_sum(t, "route:land:", ":delivered"))),
+        "irrigation_runoff_from_routes": float(np.nansum(_sum(t, "route:land:", ":runoff"))),
         "groundwater_into_soil": to_m3(mm("gwsoilq")) if "gwsoilq" in col else 0.0,
         "groundwater_to_soil_sent": float(np.nansum(_sum(t, "gw_soil:sent"))),
         "inflow_from_elsewhere": _other_inflow(sw, t),
@@ -112,7 +118,8 @@ def basin_balance(run: str | Path, outlet: str) -> dict[str, float]:
     # with the exchange's point sources (swatplus-bmi before 0.2.0), the exchange is in the routes; don't count twice
     b["returns_to_streams"] -= float(np.nansum(_sum(t, "route:swat:point_source:gw_", ":delivered")))
     b["withdrawals_from_streams"] -= float(np.nansum(_sum(t, "route:swat:place_of_use:seep_", ":delivered")))
-    b["land_residual"] = (b["precipitation_land"] + b["irrigation"] + b["groundwater_into_soil"] - b["et_land"] - b["runoff_to_channels"] - b["percolation"]
+    b["land_residual"] = (b["precipitation_land"] + b["irrigation"] + b["irrigation_runoff_from_routes"]
+                          + b["groundwater_into_soil"] - b["et_land"] - b["runoff_to_channels"] - b["percolation"]
                           - b["soil_water_gain"] - b["snow_gain"])
     b["groundwater_residual"] = (b["recharge_received"] + b["groundwater_boundary_in"] + b["returns_to_ground"]
                                  + b["groundwater_storage_release"] - b["groundwater_to_streams"] - b["pumping"]
