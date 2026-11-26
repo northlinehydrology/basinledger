@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 (2026-11-25)
 
 - Returns to the ground: a route `ground:<name>` puts a user's return into an aquifer cell (`[[ground]]` with a name
   and a cell), for septic drainfields, a water system's leaks and, later, land application.
