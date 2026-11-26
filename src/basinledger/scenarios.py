@@ -86,7 +86,7 @@ def run_case(cfg: C.ExampleConfig, state: Path, name: str, users: bool = True,
 
 SET_KEYS = {"name", "description", "example", "folder", "warm_up", "run", "compare", "scenario", "combination"}
 SCENARIO_KEYS = {"name", "description", "users", "wells", "ground", "places_of_use", "point_sources", "utilities",
-                 "scale", "remove", "rules"}
+                 "scale", "remove", "rules", "transfers"}
 UTILITY_KEYS = {"name", "sources", "shares", "losses", "leaks", "customers", "outfall", "demand", "sewered",
                 "infiltration"}
 
@@ -100,7 +100,8 @@ class Scenario:
     wells: list = field(default_factory=list)          # C.WellConfig
     ground: list = field(default_factory=list)         # C.WellConfig
     places_of_use: list = field(default_factory=list)  # (name, channel or "res:<reservoir>")
-    point_sources: list = field(default_factory=list)  # (name, channel)
+    point_sources: list = field(default_factory=list)  # (name, channel or "res:<reservoir>")
+    transfers: list = field(default_factory=list)      # [[transfers]] tables (operations.py)
     utilities: list = field(default_factory=list)      # raw tables
     scale: list = field(default_factory=list)          # {user|utility, schedule: [Phase], customers}
     remove: list = field(default_factory=list)         # "user:<name>", "utility:<name>"
@@ -199,10 +200,8 @@ def _scenario(path: Path, s: dict) -> Scenario:
     out.wells = [C._well(path, w) for w in s.get("wells", [])]
     out.ground = [C._ground(path, g) for g in s.get("ground", [])]
     out.places_of_use = [C._place_of_use(path, x) for x in s.get("places_of_use", [])]
-    for x in s.get("point_sources", []):
-        if not isinstance(x, dict) or set(x) != {"name", "channel"}:
-            _refuse(path, f"{where}: point_sources: each is {{name, channel}}; got {x!r}")
-        out.point_sources.append((x["name"], x["channel"]))
+    out.point_sources = [C._point_source(path, x) for x in s.get("point_sources", [])]
+    out.transfers = [C._transfer(path, x) for x in s.get("transfers", [])]
     out.utilities = [_utility(path, u) for u in s.get("utilities", [])]
     out.scale = [_scale(path, f"{where} scale", x) for x in s.get("scale", [])]
     for r in s.get("remove", []):
@@ -350,6 +349,11 @@ def case_config(s: ScenarioSet, case: str) -> tuple[C.ExampleConfig, dict]:
                 utilities[u["name"]] = new
                 cfg.utilities.append(new)
         cfg.rules.extend(copy.deepcopy(sc.rules))
+        for x in sc.transfers:
+            if any(y["name"] == x["name"] for y in cfg.transfers):
+                raise ValueError(f"{where}: scenario {sc.name!r} adds transfer {x['name']!r}, which is already there")
+            claim(f"transfer:{x['name']}", sc)
+            cfg.transfers.append(dict(x))
     from .phases import combine, scale_schedule
     system_scales: dict[str, list] = {}
     for sc in members:
@@ -406,9 +410,12 @@ def scale_systems(b: Basin, system_scales: dict):
     """Put a case's demand scales on its started systems' customers."""
     for name, scales in system_scales.items():
         chain = b.utilities[name]
+        from .operations import Restricted
         for i, c in enumerate(chain.customers):
             mine = [sched for sched, only in scales if only is None or c.name in only]
-            if mine:
+            if mine and isinstance(c, Restricted):  # the demand scaled, then restricted
+                c._base = _ScaledCustomers(c._base, mine)
+            elif mine:
                 chain.customers[i] = _ScaledCustomers(c, mine)
         for _, only in scales:
             missing = sorted(set(only or []) - {c.name for c in chain.customers})
