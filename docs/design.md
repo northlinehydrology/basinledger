@@ -297,7 +297,7 @@ Each route gets `requested` and `delivered` accounts in the ledger, paired every
 Each link is a ledger pair. A user on municipal supply is routed `utility:<system>`, and the chain places the water.
 A user with its own wells or intake is routed directly.
 
-**Water systems with customers (designed Nov 25, 2026, for the Virginia study's towns).** Andrew's principle:
+**Water systems with customers (designed and built Nov 25, 2026, for the Virginia study's towns; `chain.py`, `tests/test_chain.py`, `tests/test_systems.py`).** Andrew's principle:
 Basin Ledger is the link between the natural and human systems, so every water use goes through it, because a
 scenario changes users. A town is one system: its sources, its customers, and where their water goes. A new
 customer, a data center, adds to the system's demand and is drawn from the same sources. The `[[utilities]]` table
