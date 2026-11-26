@@ -2599,7 +2599,7 @@ wheels = [
 
 [[package]]
 name = "swatplus-bmi"
-version = "0.14.0"
+version = "0.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bmipy" },
@@ -2607,12 +2607,12 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/1e/c56d8eee9e3c08ccdaca5d2e0539ddf5f47a6e17257584669ed64a6d76eb/swatplus_bmi-0.14.0.tar.gz", hash = "sha256:449b8300b3c25ca899d131ef365534c17ef50cbbc4ff6893eafc07dc7770cd30", size = 754168, upload-time = "2026-11-25T15:00:00.404Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/42/df/2e9ea6e9a6beab52cb20ba7f66ad99b63ce745f7d599ae96b5496afc503d/swatplus_bmi-0.15.0.tar.gz", hash = "sha256:7e18c425b36ddf071d2d95f49238567efe64868dd3b271181bf8d94f204db206", size = 766120, upload-time = "2026-11-26T15:24:14.244Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/e3/4ddb94c430250ad5e0d67f6d9c18f5d7504ffaa4bf081bb83e499e38a015/swatplus_bmi-0.14.0-py3-none-any.whl", hash = "sha256:83093217766c550ca7d6f979d5c0d90267658e8a4afdb4ab875a961e1bc11511", size = 133203, upload-time = "2026-11-25T14:59:54.217Z" },
-    { url = "https://files.pythonhosted.org/packages/97/c5/ff799c0cdddf46dd732aa062b04ecd2077782919c840ca202beb907e4207/swatplus_bmi-0.14.0-py3-none-macosx_15_0_arm64.whl", hash = "sha256:22dd48b9d62d70cf8922dec30c02b5c92aa0eee957dcfbbd207bd2c8aa5f24a0", size = 2820348, upload-time = "2026-11-25T14:59:55.801Z" },
-    { url = "https://files.pythonhosted.org/packages/ba/e1/695830b93b5ecb08fbebd4e8f6b0b78e50e2c12c149d734c5e1999f55a99/swatplus_bmi-0.14.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:92d192d98cc83c4c2f7b8fa1c12598a3d071555d77686d3eb1cfd8e592d7d007", size = 3552964, upload-time = "2026-11-25T14:59:57.535Z" },
-    { url = "https://files.pythonhosted.org/packages/3e/13/f100de8f4d5c0c28438788adcf921586c1ad13466ecf0f2f5eff68361ad3/swatplus_bmi-0.14.0-py3-none-win_amd64.whl", hash = "sha256:1b901433c128ce0d83db1d07a2506697bb93742946d03b0c0f50dc6854340d2a", size = 3183135, upload-time = "2026-11-25T14:59:59.099Z" },
+    { url = "https://files.pythonhosted.org/packages/11/5a/df08d05535eeff399a72643d7542755b63376b2021f7014c4a0dd1a233ca/swatplus_bmi-0.15.0-py3-none-any.whl", hash = "sha256:e51626ef9cbc67322bd2d763d525d7b107a2a8301b2d38d703f291a7540ef2f0", size = 135749, upload-time = "2026-11-26T15:24:07.936Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/6f/26b94285ac3f8fec445d3272972b73865da1d2bdebc92a3c6c59d3fe2e28/swatplus_bmi-0.15.0-py3-none-macosx_15_0_arm64.whl", hash = "sha256:f69da5c07c1a6093d17d2470cfc6a5baad5dc95055f57025b873c239d6b09960", size = 2827151, upload-time = "2026-11-26T15:24:09.269Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/0a/bd9731e16dd6a9b20d199c63a9d8a082f59d462eda832d26115929dd9f2d/swatplus_bmi-0.15.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1bebf13668c897cbc7de20c41de7b8a2409cd7326a3469639a28de2b882f0210", size = 3558800, upload-time = "2026-11-26T15:24:11.192Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/11/1df9d29e739c0bb8fee49690ee0aff1b4f90f7efed858aa289e984c22dd6/swatplus_bmi-0.15.0-py3-none-win_amd64.whl", hash = "sha256:d5f9dbefb555a9c7483e6029fb6d6ae05f2287439a89be8066aabcada6c0e229", size = 3188641, upload-time = "2026-11-26T15:24:12.903Z" },
 ]
 
 [[package]]
