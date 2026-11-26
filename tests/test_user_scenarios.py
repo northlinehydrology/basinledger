@@ -303,3 +303,153 @@ def test_the_set_runs_compares_and_resumes(swatplus, tmp_path):
     assert "dc_b: finished (resumed from day 400)" in log
     assert (s.folder / "cases" / "dc_b" / "outputs" / "ledger.csv").read_text() == before
     assert not ckpt.exists()
+
+
+# ---------- operating rules for systems and reservoirs ----------
+
+def test_operating_rules_by_construction():
+    from basinledger import rules as R
+    st = R.State(day=3, flows={"river": 5.0, "town": 0.4}, head_at=None, volumes={"res": 6e5}, pools={"res": 1e6},
+                 capacities={"fill": 2.0, "back": 1.0})
+    # pumped storage: the least of the capacity, the flow above the threshold and the room over a day
+    assert R.pumped_storage(st, transfer="fill", channel="river", above=4.0, reservoir="res") == \
+        {"transfer:fill": {"rate": 1.0}}
+    assert R.pumped_storage(st, transfer="fill", channel="river", above=1.0, reservoir="res")["transfer:fill"][
+        "rate"] == 2.0
+    assert R.pumped_storage(st, transfer="fill", channel="river", above=1.0, reservoir="res", below=0.6864)[
+        "transfer:fill"]["rate"] == pytest.approx(1.0)  # 86,400 m3 of room
+    assert R.pumped_storage(st, transfer="fill", channel="river", above=6.0, reservoir="res") == \
+        {"transfer:fill": {"rate": 0.0}}  # the river below the threshold
+    assert R.pumped_storage(st, transfer="fill", channel="river", above=1.0, reservoir="res", pool=5e5) == \
+        {"transfer:fill": {"rate": 0.0}}  # the reservoir full
+    # a release: the channel's deficit, up to the capacity, keeping a share of the pool
+    assert R.release(st, transfer="back", channel="town", below=1.0) == {"transfer:back": {"rate": 0.6}}
+    assert R.release(st, transfer="back", channel="town", below=0.3) == {"transfer:back": {"rate": 0.0}}
+    assert R.release(st, transfer="back", channel="town", below=1.0, reservoir="res", keep=0.6) == \
+        {"transfer:back": {"rate": 0.0}}
+    # restrictions: the last stage whose trigger holds
+    stages = [{"when": {"channel": "town", "below": 0.5}, "cut": {"outdoor": 0.5}},
+              {"when": {"reservoir": "res", "below": 0.5}, "cut": {"outdoor": 1.0, "indoor": 0.1}}]
+    assert R.restriction(st, utility="u", stages=stages) == {"utility:u": {"cut:outdoor": 0.5}}
+    assert R.restriction(R.State(**{**st.__dict__, "volumes": {"res": 4e5}}), utility="u", stages=stages) == \
+        {"utility:u": {"cut:outdoor": 1.0, "cut:indoor": 0.1}}
+    assert R.restriction(R.State(**{**st.__dict__, "day": 0}), utility="u", stages=stages) == {}
+    # the smallest rate, the largest cut
+    assert R.combine([{"transfer:t": {"rate": 2.0}}, {"transfer:t": {"rate": 0.5}},
+                      {"utility:u": {"cut:a": 0.1}}, {"utility:u": {"cut:a": 0.4}}]) == \
+        {"transfer:t": {"rate": 0.5}, "utility:u": {"cut:a": 0.4}}
+    for bad in ([], [{"when": {"channel": "x"}, "cut": {"a": 0.5}}], [{"when": {"channel": "x", "below": 1},
+                                                                       "cut": {"a": 1.5}}]):
+        with pytest.raises(ValueError):
+            R.check("restriction", {"utility": "u", "stages": bad}, "t")
+
+
+def test_transfers_and_point_sources_refused(tmp_path):
+    from basinledger import config as C
+    p = tmp_path / "x.toml"
+    for x, msg in (({"name": "t", "from": "well:pw1", "to": "swat:point_source:a", "capacity": 1}, "SWAT\\+ intake"),
+                   ({"name": "t", "from": "swat:place_of_use:a", "to": "ground:g", "capacity": 1}, "point source"),
+                   ({"name": "t", "from": "swat:place_of_use:a", "to": "outfall:x", "capacity": -1}, "capacity"),
+                   ({"name": "t", "from": "swat:place_of_use:a", "to": "outfall:x"}, "each has")):
+        with pytest.raises(ValueError, match=msg):
+            C._transfer(p, x)
+    assert C._point_source(p, {"name": "in", "reservoir": "res01"}) == ("in", "res:res01")
+    with pytest.raises(ValueError, match="one of channel or reservoir"):
+        C._point_source(p, {"name": "in", "reservoir": "res01", "channel": "cha01"})
+
+
+OPS_DAYS, OPS_SAVE = 240, 120
+
+
+def _ops_config(tmp, swatplus):
+    """Osu_1hru with res01 below its channel: a pump from the channel into the reservoir at high flow, a release
+    from the reservoir back to the channel at low flow, and a town on a well whose outdoor use is cut by half when
+    the channel is low and wholly (with a tenth of indoor use) when the reservoir is low."""
+    import importlib.util
+    from basinledger import config as C
+    spec = importlib.util.spec_from_file_location("existing", ROOT / "examples" / "synthetic" / "existing.py")
+    ex = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ex)
+    cfg = C.load(ROOT / "examples" / "synthetic" / "surface.toml")
+    cfg.run_folder = RUNS
+    cfg.swat_project = ex.reservoir_project(tmp / "osu_res", swatplus)
+    cfg.places_of_use = [("pump", "cha01"), ("out", "res:res01")]
+    cfg.point_sources = [("fill", "res:res01"), ("back", "cha01")]
+    cfg.users = []
+    cfg.utilities = [{"name": "town", "sources": [{"route": "well:pw1", "share": 1.0}], "outfall": "outfall:town",
+                      "customers": [{"name": "outdoor", "demand": 0.0004, "consumed": 1.0},
+                                    {"name": "indoor", "demand": 0.0006, "sewered": 1.0}]}]
+    cfg.transfers = [{"name": "fill", "from": "swat:place_of_use:pump", "to": "swat:point_source:fill",
+                      "capacity": 0.002},
+                     {"name": "release", "from": "swat:place_of_use:out", "to": "swat:point_source:back",
+                      "capacity": 0.001}]
+    cfg.rules = [{"name": "fill", "kind": "pumped_storage", "transfer": "fill", "channel": "cha01", "above": 0.001,
+                  "reservoir": "res01", "below": 1.2},
+                 {"name": "release", "kind": "release", "transfer": "release", "channel": "cha01", "below": 0.01,
+                  "reservoir": "res01", "keep": 0.3},
+                 {"name": "drought", "kind": "restriction", "utility": "town",
+                  "stages": [{"when": {"channel": "cha01", "below": 0.003}, "cut": {"outdoor": 0.5}},
+                             {"when": {"reservoir": "res01", "below": 0.5}, "cut": {"outdoor": 1.0, "indoor": 0.1}}]}]
+    return cfg
+
+
+@pytest.mark.slow
+def test_pumped_storage_a_release_and_restrictions(swatplus, tmp_path):
+    from basinledger.coupling import lakes as LK
+    from basinledger.coupling import swatplus as S
+    from basinledger.driver import Basin
+    cfg = _ops_config(tmp_path, swatplus)
+    b = Basin(cfg, run="ops", days=OPS_DAYS)
+    assert b.pools == {"res01": 1e4}  # 1 ha-m, its principal spillway volume
+    q, inflow, vol = [], [], []
+    for d in range(OPS_DAYS):
+        b.step()
+        q.append(float(b.sw.get(S.QOUT)[0]))
+        inflow.append(float(b.sw.get(LK.INFLOW)[0]) * 86400)
+        vol.append(float(b.sw.get(LK.VOLUME)[0]))
+        if d == OPS_SAVE - 1:
+            b.save(tmp_path / "state")
+    t = b.ledger.table()
+    b.finalize()
+    q, inflow, vol = np.array(q), np.array(inflow), np.array(vol)
+    f, r = "transfer:fill:", "transfer:release:"
+
+    # the pump: only on days after the river was above the threshold and the reservoir below its target, at the
+    # least of capacity, flow above the threshold and room; what it got goes into the reservoir the next day
+    rate = t[f + "rate"]
+    assert (rate > 0).sum() > 20 and (rate == 0).sum() > 20
+    expect = np.r_[0.0, np.clip(np.minimum(np.minimum(0.002, q[:-1] - 0.001), (1.2e4 - vol[:-1]) / 86400), 0, None)]
+    np.testing.assert_allclose(rate, expect, rtol=1e-6, atol=1e-12)
+    for k in (f, r):
+        assert np.array_equal(t[k + "sent"][1:], t[k + "delivered"][:-1])
+        assert t[k + "sent"][0] == 0
+    # the reservoir takes it with the channel's water: its inflow is the channel's outflow and the pump's
+    np.testing.assert_allclose(inflow, q * 86400 + t[f + "sent"], rtol=1e-5, atol=1e-3)
+    # the release: only on days after low flow, never taking the reservoir below its keep
+    rel = t[r + "rate"]
+    assert (rel > 0).sum() > 5
+    assert (rel[1:][q[:-1] >= 0.01] == 0).all()
+    assert (rel[1:] * 86400 <= np.clip(vol[:-1] - 0.3e4, 0, None) * (1 + 1e-6)).all()
+    assert t["route:swat:point_source:back:delivered"].sum() == pytest.approx(t[r + "sent"].sum(), rel=1e-6)
+
+    # restrictions: booked apart from a shortfall, staged
+    k = "utility:town:"
+    cut_o = t[k + "restricted:outdoor"] / t[k + "wanted:outdoor"]
+    cut_i = t[k + "restricted:indoor"] / t[k + "wanted:indoor"]
+    stage2 = np.r_[False, vol[:-1] < 0.5e4]
+    stage1 = np.r_[False, q[:-1] < 0.003] & ~stage2
+    assert stage1.sum() > 5 and stage2.sum() > 5, (stage1.sum(), stage2.sum())
+    np.testing.assert_allclose(cut_o, np.where(stage2, 1.0, np.where(stage1, 0.5, 0.0)), atol=1e-12)
+    np.testing.assert_allclose(cut_i, np.where(stage2, 0.1, 0.0), atol=1e-12)
+    np.testing.assert_allclose(t[k + "demand"], t[k + "wanted:outdoor"] + t[k + "wanted:indoor"] - t[k + "restricted"],
+                               rtol=1e-12)
+    assert np.allclose(t[k + "unmet"], 0.0, atol=1e-6)  # the well delivers all: nothing is a shortfall
+    assert (t["rule:drought:active"] == (stage1 | stage2)).all()
+
+    # a restart carries the water held overnight: the same days, bit for bit
+    c = Basin(_ops_config(tmp_path / "again", swatplus), run="ops-restart", days=OPS_DAYS, restart=tmp_path / "state")
+    c.run()
+    tc = c.ledger.table()
+    c.finalize()
+    for a in [a for a in t if a.startswith(("transfer:", "utility:town:", "route:"))]:
+        assert np.array_equal(t[a], tc[a], equal_nan=True), a
