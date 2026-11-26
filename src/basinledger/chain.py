@@ -23,6 +23,8 @@ Config (one ``[[utilities]]`` table per system):
     sources = [{route = "swat:place_of_use:intake", share = 0.7}, {route = "well:pw2", share = 0.3}]
                                # share: a constant, or 12 monthly values; or priority = 1, 2, ... and capacity
                                # (m3 s-1, the last may leave it out); a route, or "effluent:<system>"
+    # shares = "town_shares.csv"   # or dated shares: date, then a column per source's route (its sources then
+                               # {route} alone), each row summing to 1 and held until the next date
     losses = 0.10              # share of production
     leaks = {share = 0.5, to = "ground:town_leaks"}   # of the losses, to the ground; the rest unaccounted
     customers = [{name = "homes", demand = "homes.csv", sewered = 0.8, consumed = 0.2},
@@ -38,6 +40,7 @@ Ledger accounts, all m3 a day, under ``utility:<name>:``; the pairs are in ``dec
 
 from __future__ import annotations
 
+import bisect
 import csv
 import datetime as dt
 from dataclasses import dataclass, field
@@ -118,6 +121,7 @@ class UtilityChain:
     customers: list[Customers] = field(default_factory=list)
     leaks: float = 0.0           # share of the losses to the ground
     leaks_to: str | None = None
+    shares: list = field(default_factory=list)  # [(date, {route: share}), ...] sorted, each held to the next date
     # the day, between plan and settle
     _withdrawals: float = field(default=0.0, repr=False)
     _returns: float = field(default=0.0, repr=False)          # users' returns to this sewer, scaled (settle)
@@ -136,7 +140,18 @@ class UtilityChain:
         prio = [s.priority is not None for s in self.sources]
         if any(prio) and not all(prio):
             raise ValueError(f"utility {self.name}: sources take shares or priorities, not both")
-        if not any(prio):
+        if self.shares:
+            if any(prio) or any(s.share is not None for s in self.sources):
+                raise ValueError(f"utility {self.name}: with shares from a table, sources take neither a share nor "
+                                 "a priority")
+            routes = {s.route for s in self.sources}
+            for date, row in self.shares:
+                if set(row) != routes:
+                    raise ValueError(f"utility {self.name}: the shares' columns {sorted(row)} aren't its sources "
+                                     f"{sorted(routes)}")
+                if abs(sum(row.values()) - 1.0) > 1e-9 or min(row.values()) < 0:
+                    raise ValueError(f"utility {self.name}: shares on {date} sum to {sum(row.values())}, not 1")
+        elif not any(prio):
             for m in range(12):
                 total = sum(_monthly(f"utility {self.name}: {s.route} share", s.share)[m] for s in self.sources)
                 if abs(total - 1.0) > 1e-9:
@@ -161,14 +176,26 @@ class UtilityChain:
             if "priority" in s:
                 sources.append(Source(s["route"], None, int(s["priority"]),
                                       float(s["capacity"]) if "capacity" in s else None))
-            else:
+            elif "share" in s:
                 sources.append(Source(s["route"], s["share"] if isinstance(s["share"], list) else float(s["share"])))
+            else:
+                sources.append(Source(s["route"]))
+        shares = []
+        if c.get("shares"):  # a table of dated shares: date, then a column per source's route
+            path = Path(c["shares"])
+            path = path if path.is_absolute() or base is None else Path(base) / path
+            with open(path, newline="") as f:
+                rows = list(csv.DictReader(f))
+            shares = sorted((dt.date.fromisoformat(r["date"]), {k: float(v) for k, v in r.items() if k != "date"})
+                            for r in rows)
+            if not shares:
+                raise ValueError(f"utility {name}: {path} has no shares")
         leaks = c.get("leaks") or {}
         return cls(name=name, sources=sources, outfall=c["outfall"], losses=float(c.get("losses", 0.0)),
                    demand=float(c.get("demand", 0.0)), sewered=float(c.get("sewered", 1.0)),
                    infiltration=float(c.get("infiltration", 0.0)),
                    customers=[_customers(name, x, base) for x in c.get("customers", [])],
-                   leaks=float(leaks.get("share", 0.0)), leaks_to=leaks.get("to"))
+                   leaks=float(leaks.get("share", 0.0)), leaks_to=leaks.get("to"), shares=shares)
 
     # ---------- routes ----------
     def routes(self) -> list[str]:
@@ -203,7 +230,14 @@ class UtilityChain:
         ledger.enter(k + "demand", demand)
         ledger.enter(k + "asked", asked)
         requests: dict[str, float] = {}
-        if self.sources[0].priority is None:
+        if self.shares:  # the last row dated on or before the day
+            i = bisect.bisect_right([d for d, _ in self.shares], day) - 1
+            if i < 0:
+                raise ValueError(f"utility {self.name}: no source shares on or before {day} (the table starts "
+                                 f"{self.shares[0][0]})")
+            for route, share in self.shares[i][1].items():
+                requests[route] = requests.get(route, 0.0) + asked * share
+        elif self.sources[0].priority is None:
             for s in self.sources:
                 requests[s.route] = requests.get(s.route, 0.0) + asked * _monthly(s.route, s.share)[day.month - 1]
         else:

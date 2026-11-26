@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.16.0 (2026-11-25)
+
+- A water system's source shares from a dated table: `shares = "file.csv"`, with a date and then a column per
+  source's route. Each row sums to 1 and holds until the next date, and the sources are then given as `{route}`
+  alone. So a history whose split changes over the years reproduces by source: in the Virginia study, Culpeper's
+  wells start in 2015, Lake Mooney's plant in 2018, and Motts Run's river and reservoir split moves year to year.
+  - A day before the table's first date is refused, as are rows that don't sum to 1, and columns that aren't the
+    system's sources.
+  - Tested in `tests/test_chain.py`.
+- Wells and returns to the ground over several cells. `[[wells]]` and `[[ground]]` take
+  `cells = [[layer, row, col, weight], ...]` (`[layer, icell2d, weight]` on a vertex grid), or a CSV of those
+  columns, in place of `cell`. This serves a town's septic water and leaks across its service area, and
+  self-supplied domestic wells grouped by HUC-12 (the Virginia study's 4,000 cells).
+  - The weights are normalized. Each day the route's request splits by weight into a WEL entry per cell
+    (`<name>#1`, `#2`, ...). Its delivered is their sum, and the pairs and the closure are as before.
+  - Not built with transport, salt or a replay record.
+  - Tested in `tests/test_ground.py`: a house's pumping over two cells and its drainfield over three. Each cell
+    gets its weight's share every day.
+
 ## 0.15.0 (2026-11-25)
 
 - Water systems with customers: a town is one system (`[[utilities]]`, `chain.py`; docs/design.md, "Water systems

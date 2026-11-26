@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 25, 2026, release 0.15.0). Built and tested on synthetic examples:
+Status (Nov 25, 2026, release 0.16.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -281,7 +281,10 @@ A component with a daily or other step works the same way. The driver only asks 
   - Chosen over a return into an HRU's soil: a drainfield is below the root zone, so its water belongs to the aquifer
     cell, and swatplus-bmi sets no soil water. The cell's layer is the study's to give (the top active layer, as a
     rule).
-  - Transport and salt with it aren't built: a return's concentration would go on the WEL entry;
+  - Transport and salt with it aren't built: a return's concentration would go on the WEL entry.
+  - Over several cells (`cells = [[layer, row, col, weight], ...]` or a CSV; `[[wells]]` too; Nov 25, 2026): the
+    route's request splits by weight into a WEL entry per cell, and its delivered is their sum. This serves a
+    town's septic water and leaks across its service area, and domestic wells grouped by HUC-12;
 - `outfall:<name>`: a return entered in the ledger only;
 - `utility:<name>`: the utility chain.
 
@@ -317,7 +320,11 @@ share, the rest consumed).
 - **Losses.** `losses` is a share of production. `leaks = {share, to}` sends that share of the losses to the ground,
   and the rest is unaccounted water, booked as consumed.
 - **Sources.** Either shares (a constant, or 12 monthly values that sum to 1 each month), so a reported history
-  reproduces, or `priority` and `capacity` (m3 s-1): the first source up to its capacity, then the next. Shares and
+  reproduces, or `priority` and `capacity` (m3 s-1): the first source up to its capacity, then the next. Shares
+  can also come from a dated table (`shares = "file.csv"`: a date, then a column per source's route, each row
+  summing to 1 and held until the next date; Nov 25, 2026). A system whose split changes over the years uses it:
+  Culpeper's wells start in 2015, Lake Mooney's plant in 2018, and Motts Run's river and reservoir split moves
+  year to year. A day before the table's first date is refused. Shares and
   priorities don't mix within a system. Production asked = demand / (1 - losses). A source can be any withdrawal
   route (`swat:place_of_use:`, `well:`, `offsite:`, an import), or `effluent:<system>`, another system's treated
   plant outflow, taken before it reaches its outfall (reuse: a data center supplied from a town's plant).

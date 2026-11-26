@@ -93,3 +93,53 @@ def test_a_return_to_the_ground_needs_modflow_and_no_transport(swatplus, tmp_pat
     cfg.salt = {"cl": object()}
     with pytest.raises(NotImplementedError, match=r"\[\[ground\]\] with transport or salt isn't built"):
         Basin(cfg, run="ground-refused", days=2)
+
+
+def test_cells_read_inline_and_from_a_file(tmp_path):
+    from basinledger.config import _cells
+    got = _cells(tmp_path / "x.toml", "w", [[0, 20, 30, 1], [0, 20, 31, 3]])
+    assert got == (((0, 20, 30), 0.25), ((0, 20, 31), 0.75))
+    (tmp_path / "c.csv").write_text("layer,icell2d,weight\n0,412,2\n0,413,2\n")
+    assert _cells(tmp_path / "x.toml", "w", "c.csv") == (((0, 412), 0.5), ((0, 413), 0.5))
+    for bad in ([], [[0, 20]], [[0, 20, 30, 0]], [[0, 20, 30, 1], [0, 20, 30, 2]], [[0, 20, 30, True]]):
+        with pytest.raises(ValueError):
+            _cells(tmp_path / "x.toml", "w", bad)
+    base = (ROOT / "examples" / "synthetic" / "surface.toml").read_text().replace(
+        '"model:build"', f'"{(ROOT / "examples" / "synthetic").as_posix()}/model.py:build"')
+    (tmp_path / "x.toml").write_text(base + '\n[[ground]]\nname = "f"\ncells = [[0, 20, 31, 1], [0, 21, 31, 1]]\n')
+    (g,) = C.load(tmp_path / "x.toml").ground
+    assert g.cell is None and g.cells == (((0, 20, 31), 0.5), ((0, 21, 31), 0.5))
+    (tmp_path / "x.toml").write_text(base + '\n[[ground]]\nname = "f"\ncell = [0, 20, 31]\ncells = [[0, 21, 31, 1]]\n')
+    with pytest.raises(ValueError, match="cell or cells, not both"):
+        C.load(tmp_path / "x.toml")
+
+
+@pytest.mark.slow
+def test_a_well_and_a_drainfield_over_several_cells(swatplus, tmp_path):
+    """A house's pumping spread over two cells (3:1) and its drainfield over three (1:2:1), as a group of domestic
+    wells and their septic water would be over a HUC-12: each cell's WEL entry gets its weight's share of the day's
+    request, the route's delivered is their sum, and MODFLOW 6's budget closes."""
+    cfg = _config(tmp_path, "ground:field")
+    cfg.wells = [C.WellConfig("pw1", "wel_house", None, True, cells=(((0, 20, 28), 0.75), ((0, 22, 28), 0.25)))]
+    cfg.ground = [C.WellConfig("field", "wel_ground", None, True,
+                               cells=(((0, 20, 31), 0.25), ((0, 21, 31), 0.5), ((0, 22, 31), 0.25)))]
+    cfg.outputs = {}
+    b = Basin(cfg, run="ground-spread", days=60)  # the pump's cells in a WEL package of Basin Ledger's own
+    cells = {}
+    for _ in range(60):
+        b.step()
+        for route in ("well:pw1", "ground:field"):
+            for sub, w in b.router.groups[route]:
+                kind_, name = sub.split(":", 1)
+                pkg, i = (b.router._entries if kind_ == "well" else b.router._ground_entries)[name]
+                cells.setdefault(sub, []).append((abs(float(b.mf6.simvals(pkg)[i])), w))
+    t = b.ledger.table()
+    b.finalize()
+    for route, total in (("route:well:pw1:", PUMP * DAY), ("route:ground:field:", RETURNED * PUMP * DAY)):
+        np.testing.assert_allclose(t[route + "requested"], total, rtol=1e-12)
+        np.testing.assert_allclose(t[route + "delivered"], total, rtol=1e-9)
+    for sub, rows in cells.items():
+        got, w = np.array([r[0] for r in rows]), rows[0][1]
+        total = PUMP * DAY if sub.startswith("well:") else RETURNED * PUMP * DAY
+        np.testing.assert_allclose(got, w * total, rtol=1e-9)
+    assert np.abs(t["groundwater:closure_share"]).max() < 1e-6

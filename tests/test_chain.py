@@ -184,3 +184,38 @@ def test_bad_customers_are_refused():
               {"name": "x", "demand": 1.0, "outdoor": 0.2}):                             # an unknown key
         with pytest.raises(ValueError):
             UtilityChain.from_config(dict(base, customers=[c]))
+
+
+def test_dated_shares_held_until_the_next_date(tmp_path):
+    """Culpeper's wells start in 2015, before which all of it is Lake Pelham's: a table of dated shares, each row
+    held until the next date."""
+    (tmp_path / "shares.csv").write_text("date,swat:place_of_use:lake,well:a\n"
+                                         "2010-01-01,1.0,0.0\n2015-03-01,0.6,0.4\n2016-01-01,0.5,0.5\n")
+    t = UtilityChain.from_config({
+        "name": "t", "outfall": "outfall:plant", "shares": "shares.csv",
+        "sources": [{"route": "swat:place_of_use:lake"}, {"route": "well:a"}],
+        "customers": [{"name": "homes", "demand": 0.001, "sewered": 1.0}]}, tmp_path)
+    L = Ledger()
+    t.declare(L, rtol=FLOAT32)
+    asked = 0.001 * DAY
+    for date, lake in ((dt.date(2014, 12, 31), 1.0), (dt.date(2015, 2, 28), 1.0), (dt.date(2015, 3, 1), 0.6),
+                       (dt.date(2015, 12, 31), 0.6), (dt.date(2020, 6, 1), 0.5)):
+        req = day(t, L, date)
+        assert req["swat:place_of_use:lake"] == pytest.approx(lake * asked)
+        assert req["well:a"] == pytest.approx((1 - lake) * asked, abs=1e-12)
+    with pytest.raises(ValueError, match="no source shares on or before 2009-12-31"):
+        day(t, L, dt.date(2009, 12, 31))
+
+
+def test_bad_dated_shares_are_refused(tmp_path):
+    base = {"name": "t", "outfall": "outfall:p", "shares": "s.csv",
+            "sources": [{"route": "well:a"}, {"route": "well:b"}]}
+    for text, sources, match in (
+            ("date,well:a,well:b\n2010-01-01,0.5,0.4\n", None, "sum to 0.9"),
+            ("date,well:a\n2010-01-01,1.0\n", None, "aren't its sources"),
+            ("date,well:a,well:b\n2010-01-01,0.5,0.5\n", [{"route": "well:a", "share": 0.5},
+                                                          {"route": "well:b", "share": 0.5}], "neither a share"),
+            ("date,well:a,well:b\n", None, "has no shares")):
+        (tmp_path / "s.csv").write_text(text)
+        with pytest.raises(ValueError, match=match):
+            UtilityChain.from_config(dict(base, sources=sources or base["sources"]), tmp_path)
