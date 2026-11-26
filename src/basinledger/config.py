@@ -70,6 +70,7 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     name = "drainfield1"                #   drainfield, a system's leaks. Its water goes into this aquifer cell,
     cell = [0, 20, 31]                  #   through a WEL entry Basin Ledger adds (package "wel_ground" unless named;
                                         #   add = false for an entry the model has), and MODFLOW 6's budget takes it
+    # concentration = {chloride = 0.08}  # with transport: kg m-3 for water from users that report none of it [A]
 
     [irrigation]                        # optional: SWAT+'s irrigation pumped from MODFLOW 6's wells (coupling/
     wells = [{hru = "hru0001", well = "irr1", share = 1.0}]  # irrigation.py; swatplus-bmi 0.11.0): each day, the
@@ -113,6 +114,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     recharge = "swatplus"               #   SWAT+'s leached mass, HRU by HRU with [recharge] source = "hru"
     stream = "swatplus"                 #   gains, drains and the soil link carry the cells' concentrations into SWAT+,
                                         #   losses SWAT+'s own (needs add_transport's stream_mass on rivers, drains)
+    point_sources = {quarry = 0.001}    #   kg m-3 SWAT+'s point source load takes for water no user or system
+                                        #   reports [A] (the systems' plants and reporting users load it themselves)
 
     [salt.chloride]                     # optional: a conservative species through the land, the aquifer's
     precipitation = 0.0003              #   [transport.<species>] (its recharge and stream then come from here) and the
@@ -124,7 +127,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     sources = [{name = "septic", rate = "septic.csv", timing = "uniform"},          # land sources, kg m-2 a year:
                {name = "potash", rate = "potash.csv", timing = "fertilizer", group = "agricultural"}]  # a number,
                                         #   hru, year, kg_m2, hru, kg_m2_yr or (by = "landuse") landuse, kg_m2_yr;
-                                        #   timing uniform, fertilizer or 12 monthly weights [A]
+                                        #   timing uniform, fertilizer or 12 monthly weights [A]; a source in
+                                        #   group septic beside septic water on ground: routes says
+                                        #   outside_routes = true (it covers only homes no route carries)
     point_sources = {wwtp = 0.08}       # a point source's concentration, for water no user reports [A]
     multipliers = {road_salt = 1.0, agricultural = 1.0}  # on each input group's mass (calibration: model salt,
                                         #   target <species>:<group>)
@@ -155,6 +160,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     name = "city"
     sources = [{route = "well:pw1", share = 1.0}]
     outfall = "swat:point_source:wwtp"
+    effluent = {chloride = 0.1}         # with transport, kg m-3: the plant's outflow, and septic_effluent, what septic
+                                        #   water carries to the water table (chain.py; a constant, 12 monthly
+                                        #   values, a dated CSV, or "sewer" / "tap")
 
     [[transfers]]                       # optional: water moved from an intake to a point source at the rate the
     name = "fill"                       #   rules set (pumped storage, a release; operations.py): held overnight
@@ -253,6 +261,8 @@ class WellConfig:
     model: str | None = None  # with several models coupled, the one it's in (the first if not given)
     well: int | None = None   # a multi-aquifer well (MAW): its number in the package, 1-based, in place of a cell
     cells: tuple = ()         # several cells, in place of cell: ((cell, weight), ...), the weights summing to 1
+    # [[ground]]: kg m-3 by transport species for the water of users that report none of it [A]
+    concentration: dict = field(default_factory=dict)
 
 
 def _flag(path: Path, where: str, v) -> bool:
@@ -317,16 +327,26 @@ def _ground(path: Path, g: dict) -> WellConfig:
     """A [[ground]] entry: a return to the ground at an aquifer cell, as a WEL entry injecting it (``WellConfig``;
     route ``ground:<name>``). Added by Basin Ledger in a package of its own unless ``add = false``."""
     where = f"[[ground]] {g.get('name')!r}"
-    if "name" not in g or set(g) - {"name", "cell", "cells", "package", "add", "model"}:
-        raise ValueError(f"{path}: {where} takes name and cell (or cells), and may have package, add and model; got "
-                         f"{sorted(g)}")
+    if "name" not in g or set(g) - {"name", "cell", "cells", "package", "add", "model", "concentration"}:
+        raise ValueError(f"{path}: {where} takes name and cell (or cells), and may have package, add, model and "
+                         f"concentration; got {sorted(g)}")
+    conc = _concentrations(path, f"{where} concentration", g.get("concentration", {}))
     if "cells" in g:
         if "cell" in g:
             raise ValueError(f"{path}: {where}: cell or cells, not both")
         return WellConfig(g["name"], g.get("package", "wel_ground"), None, _flag(path, f"{where} add",
-                          g.get("add", True)), g.get("model"), cells=_cells(path, where, g["cells"]))
+                          g.get("add", True)), g.get("model"), cells=_cells(path, where, g["cells"]),
+                          concentration=conc)
     return WellConfig(g["name"], g.get("package", "wel_ground"), _cell(path, where, g.get("cell")),
-                      _flag(path, f"{where} add", g.get("add", True)), g.get("model"))
+                      _flag(path, f"{where} add", g.get("add", True)), g.get("model"), concentration=conc)
+
+
+def _concentrations(path: Path, where: str, c) -> dict[str, float]:
+    """``{<species> = kg m-3}``: a stated concentration by transport species, none below zero."""
+    if not isinstance(c, dict) or any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0
+                                      for v in c.values()):
+        raise ValueError(f"{path}: {where} is {{<species> = kg m-3}}, none below zero; got {c!r}")
+    return {str(k): float(v) for k, v in c.items()}
 
 
 def _user(path: Path, base: Path, u: dict) -> UserConfig:
@@ -540,8 +560,9 @@ def load(path: str | Path) -> ExampleConfig:
         if sp not in transport:
             raise ValueError(f"{path}: [salt.{sp}] carries {sp} through the aquifer's transport model: it needs "
                              f"[transport.{sp}]")
-        if set(transport[sp]) & {"recharge", "stream"}:
-            raise ValueError(f"{path}: [transport.{sp}]'s recharge and stream come from [salt.{sp}]; remove them")
+        if set(transport[sp]) & {"recharge", "stream", "point_sources"}:
+            raise ValueError(f"{path}: [transport.{sp}]'s recharge, stream and point sources come from [salt.{sp}]; "
+                             "remove them")
         if "swatplus" not in c or "modflow6" not in c or rch.get("source") != "hru" or "exchange" not in c:
             raise ValueError(f"{path}: [salt.{sp}] needs SWAT+, MODFLOW 6, [recharge] source = \"hru\" (the "
                              "recharge's mass is placed HRU by HRU) and the two-way [exchange]")
@@ -560,9 +581,11 @@ def load(path: str | Path) -> ExampleConfig:
             continue
         if not isinstance(t, dict) or "recharge" not in t:
             raise ValueError(f"{path}: [transport.{sp}] needs recharge (kg m-3, or \"swatplus\")")
-        if set(t) - {"recharge", "stream", "model", "surface"}:
+        if set(t) - {"recharge", "stream", "model", "surface", "point_sources"}:
             raise ValueError(f"{path}: [transport.{sp}] unknown settings "
-                             f"{sorted(set(t) - {'recharge', 'stream', 'model', 'surface'})}")
+                             f"{sorted(set(t) - {'recharge', 'stream', 'model', 'surface', 'point_sources'})}")
+        if "point_sources" in t:
+            t["point_sources"] = _concentrations(path, f"[transport.{sp}] point_sources", t["point_sources"])
         if "stream" in t and "exchange" not in c:
             raise ValueError(f"{path}: [transport.{sp}] stream needs the two-way [exchange]")
         if "exchange" in c and "stream" not in t:

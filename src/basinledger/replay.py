@@ -12,7 +12,9 @@ salt balances read from the flow side:
   soil link, wells, and the model's own), with each package's entries checked to stay where they were;
 - SWAT+'s day as the salt balances read it (the ``hru_wb`` columns, percolation, channel and reservoir volumes,
   flows, rain and seepage, point sources, withdrawals, fertilizer), the soil link's plan by map row (gwflow's rule),
-  the users' ledger lines and controls, ``recharge:sent``, and the flow, base flow and head series;
+  the users' ledger lines and controls, the routes' lines (``route:<r>:requested``, ``:delivered``: the water systems
+  are run again from them, their mass from the replay's concentrations), ``recharge:sent``, and the flow, base flow
+  and head series;
 - once: the run's identity (``identity``), the starting state, the recharge and soil maps, the exchange's entries,
   the users, and the SWAT+ files the salt reads at start-up (routing, HRU data, the stations' weather).
 
@@ -44,6 +46,8 @@ from types import SimpleNamespace
 import numpy as np
 
 from . import config as C
+from .chain import UtilityChain
+from .ledger import FLOAT32
 
 FORMAT = 1
 DHDRY = -1e30  # MODFLOW 6's head in a dry cell
@@ -106,13 +110,31 @@ def _canonical(x, folder: Path, files: dict):
     return x
 
 
+def _flow_side(name: str, value):
+    """A config field without what only moves mass (docs/design.md, Mass through the human-system routes): a return to
+    the ground's stated concentration, a water system's effluent, septic effluent and its sources' stated
+    concentrations. A replay may change them."""
+    if name == "ground":
+        return [dataclasses.replace(g, concentration={}) for g in value]
+    if name == "utilities":
+        out = []
+        for u in value:
+            u = {k: v for k, v in u.items() if k not in ("effluent", "septic_effluent")}
+            u["sources"] = [{k: v for k, v in s.items() if k != "concentration"} for s in u.get("sources", [])]
+            if "customers" in u:
+                u["customers"] = [{k: v for k, v in c.items() if k != "septic_effluent"} for c in u["customers"]]
+            out.append(u)
+        return out
+    return value
+
+
 def identity(cfg: C.ExampleConfig, parameters: list, users: bool, heads) -> dict:
     """What the flow of a run depends on outside MODFLOW 6's flow model's own files (``gwf_inputs``): the config's
     flow side (every field but the salt's, the outputs and the run's place and length), the content of every file it
     names (the SWAT+ project, maps, users' configs, weather, the builder's module), the parameters of the models
     (not salt's), whether the users run, and the starting heads given. Each part hashed."""
     files: dict[str, str] = {}
-    flow = {f.name: _canonical(getattr(cfg, f.name), cfg.folder, files)
+    flow = {f.name: _canonical(_flow_side(f.name, getattr(cfg, f.name)), cfg.folder, files)
             for f in dataclasses.fields(cfg) if f.name not in FLOW_FIELDS_LEFT_OUT}
     if cfg.mf6_builder:  # the builder's code: its arguments are checked through the files it writes
         mod = cfg.mf6_builder.partition(":")[0]
@@ -201,7 +223,7 @@ def build_modflow6(cfg: C.ExampleConfig, ws: Path, days: int, start: dt.date, pr
     parameters). Notes are left out (the recorded run gave them)."""
     from .coupling import existing as EX
     from .coupling.timesteps import daily_steps
-    from .driver import Basin, _example_function
+    from .driver import Basin, _example_function, add_route_wells
     ws = Path(ws)
     if ws.exists():
         shutil.rmtree(ws)
@@ -210,12 +232,7 @@ def build_modflow6(cfg: C.ExampleConfig, ws: Path, days: int, start: dt.date, pr
     else:
         shutil.copytree(cfg.mf6_workspace, ws)
     daily_steps(ws, cfg.mf6_time_units)
-    by_model: dict[str, list] = {}
-    for w in cfg.wells:
-        if w.add:
-            by_model.setdefault((w.model or cfg.mf6_model).lower(), []).append((w.name, w.package, w.cell))
-    for model, added in by_model.items():
-        EX.add_wells(ws, model, added)
+    add_route_wells(cfg, ws)  # users' wells and returns to the ground, with their auxiliaries and SSM sources
     if cfg.mf6_storage is not None:
         st = cfg.mf6_storage
         EX.add_storage(ws, cfg.mf6_model, st.get("sy"), st.get("ss"), int(st.get("iconvert", 1)), cfg.mf6_length_units)
@@ -559,7 +576,7 @@ class Recorder:
                 "packages": self.gwf.packages, "movers": self.gwf.movers, "flow_error": self.gwf.flow_error,
                 "storage": [v.split("/")[1].lower() for v in self.gwf.storage], "spdis": self.gwf.spdis,
                 "series": [k for k in basin.series if k.split(":")[0] in ("flow", "baseflow", "head")],
-                "users": [], "exchange": None, "gw_soil": None}
+                "users": [], "exchange": None, "gw_soil": None, "routes": sorted(basin.router.used)}
 
         def link(pkg, cmap):
             return {"package": pkg, "channels": list(cmap.channels),
@@ -598,7 +615,8 @@ class Recorder:
         if gs is not None and gs.rule == "gwflow":
             d["soil:row_planned"] = self.cast(gs.row_planned)
         L = basin.ledger
-        lines = {k: L.today(k) for k in L.rows if k.startswith("user:") and len(L.rows[k]) > L.days}
+        # the users' lines, and the routes' (what the water systems' shares and the returns to the ground read)
+        lines = {k: L.today(k) for k in L.rows if k.startswith(("user:", "route:")) and len(L.rows[k]) > L.days}
         lines["recharge:sent"] = L.today("recharge:sent")
         d["json"] = {"ledger": lines, "controls": {u.name: dict(wu.controls) for u, wu in basin.users},
                      "series": {k: basin.series[k][-1] for k in basin.series
@@ -755,6 +773,7 @@ class ReplayBasin(Basin):
         from .mapping import AreaMap
         from .users import WaterUser, load_component
         self.cfg, self._problems, self.recorder = cfg, None, None
+        self._driver = D
         self.status = cfg.calibration_status
         if heads is not None or wrap_surface is not None:
             raise ReplayRefused("a replay takes the flow from its record: heads and wrap_surface aren't taken")
@@ -850,9 +869,40 @@ class ReplayBasin(Basin):
         self.surface, self._track_transport, self.swat_aquifer_ha = {}, False, {}
         self.rule_memory = saved["rule_memory"] if saved else {}
         self._wells_left_out = set()
-        wells = {w.name: (w.package, self._well_node(w)) for w in cfg.wells}
+        if (cfg.ground or cfg.utilities or any(w.cells for w in cfg.wells)) and "routes" not in info:
+            raise ReplayRefused(f"replay from {rec.folder}: returns to the ground, wells over several cells and water "
+                                "systems need the routes' lines, which a record made before 0.17.0 doesn't hold; "
+                                "record it again")
+        # the routes as the transport's links and the water systems read them (driver.Basin's router), the day's
+        # requests and deliveries from the record
+        wells, grounds, groups = {}, {}, {}
+        for w in cfg.wells:
+            if w.cells:
+                self._spread(w, "well", wells, groups)
+            else:
+                wells[w.name] = (w.package, self._well_node(w))
+        for g in cfg.ground:
+            if g.cells:
+                self._spread(g, "ground", grounds, groups)
+            else:
+                grounds[g.name] = (g.package, self._well_node(g))
+        self.router = SimpleNamespace(wells=wells, grounds=grounds, groups=groups, used=set(info.get("routes", [])),
+                                      req={}, points=[])
+        self._ground_kg, self._well_c = {}, {}
+        self._ground_cfg = {g.name: g for g in cfg.ground}
+        self._point_kg, self._point_m3 = {}, {}
 
-        # users: those taking in the aquifer's water run again; the others' lines are the record's
+        # the water systems: their water again from the routes' recorded lines (chain.py is accounting), and their
+        # mass from the replay's concentrations
+        self.utilities = {u["name"]: UtilityChain.from_config(u, cfg.path.parent) for u in cfg.utilities}
+        held = (saved or {}).get("utilities_held") or {}
+        for chain in self.utilities.values():
+            chain.declare(L, rtol=FLOAT32)
+            if chain.name in held:
+                chain.held = held[chain.name]
+
+        # users: those taking in the aquifer's water, or a water system's, run again; the others' lines are the
+        # record's
         recorded = {u["name"]: u for u in info["users"]}
         self.users, self.rerun, self.intakes = [], set(), []
         for u in (cfg.users if users else []):
@@ -861,10 +911,14 @@ class ReplayBasin(Basin):
                 raise ReplayRefused(f"replay: user {u.name} isn't in the record")
             takes = [sp for sp in self.transport if f"water_user_intake_water_{sp}__mass_concentration" in r["intake"]]
             k, name = D.kind(u.withdrawal)
-            if takes and k == "well" and name in wells:
+            from_well = k == "well" and (name in wells or f"well:{name}" in groups)
+            if takes and (from_well or k == "utility"):
                 if u.forcing:
                     raise ReplayRefused(f"replay: user {u.name} takes in the aquifer's water and has forcing; running it "
                                         "again from a record isn't built")
+                if k == "utility" and D.kind(u.returns)[0] != "utility":
+                    raise ReplayRefused(f"replay: user {u.name} takes in its water system's water and returns it "
+                                        "elsewhere, held overnight; running it again from a record isn't built")
                 comp = load_component(u.component)
                 wu = WaterUser(u.name, comp, str(u.config) if u.config else None, variables=u.variables or None,
                                constituents=u.constituents, report=u.report or None)
@@ -873,16 +927,28 @@ class ReplayBasin(Basin):
                 self.rerun.add(u.name)
                 L.pair(f"user:{u.name}:withdrawal", [f"user:{u.name}:{x}" for x in ("consumption", "return",
                                                                                     "storage_less_gain")])
-                for sp in takes:
-                    self.intakes.append((u.name, wu, f"water_user_intake_water_{sp}__mass_concentration", sp,
-                                         wells[name][1]))
+                if from_well:
+                    for sp in takes:
+                        self.intakes.append((u.name, wu, f"water_user_intake_water_{sp}__mass_concentration", sp,
+                                             name))
             else:
                 self.users.append((u, _RecordedUser({c: c for c in r["constituents"]})))
         self._set_intakes()
+        stated = {g.name: g.concentration for g in cfg.ground}
+        for u, wu in self.users:  # a return to the ground carries what the user reports, or its stated concentration
+            k, name = D.kind(u.returns)
+            if k == "ground" and name in stated:
+                missing = [sp for sp in self.transport if sp not in wu.constituents and sp not in stated[name]]
+                if missing:
+                    raise ValueError(f"user {u.name} returns to ground:{name} reporting no {missing}, and "
+                                     f"[[ground]] {name} states no concentration for them")
 
         self.salt = {}
         for sp in cfg.salt:
             self._salt(cfg, sp, rec.folder / "swatplus", restart)
+        self._system_species, self._ps_species, self.system_intakes = [], {}, []
+        if self.transport:
+            self._systems_mass(cfg, None)
 
         # outputs: the recorded series, and the salt's
         channels = rec.info["surface"].get("channel_water__volume_outflow_rate", [])
@@ -909,6 +975,13 @@ class ReplayBasin(Basin):
         j = day["json"]
         self.sw.set_day(day)
         t1 = time.perf_counter()
+        self._ground_kg, self._uses = {}, {}
+        self.router.req = {}
+        for a, v in j["ledger"].items():  # the routes' water, as the recorded run placed it
+            if a.startswith("route:"):
+                L.enter(a, v)
+                if a.endswith(":requested"):
+                    self.router.req[a[len("route:"):-len(":requested")]] = v
         for u, wu in self.users:
             k = f"user:{u.name}:"
             if u.name not in self.rerun:
@@ -926,6 +999,7 @@ class ReplayBasin(Basin):
                                         "water depends on what it takes in from the aquifer, so changing the salt "
                                         "would change the flow")
                 L.enter(k + a, v)
+            self._uses[u.name] = use
             for c, kg in use.constituents.items():
                 L.enter(k + f"{c}:kg", kg)
             for sp in self.transport:  # the intake from the aquifer, as Basin.step books it
@@ -936,9 +1010,12 @@ class ReplayBasin(Basin):
                 L.enter(k + "MWh", use.energy)
             for name, v in use.reported.items():
                 L.enter(k + name, v)
+        date = self.start + dt.timedelta(days=d)
+        if self.utilities or self._ground_cfg:
+            self._routes_before(L, date)
         reads = {}
         for s in self.salt.values():
-            s.after_surface(L, self.start + dt.timedelta(days=d), reads)
+            s.after_surface(L, date, reads)
         t2 = time.perf_counter()
 
         self.mf6.prepare_day()
@@ -962,6 +1039,8 @@ class ReplayBasin(Basin):
         self.mf6.day += 1
         if self.transport:
             self._transport_accounts(L)
+        if self.utilities:
+            self._systems_after_replay(L, date)
         t3 = time.perf_counter()
 
         for k in self.series:
@@ -982,6 +1061,63 @@ class ReplayBasin(Basin):
         self.times["salt"] += t2 - t1
         self.times["modflow6"] += t3 - t2
 
+    def _routes_before(self, L, today):
+        """Before the salt's day, as Basin.step: each user's water to its water system (from the tap, back to the
+        sewer) and its return's mass to the ground, from its lines; then each system's day planned and its held
+        returns released, with their mass (the plants' outfalls for the salt's point sources, the septic water and
+        leaks for the ground)."""
+        D = self._driver
+        for u, wu in self.users:
+            k = f"user:{u.name}:"
+            supply, sname = D.kind(u.withdrawal)
+            back, bname = D.kind(u.returns)
+            held = supply in ("swat:place_of_use", "utility") and not (supply == "utility" and back == "utility")
+            vol = L.today(k + ("return_sent" if held else "return"))
+            reported = {c: L.today(k + f"{c}:kg") for c in wu.constituents}
+            if supply == "utility":
+                self.utilities[sname].add_user(L.today(k + "withdrawal"), 0.0)
+            if back == "utility" and (held or supply != "utility"):
+                self.utilities[bname].add_return(vol, reported)
+            if self.transport and back == "ground":
+                stated = self._ground_cfg[bname].concentration
+                for sp in self.transport:
+                    m = reported.get(sp, 0.0) if sp in wu.constituents else stated.get(sp, 0.0) * vol
+                    by = self._ground_kg.setdefault(sp, {})
+                    by[u.returns] = by.get(u.returns, 0.0) + m
+        for chain in self.utilities.values():
+            chain.plan(L, today, self.utilities)
+        for chain in self.utilities.values():
+            chain.release(L)
+        for chain in self.utilities.values():
+            if self._system_species:
+                self._systems_release(L, chain, today)
+
+    def _systems_after_replay(self, L, today):
+        """After the transport's day, as Basin._systems_after: each system's share from the routes' recorded lines,
+        its users' returns to its sewer (a rerun user's at its own mass), its water by where it went, and its mass."""
+        D = self._driver
+        for chain in self.utilities.values():
+            chain.share(L, self.utilities)
+        for u, wu in self.users:
+            supply, sname = D.kind(u.withdrawal)
+            back, bname = D.kind(u.returns)
+            if supply != "utility" or back != "utility":
+                continue
+            k, share = f"user:{u.name}:", self.utilities[sname]._day["share"]
+            if u.name in self.rerun:
+                use = self._uses[u.name]
+                due, kg = share * use.returned, {c: share * m for c, m in use.constituents.items()}
+            else:
+                due, kg = L.today(k + "return_due"), {c: share * L.today(k + f"{c}:kg") for c in wu.constituents}
+            self.utilities[bname].add_return(due, kg)
+        for chain in self.utilities.values():
+            chain.settle(L)
+        if self._system_species:
+            for chain in self.utilities.values():
+                chain.mass_settle(L, today, self._system_species, self._source_concentrations(chain),
+                                  self._system_scale())
+            self._set_system_intakes()
+
     # ---------- restarts and outputs ----------
     def save(self, folder: str | Path):
         """The replay's state after the last day run: the concentrations, the salt, the ledger and the series, for a
@@ -996,7 +1132,7 @@ class ReplayBasin(Basin):
             np.savez(folder / f"salt_{sp}.npz", **s.state())
         (folder / "basin.json").write_text(json.dumps({
             "day": self.day, "ledger": self.ledger.state(), "series": self.series, "rule_memory": self.rule_memory,
-            "replay": str(self.record.folder)}))
+            "utilities_held": {n: c.held for n, c in self.utilities.items()}, "replay": str(self.record.folder)}))
 
     def write_outputs(self, folder: str | Path | None = None) -> Path:
         out = super().write_outputs(folder)
