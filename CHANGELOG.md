@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.17.0 (unreleased)
+## 0.17.0 (2026-11-25)
 
 Mass through the human-system routes, for the Virginia study's water quality (docs/design.md, "Mass through the
 human-system routes"). Before this, returns to the ground and routes over several cells were refused with transport

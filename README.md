@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.16.0).** Built and tested:
+**Status: early (0.17.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -60,11 +60,11 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - the whole-basin balance, the capture of pumping (from storage, the streams and the boundary), and depletion against
   Glover and Balmer (1954);
 - scenarios from a shared warm-up, and restarts from a saved day that match unbroken runs bit for bit;
-- scenarios of water users on the existing system (unreleased). Users are added, scaled or removed, and a
+- scenarios of water users on the existing system. Users are added, scaled or removed, and a
   system's sources changed, and a user grows in dated phases. The runner reports each scenario's and all
   together's effect on flow, low flows (7Q10) and the flow duration curve, heads, capture and water, and whether
   the effects add up. It runs the cases in parallel processes and is restartable (`basinledger scenarios`);
-- operating rules for systems and reservoirs (unreleased): pumped storage, releases and staged drought restrictions,
+- operating rules for systems and reservoirs: pumped storage, releases and staged drought restrictions,
   with transfers from an intake to a point source, now into a reservoir too;
 - weather written into SWAT+'s gage records from a run's first day (swatplus-bmi 0.7.0): a
   series per gage from a CSV, gridded data mapped to gages, and a scenario's change (wetter, drier, warmer; monthly
@@ -84,6 +84,10 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   the cells as its water is, GWT in the aquifer with weathering by zone, and a mass balance for every channel and
   reservoir upstream first; input groups scaled by multipliers a calibration can fit; specific conductance as a
   linear combination of the species, for scoring;
+- mass through the human-system routes: returns to the ground (septic water, leaks) and wells over several cells
+  carry their concentrations; a water system's sources mixed by what each delivered and each class's returns at a
+  stated septic or plant effluent concentration (a DMR's months); the plants' and users' loads on SWAT+'s point
+  sources for nitrate and soluble P; septic counted once beside salt's land sources; all of it in a replay;
 - replay (`[replay] record`, `--replay`): a coupled run's flow side recorded once, compactly, and the salt run again
   from it as often as a calibration needs, with MODFLOW 6's flow model left unsolved and no SWAT+: bit for bit from a
   float64 record, to float32's rounding from the default; anything that would change the flow refused;
@@ -106,8 +110,8 @@ Examples:
 
 Still to come ([docs/design.md](docs/design.md)):
 
-- a user's returned loads into SWAT+'s point sources, the rest of water quality's stage 2 (swatplus-bmi's
-  `point_source_water_<species>__mass_flow_rate`);
+- reported irrigation applied on SWAT+'s fields with its mass (a `land:` route; it waits on swatplus-bmi's settable
+  irrigation, docs/requests.md item 9);
 - SWAT+ built on the NextGen hydrofabric, for water quality on the same catchments;
 - AORC forcing;
 - USGS groundwater levels as observations.
