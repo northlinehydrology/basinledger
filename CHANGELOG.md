@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.18.0 (unreleased)
+## 0.18.0 (2026-11-26)
 
 - **Water onto SWAT+'s fields: the `land:` route** (`[[land]] name, hrus = [{hru, weight}, ...]` or a CSV, `runoff`,
   `concentration`; docs/design.md, "Mass through the human-system routes", part 4). It needs swatplus-bmi 0.15.0's
