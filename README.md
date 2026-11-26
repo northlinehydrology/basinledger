@@ -60,6 +60,10 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - the whole-basin balance, the capture of pumping (from storage, the streams and the boundary), and depletion against
   Glover and Balmer (1954);
 - scenarios from a shared warm-up, and restarts from a saved day that match unbroken runs bit for bit;
+- scenarios of water users on the existing system (unreleased). Users are added, scaled or removed, and a
+  system's sources changed, and a user grows in dated phases. The runner reports each scenario's and all
+  together's effect on flow, low flows (7Q10) and the flow duration curve, heads, capture and water, and whether
+  the effects add up. It runs the cases in parallel processes and is restartable (`basinledger scenarios`);
 - weather written into SWAT+'s gage records from a run's first day (swatplus-bmi 0.7.0): a
   series per gage from a CSV, gridded data mapped to gages, and a scenario's change (wetter, drier, warmer; monthly
   factors and shifts);
@@ -299,6 +303,14 @@ cfg = C.load("examples/synthetic/basin.toml")
 state = warm_up(cfg, 365)
 dry = run_case(cfg, state, "dry", change=lambda c: setattr(c, "weather", {"change": {"precipitation": 0.8}}))
 dry.finalize()
+```
+
+Scenarios of water users are a TOML file beside the example: each scenario's users and changes, run alone and
+together, and compared with the baseline in tables for a paper (`examples/synthetic/scenarios/data_centers.toml`;
+docs/design.md, "Scenarios of water users"):
+
+```bash
+basinledger scenarios examples/synthetic/scenarios/data_centers.toml --workers 2
 ```
 
 ![Drawdown in the synthetic example](https://raw.githubusercontent.com/northlinehydrology/basinledger/main/docs/figures/synthetic-drawdown.png)

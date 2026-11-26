@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+- Scenarios of water users on the existing system, and what each user does to the basin (`scenarios.py`,
+  `phases.py`, `attribution.py`; docs/design.md, "Scenarios of water users"). Andrew asked for them on Nov 25,
+  2026, for the Virginia study's data centers.
+  - **A set of scenarios** is one TOML file beside the example: its warm-up, its run, the points compared, and
+    `[[scenario]]` tables of changes on top of the example. A scenario adds users (a customer of a system, or with
+    its own well, intake or reuse) with their wells, returns to the ground, intakes and point sources. It changes a
+    system's keys (its sources: shares or priority), adds systems and rules, and scales or removes existing users and
+    systems. `[[combination]]` runs scenarios together.
+  - **Phased growth:** `phases = [{from = "2027-01-01", mw = 60}, {from = "2030-01-01", mw = 300}]` on any user.
+    The user is off before the first phase. A phase gives `mw` (CoolingWaterBmi's `it_capacity_mw`), `config` (any
+    of the component's keys) or `multiplier`. Each distinct config is its own component, stepped together from the
+    run's start, so each phase is exactly the component at that size. CoolingWaterBmi is unchanged.
+  - **What is compared**, each case against the baseline over the compared period:
+    - flow at the channels named: daily, mean, the flow duration curve, the lowest 7-day mean, the climatic years'
+      7-day minima and the 7Q10 (log-Pearson III);
+    - heads at the cells named;
+    - the capture of the extra pumping;
+    - each changed user's and system's water.
+  - **The interaction** of a combination is its effect less the sum of its scenarios' effects alone, for every
+    statistic and day by day.
+  - **The runner,** `basinledger scenarios set.toml [--workers N] [--cases A,B] [--fresh] [--tables]`, runs the
+    warm-up once, then every case in parallel processes at a niceness. It skips what is done from the same inputs
+    and resumes a stopped case from its checkpoint. It writes CSV tables and `tables.md` for a paper (SI or US
+    units).
+  - `[[users]]` takes `phases`, and `scenarios.warm_up` takes `users`.
+  - The synthetic town (`examples/synthetic/town.toml`) and its set (`examples/synthetic/scenarios/`).
+  - Tested in `tests/test_user_scenarios.py`:
+    - a phased user is the component at each size, to the bit (CoolingWaterBmi at 60 and 300 MW, under a limit
+      too);
+    - two data centers alone and together: their own water adds exactly, the interaction is the effect together
+      less the parts', and the capture's residual is zero;
+    - the town grows onto a new well without the plant;
+    - a rerun does nothing, and a stopped case resumes to the same ledger, bit for bit.
+
 ## 0.16.0 (2026-11-25)
 
 - A water system's source shares from a dated table: `shares = "file.csv"`, with a date and then a column per

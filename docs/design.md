@@ -1582,7 +1582,7 @@ source). All of them start from one warm-up:
 Scenarios then run in parallel, each in its own process. `branch()` (fork) isn't used by the driver yet, because
 libmf6 lives in the driver's process. A branch would need MODFLOW 6 restarted from heads in the child process.
 
-## Scenarios of water users, and what each one does to the basin (designed Nov 25, 2026, for the Virginia study)
+## Scenarios of water users, and what each one does to the basin (designed and built Nov 25, 2026, for the Virginia study)
 
 Basin Ledger exists to model and investigate the basin-scale effects of individual and multiple water users. The
 Virginia study (the Rappahannock above Fredericksburg) has the basin's existing water use as 25 systems and about 80
@@ -1697,7 +1697,8 @@ format). They are all stepped together from the run's start, with the same weath
 phase has passed. Every phase is therefore exactly the component at that size, whatever state or calendar it keeps.
 The active phase gets the limits and dry mode from the rules; the others run without them, and no one reads them.
 The user is routed as one user, and its accounts are one user's. A schedule of multipliers alone uses one component
-built from the file as given. A ReportedUser grows that way.
+built from the file as given. A ReportedUser grows that way. A multiplier is put on each step, before the day's
+sum, so a power of two scales the day to the bit, and any other to the sum's rounding (1e-15).
 
 The multiplier scales the outputs whose units are a volume, a volume flux, a mass flux or a power. A temperature isn't
 scaled, and neither is a running total of time (CoolingWaterBmi's hours with heat not removed), which counts the
@@ -1736,7 +1737,8 @@ gives the share of the combination's day-by-day change that isn't the sum of the
 |E|) and the largest |I| on a day. The users' own water adds exactly when nothing feeds back on them (no rule, and no
 limited source), and the test holds it to the last bit.
 
-**The runner.** `basinledger scenarios data-centers.toml [--workers 4] [--cases culpeper,all] [--fresh]` runs the
+**The runner.** `basinledger scenarios data-centers.toml [--workers 4] [--cases culpeper,all] [--fresh]
+[--tables]` runs the
 warm-up once, then the baseline, each scenario and each combination, in parallel processes (spawned, one case per
 process, since libmf6 and SWAT+ hold one model a process), each at the worker's niceness. Then it writes the tables.
 It is restartable. The warm-up and each case record a fingerprint when done: the example's file, its parameter file,
@@ -1744,7 +1746,9 @@ the set's model parts and comparison points, and the case's own changes and the 
 A case whose fingerprint matches is not run again. A case stopped part way resumes from its last checkpoint. Adding a
 scenario runs only the new scenario. Adding a well or a head to compare changes every case's models, so everything
 runs again, and the runner says why. `--fresh` runs everything. A model file the example reads that changes under
-the same names isn't seen: use `--fresh`.
+the same names isn't seen: use `--fresh`. `--tables` writes the tables again from the cases already run. One case's
+failure doesn't stop the others. It is listed in `status.json`, and the runner exits with an error after the
+tables.
 
 The set's folder holds `warm_up/` (its run and `state/`), `cases/<case>/` (each run's outputs), `checkpoints/` and
 `tables/`:
