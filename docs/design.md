@@ -1824,7 +1824,7 @@ the example (`scenarios.py`, `basinledger scenarios <file>`):
     [run]
     days = 0                               # the run's days in all, warm-up included (0: the example's)
     workers = 4                            # cases at once, each in its own process
-    nice = 10                              # each worker's niceness (default 10)
+    nice = 10                              # each worker's niceness (default 10; POSIX, not Windows)
     checkpoint_days = 365                  # a case saves its state this often; a stopped case resumes there (0: never)
 
     [compare]

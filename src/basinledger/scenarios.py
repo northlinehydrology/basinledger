@@ -460,7 +460,7 @@ def _done(folder: Path, fingerprint: str) -> bool:
 
 
 def _worker_start(nice: int):
-    if nice:
+    if nice and hasattr(os, "nice"):  # POSIX; on Windows the workers run at the runner's priority
         os.nice(nice)
     warnings.simplefilter("ignore")  # each case's start-up notes are the example's, said once by the warm-up's log
 
