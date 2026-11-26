@@ -1577,6 +1577,54 @@ two multipliers scale every septic and sewer plant source alike. For nitrate and
 SWAT+'s own septic systems: a project with septic in `landuse.lum` and septic water on a route carrying them is
 refused.
 
+**4. Reported irrigation applied on the land model's fields (designed Nov 25, 2026, approved by Andrew the same day;
+waits on swatplus-bmi request 9).** The Virginia study's irrigators are golf courses, a turf farm, a nursery and a
+school's fields. They report monthly withdrawals to DEQ, from channels, ponds and wells, and today the study counts
+that water as consumed at the source. It should land on the HRUs it irrigates, so that SWAT+ makes its ET,
+percolation and runoff, and carries the nutrients and salt in it. Unreported farm irrigation, from USGS's monthly
+HUC-12 estimates, takes the same path.
+
+- **A route onto the land: `land:<name>`** (`[[land]] name, hrus = [{hru, weight}, ...]` or a CSV of `hru, weight`,
+  weights normalized; `runoff = 0.0`, the share of the water that runs off the field [A]). An irrigator is a user
+  like any other, a ReportedUser from its DEQ months:
+  - its withdrawal is any withdrawal route: `well:` (over several cells for HUC-12 groups of farm wells),
+    `swat:place_of_use:` on a channel or a reservoir (a pond SWAT+ models as one), or a water system's tap;
+  - its return goes to `land:<name>`, and its consumption is the application's loss (spray evaporation and drift)
+    [A].
+
+  Nothing in the engine is irrigation-specific: the route is a place water goes, as `ground:` is. A system's
+  outdoor class can later send its water there too (`outdoor_to = "land:<town>"`), which would put outdoor use's
+  water and mass on the land, now dropped (part 2).
+- **Applied the day after it is withdrawn, as a return is held.** The water a place of use delivers is known only
+  after SWAT+'s day, and a well's water's concentration only after MODFLOW 6's, but SWAT+ applies irrigation inside
+  its HRUs' day, before either is known. So day d's delivered water, and its mass, go on the HRUs on day d+1, split
+  by weight. The route then closes exactly for water and mass. For monthly reported volumes the lag is immaterial.
+  Andrew chose same-day irrigation for SWAT+'s own decision tables (Irrigation from surface water above), but there
+  SWAT+ takes the water itself; here Basin Ledger moves it, and a same-day split couldn't close.
+- **What SWAT+ is asked to do (request 9).** Add each HRU's water to its day's irrigation: to the soil (`irrig(j)%
+  applied`) and to surface runoff (`irrig(j)%runoff`) by the route's runoff share, after the HRU's management
+  operations, so a decision table's own irrigation that day adds rather than overwrites; and add its nitrate and
+  soluble P to the top soil layer the same day. SWAT+ 62.0.1 has no way in: its water allocation's delivery to HRUs
+  (`wallo_pou_deliv`, case `irr`) reads an HRU index it never sets, an `irrigate` action applies a constant depth
+  from its decision table, and upland irrigation's nitrate is never added to the soil (only a paddy's, in
+  wetland_control.f90). swatplus-bmi 0.14.0's settable variables are point sources, places of use, the exchanges,
+  the soil link's water and mass by layer, and the weather; the soil link's variables are groundwater from below,
+  not water on the field, so they aren't borrowed.
+- **Mass.** The whole withdrawal's mass goes on the land: its consumption is evaporation and carries none. It is the
+  water's concentration at its source as part 2 works it out (a well's cells by what they gave, a channel's or a
+  reservoir's), or the user's reported return mass if its component reports one. Nitrate and soluble P go through
+  request 9's mass variables. A salted species goes into the HRUs' soil stores in salt.py (`salt:<sp>:land:
+  irrigation`), an input from outside the land like a land source, while its withdrawal leaves the streams or the
+  aquifer as a sink, so the whole-system closure holds as with the ground returns.
+- **Booked:** `route:land:<name>:requested` (what was set) and `:delivered` (request 9's read-back of what SWAT+
+  added), per HRU and summed; the held water and mass overnight (`user:<u>:return_held`, carried by a restart);
+  `transport:<sp>:land:<name>:sent` and SWAT+'s read-back. In the whole-basin balance the water is SWAT+'s own
+  irrigation (`irr`, what reached the soil), less the part request 8 books from SWAT+'s channels and reservoirs; the
+  rest of `irr` is these routes and `[irrigation]`'s wells, by account.
+- **Refused:** a route's HRU that SWAT+ doesn't have; weights not positive; the same HRU irrigated by `[irrigation]`
+  (wells pumped for SWAT+'s decision tables) and a `land:` route at once, since the two would mix two rules for one
+  field's water; and, until request 9 is released, any `land:` route.
+
 **Not built, refused at start-up:** a replay record or a replay with ground routes, routes over several cells or
 systems carrying mass (the replay re-runs only the users who take in the aquifer's water); a place of use's concentration
 under NextGen, or a reservoir intake's nitrate or P, with none stated. A

@@ -40,6 +40,8 @@ and salt, and a water system's water carried no constituent.
 - Not built, refused: ground routes, routes over several cells and systems carrying mass in a replay or a replay
   record.
 - Tested in `tests/test_ground_mass.py`, `tests/test_chain.py` and `tests/test_systems_mass.py`.
+- Designed, not built: reported irrigation applied on SWAT+'s fields through a `land:` route, the day after it is
+  withdrawn, with its mass. It waits on swatplus-bmi's settable irrigation (docs/requests.md, item 9).
 
 ## 0.16.0 (2026-11-25)
 

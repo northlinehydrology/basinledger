@@ -100,6 +100,25 @@ what, why, and how Basin Ledger copes until then. Written Nov 4, 2026.
    62.0.1 computes its delivery from the storage already reduced. Basin Ledger then books SWAT+'s own surface
    irrigation by source and closes the whole-basin balance (docs/design.md, "Irrigation from surface water").
 
+9. **Irrigation applied to HRUs from outside SWAT+ (Nov 25, 2026; for the Virginia study's reported irrigators).**
+   Settable, per HRU, for the coming day; swatplus-bmi adds them inside the HRU's day:
+   - `land_irrigation_water__infiltration_volume_flow_rate` (m3 s-1): water onto the field that enters the soil.
+     Its depth (mm = m3 / (area_ha x 10)) is added to `irrig(j)%applied` in hru_control.f90, after `mgt_operatn`
+     (whose `irrigate` actions assign `irrig(j)%applied` with `=`), so a decision table's irrigation the same day
+     adds rather than overwrites. It counts where SWAT+ counts irrigation: `hwb_d(j)%irr`, `hru(j)%irr_yr` and the
+     0.14.0 read `land_irrigation_water__volume_flow_rate`;
+   - `land_irrigation_water__runoff_volume_flow_rate` (m3 s-1): water onto the field that runs off, added to
+     `irrig(j)%runoff` at the same place, before `surface` adds it to `surfq`;
+   - `land_irrigation_water_no3__mass_flow_rate` and `land_irrigation_water_solp__mass_flow_rate` (kg s-1): the
+     water's nitrate and soluble P, added to the top layer (`soil1(j)%mn(1)%no3`, `soil1(j)%mp(1)%lab`) that day,
+     before the soil routines. SWAT+ 62.0.1 adds upland irrigation's nitrate to no soil; only a paddy's
+     (wetland_control.f90).
+
+   Each, read after the day, gives what was added (zero for an HRU with no area), so Basin Ledger pairs what it set
+   with what SWAT+ took. Each is zeroed after the day, saved and loaded with the state. With nothing set, SWAT+ is
+   unchanged. Basin Ledger then applies a reported irrigator's withdrawal on its fields, the day after it is
+   withdrawn (docs/design.md, Mass through the human-system routes, part 4).
+
 A note for the swatplus-bmi docs: SWAT+ keeps one point of diversion per channel (`sd_ch%wallo_pod`), so several
 places of use on one channel must share one `point_of_diver.wro` row listing them all. Separate rows for the same
 channel leave all of them withdrawing nothing, with no error.
