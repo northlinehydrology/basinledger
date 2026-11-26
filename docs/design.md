@@ -1625,8 +1625,27 @@ HUC-12 estimates, takes the same path.
   (wells pumped for SWAT+'s decision tables) and a `land:` route at once, since the two would mix two rules for one
   field's water; and, until request 9 is released, any `land:` route.
 
-**Not built, refused at start-up:** a replay record or a replay with ground routes, routes over several cells or
-systems carrying mass (the replay re-runs only the users who take in the aquifer's water); a place of use's concentration
+**5. In a replay (built Nov 25, 2026; the study's salt calibration runs by replay).**
+- **The record** holds each day's route lines (`route:<r>:requested`, `:delivered`, `:shortfall`) beside the users',
+  and which routes the run used. The water systems are accounting, so the replay runs them again from those lines:
+  their water comes out the same, and their mass is worked out from the replay's own concentrations.
+- **The replay's MODFLOW 6 copy** gets the same ground packages, wells over several cells, auxiliaries and SSM
+  sources as the run's (`driver.add_route_wells`, shared by both).
+- **Run again:** the users taking in a well's water (over several cells too) or a water system's. A user on a system
+  returning its water anywhere but the sewer (held overnight) is refused there.
+- **What only moves mass may change in a replay:** a return to the ground's stated concentration, a system's
+  `effluent`, `septic_effluent` and its sources' `concentration`, as well as salt's settings and multipliers. These
+  are left out of the record's identity. The routes' septic and plant masses follow the septic and point_sources
+  multipliers.
+- **A restart** carries the systems' held water and mass.
+- **A record made before 0.17.0** holds no route lines, so it is refused for a config with these routes.
+- **Tested** (tests/test_replay_routes.py):
+  - a float64 record replays the town's water and mass, the ground routes, the salt and the transport bit for bit;
+  - a float32 record replays them to its rounding;
+  - a changed septic concentration and multiplier scale the routed septic mass, and every account closes;
+  - a replay restarted is the unbroken replay.
+
+**Not built, refused at start-up:** a place of use's concentration
 under NextGen, or a reservoir intake's nitrate or P, with none stated. A
 system's concentrations are mixed daily; the water in its mains is not a store.
 

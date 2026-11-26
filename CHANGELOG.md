@@ -37,8 +37,15 @@ and salt, and a water system's water carried no constituent.
   carries). The routes' stated septic concentrations scale by the `septic` multiplier (now always a group) and the
   plants' by `point_sources`. For nitrate and P, SWAT+'s own septic systems (`landuse.lum`) with routed septic are
   refused.
-- Not built, refused: ground routes, routes over several cells and systems carrying mass in a replay or a replay
-  record.
+- **Replays with the new routes.** A record now holds the routes' daily lines and the routes used. A replay rebuilds
+  the same ground packages and wells over several cells, and runs the water systems again from the record (their
+  mass from the replay's own concentrations). It also runs again the users taking in a well's or a system's water.
+  - Stated concentrations, effluent and septic effluent may change in a replay, as salt's settings may. A float64
+    record replays the routes' mass bit for bit (`tests/test_replay_routes.py`).
+  - A record made before 0.17.0 is refused for a config with these routes.
+- **Fixed:** salt's point source counted a held return (a user on an intake or a system) by the water it reported
+  that day, not the water it sent (`return_sent`). So the stated concentration took the wrong share of the point
+  source's water (`tests/test_salt.py`).
 - Tested in `tests/test_ground_mass.py`, `tests/test_chain.py` and `tests/test_systems_mass.py`.
 - Designed, not built: reported irrigation applied on SWAT+'s fields through a `land:` route, the day after it is
   withdrawn, with its mass. It waits on swatplus-bmi's settable irrigation (docs/requests.md, item 9).
