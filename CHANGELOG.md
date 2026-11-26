@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 (2026-11-25)
 
 - A water system's source shares from a dated table: `shares = "file.csv"`, with a date and then a column per
   source's route. Each row sums to 1 and holds until the next date, and the sources are then given as `{route}`
