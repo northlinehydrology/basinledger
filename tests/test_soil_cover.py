@@ -118,6 +118,23 @@ def test_swat_sets_back_its_own_cover():
     assert m.set == [(SC.COVER, [1], [pytest.approx(0.6)])]
 
 
+def test_the_sum_is_swatplus_own_4_byte_sum():
+    """SWAT+ adds the masses in kg/ha as 4-byte reals. A float64 sum in kg m-2 rounds about 1 in 20 of them otherwise;
+    the rule's sum never does."""
+    rng = np.random.default_rng(0)
+    n = 20000
+    above = rng.uniform(1e3, 6e4, n).astype(np.float32)        # kg/ha, as SWAT+ holds them
+    residue = rng.uniform(1e2, 2e4, n).astype(np.float32)
+    m = _Stub()
+    m.get_grid_size = lambda grid: n
+    m.values = {SC.LEAF: np.zeros(n), SC.ABOVE: above.astype(np.float64) * 1e-4,
+                SC.RESIDUE: residue.astype(np.float64) * 1e-4}
+    cover = SC.SoilCover(m, "swat", np.arange(n)).cover()
+    assert np.array_equal((cover * 1e4).astype(np.float32), above + residue)
+    naive = ((m.values[SC.ABOVE] + m.values[SC.RESIDUE]) * 1e4).astype(np.float32)
+    assert (naive != above + residue).sum() > n // 50                 # what it guards against
+
+
 def test_a_swatplus_bmi_without_the_cover_is_refused():
     m = _Stub()
     m.get_output_var_names = lambda: (SC.LEAF,)

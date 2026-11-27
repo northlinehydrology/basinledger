@@ -2209,7 +2209,10 @@ model gave +16, with the forest's ET parameters pinned at their bounds (the Virg
 - No new science goes into SWAT+: swatplus-bmi only lets the cover be read and set (Andrew's rule that it stays a
   wrapper). The rule lives in Basin Ledger and is stated in the config.
 
-**When the masses are read.** At the pause before the day, so they are the end of the previous day. `et_act` uses the
+**When the masses are read, and how they are summed.** At the pause before the day, so they are the end of the
+previous day. They are summed as SWAT+ sums them, in kg/ha and 4-byte reals, so `"swat"` is SWAT+'s cover to the bit
+(a float64 sum in kg m-2 can round a tie the other way). On a run's first day SWAT+'s own cover is the residue alone,
+since `pl_community` sums the plants' masses after `et_act`; the masses read before that day agree. `et_act` uses the
 same masses unless the HRU's decision-table actions run earlier that day: a management schedule's auto operations,
 with any fertilizer they schedule (`hru_control.f90`: `actions` before `et_act`). Scheduled operations
 (`mgt_operatn`), growth and the year-end cut come after `et_act`.

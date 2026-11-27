@@ -14,7 +14,9 @@ day, Basin Ledger sets the cover (swatplus-bmi's ``soil_surface_cover__mass-per-
 - ``rule = "leaves"``: the leaf mass + the residue, no wood;
 - ``rule = "swat"``: the above-ground mass + the residue, SWAT+'s own cover set back: a check, the same run.
 
-Every other HRU is left to SWAT+. The masses are read at the pause before the day, so they are the previous day's end.
+Every other HRU is left to SWAT+. The masses are read at the pause before the day, so they are the previous day's end,
+and summed as SWAT+ sums them (kg/ha, 4-byte reals). On a run's first day SWAT+'s own cover is the residue alone: it
+sums the plants' masses after ``et_act`` (``pl_community``), and the masses read before that day agree.
 ``et_act`` uses the same masses unless the HRU's decision-table actions (management.sch's auto operations, with a
 fertilizer they schedule) change them earlier that day; there the cover is a day behind. An HRU with no management
 schedule has none, as forests usually don't.
@@ -114,11 +116,17 @@ class SoilCover:
         self.days = 0
 
     def cover(self) -> np.ndarray:
-        """The cover the rule gives the selected HRUs from the masses now (the end of the previous day), kg m-2."""
-        def read(v):
+        """The cover the rule gives the selected HRUs from the masses now (the end of the previous day), kg m-2.
+
+        Summed as SWAT+ sums its own: in kg/ha, in 4-byte reals. Each mass read back to kg/ha is SWAT+'s own number
+        exactly, and their float32 sum is rounded as SWAT+'s is (to even on a tie), which a sum in float64 isn't, so
+        ``"swat"`` gives SWAT+'s cover to the bit. The sum is representable in 4 bytes, so it survives the kg m-2
+        it is set in."""
+        def kg_ha(v):
             self._m.get_value(v, self._bufs[v])
-            return self._bufs[v][self.hrus].astype(np.float64)
-        return (read(LEAF) if self.rule == "leaves" else read(ABOVE)) + read(RESIDUE)
+            return (self._bufs[v][self.hrus].astype(np.float64) * 1e4).astype(np.float32)
+        total = (kg_ha(LEAF) if self.rule == "leaves" else kg_ha(ABOVE)) + kg_ha(RESIDUE)
+        return total.astype(np.float64) * 1e-4
 
     def update(self):
         if len(self.hrus):
