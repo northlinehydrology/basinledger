@@ -12,7 +12,9 @@ pieces:
   HRUs over it, by their shares, for a drain at the profile's bottom;
 - ``hru_table_height``, ``held_layers``: the water table's height above each HRU's profile bottom (MODFLOW 6's heads
   above its top, by the HRU's ground in each cell), and which of its layers are held below it (``water_table``);
-- ``top_problems``: MODFLOW 6's top checked against each HRU's land surface less its profile depth (``water_table``).
+- ``top_problems``: MODFLOW 6's top checked against each HRU's land surface less its profile depth (``water_table``);
+- ``row_table_height``, ``table_shares``: with each map row's own land surface (a ``land_surface`` file per row), the table
+  in each HRU's piece of a cell, and a cell's drain water split among its pieces by their soil below it.
 
 Soil layers are given flat, as the hly grid has them: ``layer_hru`` (each layer's HRU index) and ``layer_bottom``
 (each layer's bottom depth below the surface, m).
@@ -141,13 +143,21 @@ def layer_tops(layer_hru: np.ndarray, layer_bottom: np.ndarray) -> np.ndarray:
     return tops
 
 
-def hru_table_height(amap: AreaMap, head: np.ndarray, top: np.ndarray, n_hru: int) -> np.ndarray:
+def row_table_height(amap: AreaMap, head: np.ndarray, row_bottom: np.ndarray) -> np.ndarray:
+    """Per map row, the water table's height (m) above the profile's bottom under it (``row_bottom``, m): its cell's
+    head less it. A dry or inactive cell (no finite head below 1e20) counts as far below."""
+    h = np.asarray(head, float)[amap.node]
+    return np.where(np.isfinite(h) & (np.abs(h) < 1e20), h - np.asarray(row_bottom, float), -1e6)
+
+
+def hru_table_height(amap: AreaMap, head: np.ndarray, top: np.ndarray, n_hru: int,
+                     row_bottom: np.ndarray | None = None) -> np.ndarray:
     """Per HRU, the water table's height (m) above its profile's bottom, MODFLOW 6's top under ``water_table``: each
-    cell's head above its top, weighted by the HRU's ground in it (the map before ``conserving``). Negative where the
-    table is below the profile. A dry or inactive cell (no finite head below 1e20) counts as far below. NaN for an HRU
-    the map doesn't place."""
-    h = np.asarray(head, float)
-    rel = np.where(np.isfinite(h) & (np.abs(h) < 1e20), h - top, -1e6)[amap.node]
+    cell's head above its top, weighted by the HRU's ground in it (the map before ``conserving``). With
+    ``row_bottom`` (a land surface per map row), each piece's own profile bottom in place of its cell's top. Negative
+    where the table is below the profile. A dry or inactive cell (no finite head below 1e20) counts as far below. NaN
+    for an HRU the map doesn't place."""
+    rel = row_table_height(amap, head, np.asarray(top, float)[amap.node] if row_bottom is None else row_bottom)
     w = np.bincount(amap.obj, weights=amap.area, minlength=n_hru)
     s = np.bincount(amap.obj, weights=rel * amap.area, minlength=n_hru)
     return np.divide(s, w, out=np.full(n_hru, np.nan), where=w > 0)
@@ -255,6 +265,61 @@ def split_back(rows: np.ndarray, amap: AreaMap, hru_volume: np.ndarray, n_cells:
     return np.bincount(amap.node, weights=np.asarray(hru_volume, float)[obj] * share, minlength=n_cells)
 
 
+def table_shares(amap: AreaMap, height: np.ndarray, n_cells: int) -> np.ndarray:
+    """Per map row, its share of its cell's drain water with a land surface per map row (docs/design.md, The land
+    surface per map row): its ground times the table's height in its soil, ``a_r max(z_r, 0)``, by cell, so no piece
+    above its own table gets groundwater (Andrew's A). A cell with no piece below its table splits by ground. With
+    every piece of a cell at one height, it is ``cell_shares``."""
+    w = np.asarray(amap.area, float) * np.clip(np.asarray(height, float), 0.0, None)
+    tot = np.bincount(amap.node, weights=w, minlength=n_cells)[amap.node]
+    return np.where(tot > 0, np.divide(w, tot, out=np.zeros_like(w), where=tot > 0), cell_shares(amap, n_cells))
+
+
+def cell_land(amap: AreaMap, row_land: np.ndarray, n_cells: int) -> np.ndarray:
+    """Each cell's land surface (m), its pieces' by their ground; NaN where no row is mapped."""
+    w = np.bincount(amap.node, weights=amap.area, minlength=n_cells)
+    s = np.bincount(amap.node, weights=np.asarray(row_land, float) * amap.area, minlength=n_cells)
+    return np.divide(s, w, out=np.full(n_cells, np.nan), where=w > 0)
+
+
+def is_per_row(path) -> bool:
+    """Whether a ``land_surface`` file gives each map row's land surface (an ``object`` column, as the recharge map
+    has) rather than each cell's."""
+    import csv
+    with open(path, newline="") as f:
+        return "object" in (next(csv.reader(f), None) or [])
+
+
+def read_row_land(path, amap: AreaMap, node_of) -> np.ndarray:
+    """Each map row's land surface (m) from a CSV with the recharge map's rows in its order: ``object``, the cell as
+    the map gives it, ``land_m``. Every row's object and cell must be the map's row's, and every row needs a land_m.
+    The recharge map's own table, with a ``land_m`` column, is such a file."""
+    import csv
+
+    from ..mapping import cell_node
+    objects, out, nodes = list(amap.objects), [], {}
+    n = len(amap.obj)
+    with open(path, newline="") as f:
+        for i, r in enumerate(csv.DictReader(f)):
+            if i >= n:
+                raise ValueError(f"{path}: more rows than the recharge map's {n}")
+            cell = tuple(r.get(k) for k in ("node", "layer", "row", "col", "icell2d", "model"))
+            node = nodes.get(cell)
+            if node is None:
+                node = nodes[cell] = cell_node(r, node_of, str(path))
+            if r.get("object") != objects[amap.obj[i]] or node != amap.node[i]:
+                raise ValueError(f"{path}: row {i + 1} ({r.get('object')}, node {node}) isn't the recharge map's "
+                                 f"({objects[amap.obj[i]]}, node {amap.node[i]}): the rows must be the map's, in "
+                                 "its order")
+            v = (r.get("land_m") or "").strip()
+            if not v:
+                raise ValueError(f"{path}: row {i + 1} has no land_m")
+            out.append(float(v))
+    if len(out) != n:
+        raise ValueError(f"{path}: {len(out)} rows, the recharge map has {n}")
+    return np.array(out)
+
+
 # ---------- the link ----------
 
 INFLOW = "soil_layer_water__groundwater_inflow_rate"  # per HRU soil layer, m s-1, set for the next day (0.7.0)
@@ -315,13 +380,16 @@ class GroundwaterToSoil:
     def __init__(self, sw, amap: AreaMap, hru_area: np.ndarray, rule: str, cap: str, package: str,
                  due: np.ndarray | None = None, held_lateral: str = "none", land: np.ndarray | None = None,
                  top_tolerance: float = 1.0, saved: dict | None = None, n_cells: int | None = None,
-                 land_cells: np.ndarray | None = None, ponded: np.ndarray | None = None):
+                 land_cells: np.ndarray | None = None, ponded: np.ndarray | None = None,
+                 land_rows: np.ndarray | None = None):
         """SWAT+'s side, before either model steps; ``attach`` adds MODFLOW 6's once its package has its entries
         (after the first ``prepare_day``). ``amap``: each HRU's ground in each cell, before ``conserving``.
         ``due``: what a saved run had due for SWAT+'s next day. ``water_table`` only: ``held_lateral``, ``land`` (each
         HRU's land surface, m, hru.con's ``elev``) and ``top_tolerance`` (m) for the start-up check of MODFLOW 6's top,
         ``saved`` (a saved run's flags and the rows its due came from) and ``n_cells`` (MODFLOW 6's nodes).
         ``land_cells``: each cell's land surface (m), ``water_table``'s check cell by cell in place of hru.con's.
+        ``land_rows``: each map row's land surface (m, a ``land_surface`` file per row): each piece's own profile bottom
+        and table, the cells' land surface its pieces'.
         ``ponded``: per HRU, whether it is a paddy or wetland (``swatplus.ponded_hrus``), whose saturation excess
         SWAT+ puts into its ponded water, not its runoff."""
         if rule not in RULES:
@@ -353,6 +421,11 @@ class GroundwaterToSoil:
         self.raised = 0
         self.held_lateral, self.land, self.top_tolerance = held_lateral, land, top_tolerance
         self.land_cells = None if land_cells is None else np.asarray(land_cells, float)
+        self.land_rows = None if land_rows is None else np.asarray(land_rows, float)
+        if self.land_rows is not None and (rule != "water_table" or self.land_cells is not None):
+            raise ValueError('[groundwater_to_soil] a land surface per map row is water_table\'s, in place of one '
+                             "per cell")
+        self.row_bottom = None  # each piece's profile bottom (m), with land_rows
         self.ponded = np.zeros(len(hrus), bool) if ponded is None else np.asarray(ponded, bool)
         self.notes = []  # what attach found worth saying (a warning, or the cells keeping the land surface)
         self.n_cells = int(np.max(amap.node)) + 1 if n_cells is None else int(n_cells)
@@ -380,6 +453,9 @@ class GroundwaterToSoil:
             need = (f'[groundwater_to_soil] rule = "water_table" needs MODFLOW 6\'s top at the soil profile\'s '
                     f"bottom (its land surface less its profile depth, within top_tolerance = {self.top_tolerance} m)")
             self.bottom_elev = self.top.copy()  # the profile's bottom per cell: the drain's elevation, the table's zero
+            if self.land_rows is not None:  # each piece's own: the cells' land surface is their pieces'
+                self.land_cells = cell_land(self.map, self.land_rows, n)
+                self.row_bottom = self.land_rows - self.depth[self.map.obj]
             if self.land_cells is not None:  # cell by cell; a stream's or lake's cell may keep its land surface
                 self.bottom_elev, kept, bad = profile_bottom_cells(self.map, self.top, self.land_cells, self.depth,
                                                                    n, self.top_tolerance)
@@ -513,7 +589,15 @@ class GroundwaterToSoil:
             row = self.row_planned * frac[self.map.node]
             head = self.h0
         self.rows, self.row_depth = row, (self.top - head)[self.map.node]  # for the mass with this water
-        if self.rule == "water_table":
+        if self.rule == "water_table" and self.row_bottom is not None:
+            # each piece's own table: the drain's water to the pieces with soil below it, by how much (design.md,
+            # The land surface per map row), and each HRU's table its pieces'
+            z = row_table_height(self.map, head, self.row_bottom)
+            self.rows = row = cell[self.map.node] * table_shares(self.map, z, self.mf6.nodes)
+            self.row_depth = self.depth[self.map.obj] - z
+            height = hru_table_height(self.map, head, self.bottom_elev, len(self.depth), self.row_bottom)
+            self.flags = held_layers(height, self.depth, self.layer_hru, self.top_depth, self.bottom, self.flags)
+        elif self.rule == "water_table":
             # the top is the profile's bottom: the depth to water below the land surface is the HRU's profile less
             # the head's height above the top; the held layers for tomorrow, from today's end-of-day heads
             self.row_depth = self.depth[self.map.obj] - (head - self.bottom_elev)[self.map.node]

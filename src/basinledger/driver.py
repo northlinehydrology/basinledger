@@ -632,16 +632,18 @@ class Basin:
             # warning that the model looks built for it (drain, gwflow); or each cell's, from a file (water_table)
             elev = S.hru_elevations(swat_dir)
             land = np.array([elev[h] for h in self.ground_map.objects])
-            land_cells = None
-            if wt and gs.get("land_surface"):
-                from .coupling.gwsoil import read_land_surface
-                land_cells = read_land_surface(gs["land_surface"], self.mf6.node, len(self.mf6.cell_area))
+            land_cells = land_rows = None
+            if wt and gs.get("land_surface") and G.is_per_row(gs["land_surface"]):  # each map row's, its order
+                land_rows = G.read_row_land(gs["land_surface"], self.ground_map, self.mf6.node)
+            elif wt and gs.get("land_surface"):
+                land_cells = G.read_land_surface(gs["land_surface"], self.mf6.node, len(self.mf6.cell_area))
             self.gw_soil = GroundwaterToSoil(self.sw, self.ground_map, source, gs["rule"], gs["cap"],
                                              gs["package"], saved.get("gw_soil_due") if saved else None,
                                              held_lateral=gs.get("held_lateral", "none"), land=land,
                                              top_tolerance=float(gs.get("top_tolerance", 1.0)),
                                              saved=saved.get("gw_soil_state") if saved else None,
                                              n_cells=len(self.mf6.cell_area), land_cells=land_cells,
+                                             land_rows=land_rows,
                                              ponded=np.isin(self.ground_map.objects, list(S.ponded_hrus(swat_dir))))
             if wt:  # what no layer could take goes back to MODFLOW 6 as recharge the same day it was due
                 L.pair("gw_soil:due", ["gw_soil:received", "gw_soil:not_taken"], rtol=FLOAT32)
@@ -2566,6 +2568,8 @@ class Basin:
                     "saturation_excess_m3": tot("soil:saturation_excess"),
                     "saturation_excess_to_ponds_m3": tot("soil:saturation_excess_to_ponds"),
                     "held_lateral": self.gw_soil.held_lateral,
+                    "land_surface": ("rows" if self.gw_soil.land_rows is not None else
+                                     "cells" if self.gw_soil.land_cells is not None else "hru"),
                 }
             # recirculation (bookkeeping only): recharge is gross; some of it came back up into the soil
             tot = self.ledger.totals()

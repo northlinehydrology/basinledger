@@ -58,6 +58,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     # held_lateral = "none"             #   layers below MODFLOW 6's water table held saturated, its top the profile's
     # top_tolerance = 1.0               #   bottom (checked per HRU against hru.con's elev less the profile, m, or
     # land_surface = "land.csv"         #   cell by cell against land_m per cell, a map table's cell columns);
+                                        #   or each map row's (a file with the recharge map's object and cell
+                                        #   columns, in its order: each HRU's piece of a cell its own table);
                                         #   held_lateral "none" (default) or "swatplus" (SWAT+'s own lateral flow from
                                         #   held layers). Not with transport, salt or a replay record (yet)
     [soil_cover]                        # optional, SWAT+ only: the soil cover its soil evaporation sees, for the HRUs
