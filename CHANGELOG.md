@@ -19,6 +19,17 @@
     grouping: percolation, groundwater to soil and net, in m3 and mm a year. It also gives where the water that came
     up went (percolation, ET, lateral flow, saturation excess), estimated by taking the soil's water as well mixed.
   - Tested in `tests/test_recirculation.py`.
+- **The soil cover SWAT+'s soil evaporation sees** (`[soil_cover] rule, land_uses and/or hrus`; docs/design.md, "Soil
+  cover for soil evaporation"). Approved by Andrew on Nov 27, 2026, for the Virginia study.
+  - SWAT+ counts a forest's wood as soil cover, so its soil hardly evaporates. On the HRUs a study names as trees,
+    directly or by land use, `rule = "leaves"` sets the cover before each day to the leaf mass plus the residue.
+  - `rule = "swat"` sets back SWAT+'s own cover, a check that gives the same run to the bit.
+  - Only soil evaporation sees it: SWAT+'s albedo and erosion keep their own cover.
+  - The masses are the previous day's end. They are the same as `et_act`'s unless decision-table actions change them
+    that day, which an HRU with no management schedule never has.
+  - Off without the section; a run without it is unchanged, ledger for ledger.
+  - Needs swatplus-bmi's soil cover (`soil_surface_cover__mass-per-area_density`). Tested in
+    `tests/test_soil_cover.py`.
 
 ## 0.18.0 (2026-11-26)
 

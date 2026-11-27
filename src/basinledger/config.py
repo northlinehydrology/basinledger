@@ -55,6 +55,10 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     package = "soil"                    #   cap "none" or "room" (no more than the layers' room). The package (DRN for
                                         #   drain, WEL for gwflow) has one entry on each mapped cell. Needs recharge by
                                         #   HRU and the two-way [exchange]
+    [soil_cover]                        # optional, SWAT+ only: the soil cover its soil evaporation sees, for the HRUs
+    rule = "leaves"                     #   and land uses named (coupling/soilcover.py). "leaves": a tree's leaves and
+    land_uses = ["frst_lum"]            #   the residue, no wood; other plants SWAT+'s own. And/or hrus = ["hru0001"].
+                                        #   Off without this section
 
     [[wells]]
     name = "pw1"
@@ -459,6 +463,7 @@ class ExampleConfig:
     recharge_add: bool = False          # a recharge package Basin Ledger adds, for a model without one
     weather: dict | None = None        # kind -> CSV path, and change (weather.py)
     groundwater_to_soil: dict | None = None  # rule, cap, package (coupling/gwsoil.py)
+    soil_cover: object | None = None   # soilcover.Settings: the soil cover SWAT+'s soil evaporation sees
     mf6_length_units: str | None = None  # the model's, where its DIS leaves them undefined (coupling/modflow6.py)
     mf6_time_units: str | None = None
     mf6_models: list[str] = field(default_factory=list)  # several groundwater models coupled together, the first first
@@ -554,7 +559,8 @@ def load(path: str | Path) -> ExampleConfig:
     base = path.parent
     known = {"name", "description", "run", "swatplus", "modflow6", "recharge", "wells", "users", "calibration",
              "exchange", "utilities", "rules", "outputs", "nextgen", "rivers", "transport", "weather",
-             "groundwater_to_soil", "irrigation", "lakes", "salt", "replay", "ground", "transfers", "land"}
+             "groundwater_to_soil", "irrigation", "lakes", "salt", "replay", "ground", "transfers", "land",
+             "soil_cover"}
     if set(c) - known:
         raise ValueError(f"{path}: unknown sections {sorted(set(c) - known)}")
     mf = c.get("modflow6", {})
@@ -606,6 +612,12 @@ def load(path: str | Path) -> ExampleConfig:
         if rch.get("source") != "hru" or "exchange" not in c or "modflow6" not in c or "swatplus" not in c:
             raise ValueError(f"{path}: [groundwater_to_soil] needs SWAT+, MODFLOW 6, [recharge] source = \"hru\" (the "
                              "HRU map) and the two-way [exchange] (SWAT+'s aquifers passing recharge through)")
+    soil_cover = None
+    if "soil_cover" in c:
+        from .coupling.soilcover import settings
+        if "swatplus" not in c:
+            raise ValueError(f"{path}: [soil_cover] sets SWAT+'s soil cover; a replayed NextGen run has none")
+        soil_cover = settings(str(path), c["soil_cover"])
     transport = c.get("transport", {})
     salt = {}
     salt_conductance = None
@@ -751,6 +763,7 @@ def load(path: str | Path) -> ExampleConfig:
         recharge_source=rch.get("source", "aquifer"),
         weather=weather,
         groundwater_to_soil=dict(gs) if gs is not None else None,
+        soil_cover=soil_cover,
         irrigation=irrigation,
         lakes=lakes,
         ground=[_ground(path, g) for g in c.get("ground", [])],
