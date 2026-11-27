@@ -220,6 +220,12 @@ class Basin:
                     raise
                 raise ExchangeError(f"{e}: SWAT+ was built by another swatplus-bmi; build it again with this one "
                                     f"(uv run swatplus-bmi build --jobs 2)") from e
+            if cfg.soil_cover is not None:  # the cover SWAT+'s soil evaporation sees (coupling/soilcover.py)
+                from .coupling.soilcover import wrap
+                try:
+                    self.swat = wrap(self.swat, cfg.soil_cover, swat_dir)
+                except ValueError as e:
+                    self._problem(e)
             if wrap_surface is not None:
                 self.swat = wrap_surface(self.swat)
         else:
