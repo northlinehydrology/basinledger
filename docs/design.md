@@ -19,6 +19,8 @@ Status (Nov 26, 2026, release 0.18.0). Built and tested on synthetic examples:
 - groundwater up into the soil where the water table rises into it, by a drain at the profile's bottom or SWAT+
   gwflow's rule (swatplus-bmi 0.7.0; the drain chosen);
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
+- the soil cover SWAT+'s soil evaporation sees, on the HRUs a study names: a tree's leaves and residue, not its wood
+  (Soil cover for soil evaporation; swatplus-bmi's soil cover);
 - the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
 - intakes on any channel or reservoir, several to one served senior first, a user returning only the share its intake
   delivered, the next day, and SWAT+'s own irrigation from its channels and reservoirs booked by source
@@ -2172,6 +2174,58 @@ and resumes what isn't. The operating rules are tested by construction and on Os
 channel. A pump fills the reservoir at high flow, and its inflow is the channel's and the pump's. A release keeps
 the channel up at low flow, never below its keep. A town's outdoor and indoor use is cut in two stages, booked apart
 from a shortfall. A restart matches, bit for bit.
+
+## Soil cover for soil evaporation: a process substitution (designed and built Nov 27, 2026, for the Virginia study)
+
+Approved by Andrew on Nov 27, 2026. It is the first substitution built into Basin Ledger. The Clam study's soil hold under
+snow (a study's `wrap_surface`, swatplus-bmi's settable soil temperature) was the pattern.
+
+**Why.** SWAT+ 62.0.1's `et_act.f90` takes an HRU's soil cover as all its above-ground biomass plus its residue
+(`pl_mass%ab_gr_com%m + pl_mass%rsd_tot%m`, kg/ha). Its potential soil evaporation is PET x exp(-5e-5 x (cover + 0.1)),
+before the cap that keeps soil and plant ET within PET. A forest's wood counts as cover: 50 t/ha shades the soil to
+nothing, so its soil hardly evaporates all year. A dormant grass, with LAI 0 and little residue, evaporates near PET in
+winter. In the Rappahannock joint calibration, the observed forest-minus-open ET contrast was +93 mm a year and the
+model gave +16, with the forest's ET parameters pinned at their bounds (the Virginia study's SWAT+ issue 5).
+
+**The rule** (`[soil_cover]`, `coupling/soilcover.py`):
+
+    [soil_cover]
+    rule = "leaves"
+    land_uses = ["frsd_lum", "frse_lum", "frst_lum", "wetw_lum"]   # and/or hrus = ["hru00001", ...]
+
+- SWAT+ has no marker for a tree, so the config names the tree HRUs, directly or by land use. Each of the
+  Rappahannock's forest land uses has a one-plant community (frsd, frse, frst, wetw).
+- On those HRUs, before each day, Basin Ledger sets the cover. `"leaves"`: the leaf mass plus the residue, no wood.
+  `"swat"`: the above-ground mass plus the residue, SWAT+'s own cover set back, a check that gives the same run.
+- swatplus-bmi's settable `soil_surface_cover__mass-per-area_density` replaces `et_act`'s `cover` for that HRU for
+  that day only. Every other HRU is left to SWAT+.
+- Off without the section, so a run without it is unchanged.
+- Unknown HRUs and land uses are refused. So is a swatplus-bmi without the soil cover.
+
+**What it changes, and what it doesn't.**
+- Only soil evaporation sees the set cover. SWAT+'s albedo and its erosion (`albedo.f90`, `ero_cfactor.f90`) compute
+  their own cover, so a forest's wood still shapes them.
+- Under snow (0.5 mm or more), SWAT+ takes half of PET whatever the cover.
+- No new science goes into SWAT+: swatplus-bmi only lets the cover be read and set (Andrew's rule that it stays a
+  wrapper). The rule lives in Basin Ledger and is stated in the config.
+
+**When the masses are read.** At the pause before the day, so they are the end of the previous day. `et_act` uses the
+same masses unless the HRU's decision-table actions run earlier that day: a management schedule's auto operations,
+with any fertilizer they schedule (`hru_control.f90`: `actions` before `et_act`). Scheduled operations
+(`mgt_operatn`), growth and the year-end cut come after `et_act`.
+- An HRU with no management schedule has no such actions. That is every Rappahannock forest land use (`mgt = null`
+  in `landuse.lum`), so its cover is the same day's, exactly.
+- On an HRU with auto operations, the cover is a day behind on the days they change the masses. Asking SWAT+ for the
+  same day's masses would mean a pause for each HRU, inside its day. With 33,525 HRUs that costs too much, and it
+  isn't needed for forests.
+
+**Tested** (`tests/test_soil_cover.py`), on the synthetic example's HRU made a forest (Osu_1hru's `frst_tems_lum`,
+growing from the start, its paddy and management schedule taken away):
+- the section and its refusals; the HRUs named by name and land use; the wrapper on a stand-in;
+- off: the surface model isn't wrapped. Two years of the synthetic and two-way examples give ledgers identical to
+  0.18.0's;
+- `"swat"`: the same run as off, to the bit, every day;
+- `"leaves"`: the forest's ET rises and the whole basin still closes.
 
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
