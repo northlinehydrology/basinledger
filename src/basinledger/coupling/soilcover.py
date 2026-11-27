@@ -126,7 +126,7 @@ class SoilCover:
             self._m.get_value(v, self._bufs[v])
             return (self._bufs[v][self.hrus].astype(np.float64) * 1e4).astype(np.float32)
         total = (kg_ha(LEAF) if self.rule == "leaves" else kg_ha(ABOVE)) + kg_ha(RESIDUE)
-        return total.astype(np.float64) * 1e-4
+        return total.astype(np.float64) / 1e4
 
     def update(self):
         if len(self.hrus):
