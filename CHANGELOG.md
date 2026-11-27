@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **A floor under the river stage** (`[rivers] stage_floor = "<column>"`; docs/design.md, The MODFLOW 6 coupling,
+  Stage floor). Opt-in, off by default. With the stage set each day from the surface model's depth, a column of the
+  rivers' map gives each cell's floor (a surveyed water surface, for one), and the stage is the larger of the floor
+  and bottom + bed thickness + depth. For main stems whose bottom sits below the surveyed surface by more than
+  SWAT+'s low-flow depth. The ledger counts the cells held at their floor each day and their raise;
+  `outputs/stage_floor.csv` lists them cell by cell. Without it a run is unchanged, bit for bit. Tested in
+  `tests/test_stage_floor.py`.
+
 ## 0.18.0 (2026-11-26)
 
 - **Water onto SWAT+'s fields: the `land:` route** (`[[land]] name, hrus = [{hru, weight}, ...]` or a CSV, `runoff`,
