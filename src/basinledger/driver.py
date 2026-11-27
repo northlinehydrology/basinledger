@@ -340,11 +340,17 @@ class Basin:
                 self._problem(ValueError(f"starting concentrations for {sorted(set(concentrations) - set(self.transport))}"
                                          ", which aren't transported"))
         self.rivers = None  # built on the first day, once MODFLOW 6's river package has its entries
+        self.river_floors = None  # with [rivers] stage_floor: per river package, its entries' floors and use
         if cfg.rivers and cfg.rivers.get("stage", "fixed") not in ("fixed", "surface_depth", "nextgen_depth"):
             self._problem(ValueError("[rivers] stage must be fixed or surface_depth"))
         if cfg.rivers and cfg.rivers.get("stage") in ("surface_depth", "nextgen_depth") and not self.sw.has(S.DEPTH):
             self._problem(ValueError("[rivers] stage = surface_depth needs the surface model's channel depth "
                                      "(NextGen's t-route, or swatplus-bmi 0.2.0)"))
+        if cfg.rivers and "stage_floor" in cfg.rivers:
+            try:
+                self._check_stage_floor(cfg.rivers)
+            except ValueError as e:
+                self._problem(e)
 
         self.ledger = Ledger()
         L = self.ledger
@@ -1262,12 +1268,68 @@ class Basin:
             self._build_rivers()
         if rv.get("stage") in ("surface_depth", "nextgen_depth"):
             depth = dict(zip(self.sw.names(S.DEPTH), self.sw.get(S.DEPTH)))  # yesterday's (SWAT+) or today's (replay)
-            for mf, pkg, cmap, rbot, stage0 in self.rivers:
+            held, raised = 0, 0.0
+            for k, (mf, pkg, cmap, rbot, stage0) in enumerate(self.rivers):
                 e = cmap.entry_channel
                 stage = stage0.copy()
                 for i, c in enumerate(cmap.channels):
                     stage[e == i] = rbot[e == i] + float(rv.get("bed_thickness", 1.0)) + depth[c]
+                if self.river_floors is not None:  # the stage no lower than the cell's floor (a surveyed surface)
+                    f = self.river_floors[k]
+                    up = f["floor"] > stage
+                    f["days"] += up
+                    f["raise"] += np.where(up, f["floor"] - stage, 0.0)
+                    held, raised = held + int(up.sum()), raised + float(np.sum(f["floor"][up] - stage[up]))
+                    stage = np.where(up, f["floor"], stage)
                 mf.set_stage(pkg, stage)
+            if self.river_floors is not None:
+                self.ledger.enter("rivers:stage_floor:cells", float(held))      # entries at their floor today
+                self.ledger.enter("rivers:stage_floor:raise_m", raised)         # m, summed over them
+
+    def _check_stage_floor(self, rv):
+        """``[rivers] stage_floor``: a column of the rivers' map, each row's floor under the day's stage (m, the
+        model's datum; blank: none). Only for a stage set each day from the surface model's depth."""
+        col = rv["stage_floor"]
+        if not isinstance(col, str) or not col:
+            raise ValueError(f"[rivers] stage_floor names a column of the rivers' map; got {col!r}")
+        if rv.get("stage") not in ("surface_depth", "nextgen_depth"):
+            raise ValueError("[rivers] stage_floor is a floor under the stage set each day from the surface model's "
+                             "depth (stage = surface_depth); a fixed stage is MODFLOW 6's input")
+        spec = rv.get("map", "")
+        if spec.startswith("all:"):
+            raise ValueError(f"[rivers] stage_floor is a column of the rivers' map, cell by cell; map = {spec!r} "
+                             "has none")
+        import csv
+        with open(self.cfg.folder / spec, newline="") as f:
+            head = csv.DictReader(f).fieldnames or []
+        if col not in head:
+            raise ValueError(f"[rivers] stage_floor: the map {spec} has no column {col!r} (its columns: {head})")
+
+    def _stage_floors(self, v, pkg: str, several: bool) -> np.ndarray:
+        """Each of a river package's entries' floor (m), from the map's ``stage_floor`` column; -inf where a row
+        gives none, or no row names the entry."""
+        import csv
+
+        from .mapping import cell_node
+        rv = self.cfg.rivers
+        spec, col = rv["map"], rv["stage_floor"]
+        nodes = v.package_nodes(pkg)
+        floor = np.full(len(nodes), -np.inf)
+        with open(self.cfg.folder / spec, newline="") as f:
+            for r in csv.DictReader(f):
+                if several and ((r.get("model") or "").strip() or self.mf6.model).upper() != v.model.upper():
+                    continue
+                x = (r.get(col) or "").strip()
+                if not x:
+                    continue
+                try:
+                    value = float(x)
+                except ValueError:
+                    raise ValueError(f"[rivers] stage_floor: {spec}'s {col} {x!r} isn't a number (m)") from None
+                if not math.isfinite(value):
+                    raise ValueError(f"[rivers] stage_floor: {spec}'s {col} {x!r} isn't a finite number (m)")
+                floor[nodes == cell_node(r, v.node, spec)] = value
+        return floor
 
     def _build_rivers(self):
         """The river cells by flowpath, once MODFLOW 6 has read its first day: with several models coupled, each
@@ -1292,6 +1354,20 @@ class Basin:
                                 v.get("STAGE", v.model, pkg.upper()).astype(float)))
         if not self.rivers:
             raise ValueError(f"[rivers]: the map has no rows in a coupled model with a package {pkg!r}")
+        if "stage_floor" in rv:
+            self.river_floors = []
+            for v, p, cmap, rbot, _ in self.rivers:
+                floor = self._stage_floors(v, p, several)
+                floor[cmap.entry_channel < 0] = -np.inf  # an entry no channel sets keeps its own stage
+                self.river_floors.append({"floor": floor, "days": np.zeros(len(floor), dtype=int),
+                                          "raise": np.zeros(len(floor))})
+            n = sum(int(np.isfinite(f["floor"]).sum()) for f in self.river_floors)
+            above = sum(int((f["floor"] > rb + float(rv.get("bed_thickness", 1.0))).sum())
+                        for f, (_, _, _, rb, _) in zip(self.river_floors, self.rivers))
+            warnings.warn(f"{pkg}: [rivers] stage_floor holds the stage of {n} river cells at or above their floor "
+                          f"({above} of them above the bed's top, where a shallow channel puts the stage below it); "
+                          "the ledger counts them each day (rivers:stage_floor:*), outputs/stage_floor.csv cell by "
+                          "cell", EX.TakeoverNote, stacklevel=3)
 
     def _rivers_out(self):
         base: dict[str, float] = {}
@@ -2415,8 +2491,21 @@ class Basin:
                                   for k, w in self.weather.items()}
         if getattr(self, "gw_soil", None) is not None:
             summary["in_transit_gw_soil"] = self.gw_soil.due_volume()
+        if getattr(self, "river_floors", None):
+            self._write_stage_floors(out / "stage_floor.csv")
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
         return out
+
+    def _write_stage_floors(self, path: Path):
+        """``[rivers] stage_floor``, cell by cell: each entry with a floor, its channel, its floor, the days the
+        stage was held at it and the raise summed over those days (m days)."""
+        with open(path, "w") as f:
+            f.write("model,package,entry,node,channel,floor_m,days_at_floor,raise_m_days\n")
+            for (v, pkg, cmap, _, _), fl in zip(self.rivers, self.river_floors):
+                nodes = v.package_nodes(pkg)
+                for j in np.flatnonzero(np.isfinite(fl["floor"])):
+                    f.write(f"{v.model},{pkg},{j},{int(nodes[j])},{cmap.channels[cmap.entry_channel[j]]},"
+                            f"{float(fl['floor'][j])!r},{int(fl['days'][j])},{float(fl['raise'][j])!r}\n")
 
     def finalize(self):
         if getattr(self, "recorder", None) is not None:
