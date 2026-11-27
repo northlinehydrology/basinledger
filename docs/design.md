@@ -650,6 +650,38 @@ rest. With no cap, water the profile can't hold runs off at the surface.
 Not built: a check at start-up that the flow model has no EVT or UZF package (SWAT+'s soil now takes ET from
 groundwater, and a second ET would count it twice); an example should leave them out.
 
+**Recirculation: gross and net recharge (built Nov 27, 2026, for the Virginia study; bookkeeping only).** With
+groundwater up into the soil, part of what MODFLOW 6 sends up percolates again, the same day or later, and is counted
+again as recharge. In the Rappahannock about 60% does: about 282 mm a year of gross percolation against 165-180 mm
+net. Recharge alone, then, overstates what the land gives the aquifer. Nothing here changes a flow.
+- **The whole basin** (`balance.basin_balance`): `recharge_gross` (what MODFLOW 6 received from the land),
+  `groundwater_to_soil` (what it sent up, its soil package's budget), `recharge_net` (the difference) and
+  `recirculation_share` (sent up over gross). The run's `summary.json` gives the same from the ledger
+  (`recirculation`) when the link is on. Every existing key and ledger account is unchanged.
+- **By HRU group** (`[outputs] recirculation = true`, `balance.recirculation(run, groups)`). The driver reads each
+  HRU's day from SWAT+ after it runs (`hru_wb`: percolation, `gwsoilq`, plant and soil ET, lateral and tile flow,
+  saturation excess, with precipitation, irrigation, ET and runoff for reference), sums them over the run in m3
+  (`balance.HruWater`, carried by a restart), and writes `outputs/recirculation_hru.csv`. SWAT+'s average-annual
+  HRU file can't serve: it is written at the end of `time.sim`'s period, which a coupled run rarely reaches, and a
+  daily HRU print is gigabytes for thousands of HRUs. The reads need SWAT+'s daily records from the first year
+  (`records_every_year`, which changes what SWAT+ prints, not what it simulates). `recirculation` groups the HRUs by
+  land use (each HRU's `lu_mgt`), one by one, or by a dict, and gives each group and the basin its percolation,
+  groundwater to soil and net recharge, in m3 and mm a year.
+- **Where the water that came up went** is an estimate [A]. SWAT+ mixes a layer's water, so it can't say which drop
+  percolated. The split takes the soil's water as well mixed: over the run, the water that came up leaves the soil
+  in the proportions all the soil's water left it, by percolation, ET (plant and soil), lateral and tile flow, and
+  saturation excess. The four parts add up to what came up. Saturation excess is only what SWAT+ records as `satex`,
+  which SWAT+ 62.0.1 does only with its own gwflow on (`swr_satexcess.f90`); otherwise what a full profile sheds is
+  in its surface runoff with the rain's, and that part reads 0. An exact split would need a tracer carried through
+  SWAT+'s soil.
+- Tested (`tests/test_recirculation.py`, Osu_1hru over the small aquifer with its water table in the soil, as the
+  link's own tests): net = gross - groundwater to soil, and the summary agrees with the ledger; the HRU's sums agree
+  with the ledger's (`gw_soil:received`, `recharge:made`) to 4-byte reads; the split adds up to what came up; the
+  ledger is the same to the bit with the table on and off; a restart carries the sums exactly; without the link the
+  recharge is all net. Without the table, the ledger is the same bit for bit as 0.18.0's, with the link on and off.
+  On that test (a paddy whose water table is held in its profile), more comes up than goes down: 711 mm against 696
+  mm, so net recharge is slightly negative; about 68% of what came up went back down, 32% to ET.
+
 **Two-way: stream-aquifer exchange (built with RIV, and with SFR since Nov 11, 2026; `coupling/exchange.py`,
 `examples/synthetic/two_way.toml` and `sfr.toml`).** MODFLOW 6 computes the exchange between streams and the aquifer,
 through a river (RIV) or a streamflow routing (SFR) package, and that exchange replaces SWAT+'s aquifer return flow.
