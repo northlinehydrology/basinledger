@@ -373,6 +373,14 @@ def hru_areas(project: Path) -> dict[str, float]:
     return {f[i]: float(f[a]) * 1e4 for f in (l.split() for l in lines[2:]) if f}
 
 
+def hru_elevations(project: Path) -> dict[str, float]:
+    """Each HRU's land surface elevation in m, from hru.con's ``elev``."""
+    lines = (Path(project) / "hru.con").read_text().splitlines()
+    cols = lines[1].split()
+    i, e = cols.index("name"), cols.index("elev")
+    return {f[i]: float(f[e]) for f in (l.split() for l in lines[2:]) if f}
+
+
 def aquifer_withdrawals(project: Path) -> list[str]:
     """What draws water from SWAT+'s own aquifers: an irrigate action whose source is an aquifer (``irrigate ...
     aqu <n>`` in a decision table, actions.f90) or a water allocation point of diversion of type ``aqu``
