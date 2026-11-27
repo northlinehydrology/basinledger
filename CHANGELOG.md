@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- **A water-table link** (`[groundwater_to_soil] rule = "water_table"`; docs/design.md, A water-table link between
+  MODFLOW 6 and SWAT+'s soils). Andrew's design of Nov 27. It needs swatplus-bmi 0.17.0's held soil layers and is
+  refused without them.
+  - SWAT+'s layers below MODFLOW 6's water table are held: they don't drain, and they fill from a drain at the
+    profile's bottom.
+  - The study's model sets MODFLOW 6's top at the profile's bottom. The link checks it at start-up, per cell from a
+    `land_surface` CSV (a lake's or stream's cell may keep its land surface as its top) or per HRU from hru.con
+    (`top_tolerance`).
+  - A layer is held when the table is above its middle and released below its bottom, from the bottom up.
+  - Drain water the held layers can't take is never put above the table (Andrew's choice A). It goes back to
+    MODFLOW 6 as recharge on its cells the same day (`gw_soil:not_taken`, `gw_soil:returned`).
+  - Saturation excess is booked as part of runoff (`soil:saturation_excess`).
+  - `held_lateral = "none"` (default) or `"swatplus"`, given to swatplus-bmi in a start file.
+  - The `drain` and `gwflow` rules warn on a model built for it.
+  - swatplus-bmi 0.17.0 moves the groundwater inflow before runoff for every run, so the `drain` and `gwflow` rules'
+    numbers change with it.
+  - Not yet with transport, salt or a replay record. Tested in `tests/test_water_table.py`, whose SWAT+ tests skip
+    without the hooks.
+
 ## 0.19.0 (2026-11-27)
 
 - **A floor under the river stage** (`[rivers] stage_floor = "<column>"`; docs/design.md, The MODFLOW 6 coupling,

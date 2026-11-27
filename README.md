@@ -58,6 +58,10 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   water over the run split by land use or HRU (`[outputs] recirculation`, `balance.recirculation`);
 - the soil cover SWAT+'s soil evaporation sees, on the HRUs a study names by HRU or land use: a tree's leaves and
   residue, not its wood (`[soil_cover] rule = "leaves"`; swatplus-bmi 0.16.0);
+- a water-table link (`rule = "water_table"`, built Nov 27, 2026, waiting for swatplus-bmi 0.17.0's held soil
+  layers): SWAT+'s layers below MODFLOW 6's water table held, filled from a drain at the profile's bottom (MODFLOW 6's
+  top, checked per cell or per HRU), rain on a full profile spilling as saturation excess, and drain water the held
+  layers can't take returned as recharge;
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
@@ -299,9 +303,12 @@ precipitation = "weather/pcp.csv"
 change = {temperature = 2.0}   # a scenario's change, on the series or the project's own records
 
 [groundwater_to_soil]          # optional: MODFLOW 6's water up into SWAT+'s soil layers (needs [recharge] source =
-rule = "drain"                 #   "hru" and [exchange]); rule ("drain" or "gwflow") and cap ("none" or "room") have
-cap = "none"                   #   no default
+rule = "drain"                 #   "hru" and [exchange]); rule ("drain", "gwflow" or "water_table") and cap ("none"
+cap = "none"                   #   or "room") have no default
 package = "soil"               # a DRN package with one entry on each mapped cell
+# held_lateral = "none"        # water_table only: "none" or "swatplus" (lateral flow from held layers); how far
+# top_tolerance = 1.0          #   (m) MODFLOW 6's top may sit from the profile's bottom; each cell's land surface
+# land_surface = "land.csv"    #   (land_m, and the cell as a map table gives it), else hru.con's elev per HRU
 
 [soil_cover]                   # optional: the soil cover SWAT+'s soil evaporation sees on the HRUs named
 rule = "leaves"                #   "leaves" (leaves + residue) or "swat" (SWAT+'s own, set back: a check)

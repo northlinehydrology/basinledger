@@ -2484,6 +2484,114 @@ sessions on Nov 27, 2026, pending Andrew's decision 2:
   Runoff in today's groundwater-to-soil runs (`drain` and `gwflow`, the Rappahannock's included) changes, and Basin
   Ledger's tests that hold them bit for bit move to the new baseline in that version.
 
+### After the first column runs: drain water the held layers can't take (Andrew, Nov 27, 2026)
+
+The soil drain at the profile's bottom gives C (h - top) every day the head is above the top, whatever room the held
+layers have. Run against swatplus-bmi's first hook build, the agreed Hook 1 put what the held layers couldn't take into
+the lowest unheld layer. With the table mid-profile those layers filled with groundwater and `swr_satexcess` ran it off.
+In the column (a stiff drain, the table 0.35 m down), that was 37 mm a day of drain water and 31 mm a day of runoff.
+With every layer held, the same water wasn't taken and went back to MODFLOW 6. A mid-profile table sent its excess to
+the stream, and a high one sent it back to the aquifer.
+
+**Andrew chose (A):** drain water beyond the held layers' room is never put above the table.
+- In an HRU with any held layer, it isn't taken. It goes back to MODFLOW 6 as recharge on the cells it came from
+  (`gw_soil:not_taken` = `gw_soil:returned`), as in the all-held case.
+- An HRU with no held layers takes its inflow per layer as set, as agreed.
+- Groundwater reaches the surface only through a land-surface relief drain, where the study's model has one and the
+  head rises above the land.
+- The layers above the table get rain and SWAT+'s own redistribution, never groundwater.
+- This is a change to swatplus-bmi's Hook 1, asked for the same day.
+
+### Basin Ledger's side, as built (Nov 27, 2026)
+
+`[groundwater_to_soil] rule = "water_table"`, `cap = "none"`, a DRN `package`, and settings of its own:
+- `held_lateral`: `"none"`, the default, or `"swatplus"`;
+- `top_tolerance`: m, 1.0 by default;
+- `land_surface`: a CSV with each cell's `land_m` and the cell as a map table gives it.
+
+The pieces are in `coupling/gwsoil.py`:
+- **The drain sits at the profile's bottom,** and is never raised.
+  - With `land_surface`, each cell's profile bottom is its land surface less its HRUs' profile depths by ground
+    share (`profile_bottom_cells`).
+  - A cell whose top is that bottom has its drain at its top.
+  - A cell that keeps its land surface as its top (a lake's or stream's cell) has its drain and table a profile below
+    its top. A start-up note counts these cells, since their soil zone is in both models.
+  - Any other cell, or a mapped cell with no land surface, is refused, worst first.
+  - Without the file, each HRU's mean top is checked against hru.con's `elev` less its profile (`top_problems`).
+- **The flags.** After each solve, each HRU's table is its cells' heads above their profile bottoms, weighted by its
+  ground in each (`hru_table_height`; a dry cell counts as far below). The flags follow decision 4 with the previous
+  day's flags for the gap, held from the bottom up (`held_layers`). They are set at the next pause.
+- **The inflow** is set per layer as today (`to_layers`, at the depth to water below the land surface).
+  swatplus-bmi's Hook 1 places it: held layers first, bottom up; under (A), nothing above the table.
+- **What no layer took** (`soil_water__groundwater_inflow_not_taken_rate`, per HRU) is spread back over the cells
+  its water came from, by each map row's part of it (`split_back`). It is added to that day's recharge, the same day
+  SWAT+ couldn't take it.
+- **`held_lateral`** is swatplus-bmi's option, given at its start. Basin Ledger writes a TOML start file in the run
+  folder (`project`, `held_lateral = "none"` or `"swat"`) and initializes SWAT+ from it (swatplus-bmi 0.17.0).
+  Saved states carry it.
+- **The `drain` and `gwflow` rules** warn at start-up when MODFLOW 6's top looks like the profile's bottom under
+  most of the mapped ground (`looks_like_profile_bottom`, from hru.con's `elev`): a model built for `water_table`,
+  where they would put the soil link a second profile down.
+- **The ledger:**
+  - `gw_soil:due` = `gw_soil:received` + `gw_soil:not_taken` (to float32);
+  - `gw_soil:not_taken` = `gw_soil:returned`;
+  - `recharge:received` = `recharge:sent` + `gw_soil:returned`;
+  - reports: `gw_soil:held_layers` (the layers held each day), `soil:saturation_excess` (m3, part of SWAT+'s
+    surface runoff, which SWAT+ prints after its surface lag) and `soil:saturation_excess_to_ponds` (m3, a paddy's or
+    wetland's, which SWAT+'s `swr_satexcess` puts into the ponded water instead).
+- **The balance and the summary.** The whole-basin balance reports `groundwater_to_soil_not_taken`,
+  `runoff_saturation_excess` and `saturation_excess_to_ponds`, all already inside its other terms, and
+  `summary.json` gets a `water_table` block.
+- **A restart** carries the flags and the rows the due water came from, beside the due.
+- **Refused for now:** with `[transport]`, `[salt]` or a `[replay]` record (the returned water's mass isn't
+  carried), and with a swatplus-bmi without the flag, the not-taken read or the saturation-excess read.
+
+swatplus-bmi's interface (its branch `claude/water-table-hold`, 0.17.0, not released):
+- `soil_layer__saturated_zone_flag`: hly, a state, saved;
+- `soil_water__groundwater_inflow_not_taken_rate`: hru, m s-1, read-only;
+- `land_surface_water__saturation_excess_runoff_rate`: hru, m s-1, read-only;
+- the start file's `held_lateral`.
+
+It also notes:
+- the layer just above the table percolates as SWAT+'s bottom layer does (times `perco_lim`);
+- ET and tile flow from held layers stay SWAT+'s own;
+- plant uptake after Hook 1 can leave a held layer slightly below saturation at the pause;
+- nitrate and P set with the inflow stay on the layers they were set on (transport is refused here).
+
+Its per-day cost on a copy of the Rappahannock's 33,525-HRU project was 0.146 s with 67,050 layers held, against
+0.133 s with none.
+
+Tests are in `tests/test_water_table.py`:
+- **Without models:**
+  - the flag's rule and its gap, held from the bottom up;
+  - the weighted table;
+  - the top checks, per HRU and per cell (a lake's cell kept), and the warning for `drain`;
+  - the land surface file;
+  - the return's placement;
+  - the link's day against stand-ins;
+  - the config.
+- **On one HRU over one MODFLOW 6 cell** (`examples/synthetic/model.py`'s `build_column`, the head driven by a GHB),
+  Osu_1hru's HRU made a forest with no management. As it ships it is an irrigated rice paddy, whose saturation excess
+  and seepage pass through its ponded water:
+  - the held layers fill from the drain and hold;
+  - every layer held, then rain spills as saturation excess, and what isn't taken returns as recharge;
+  - a table mid-profile with a stiff drain spills nothing on a dry day, and its excess returns as recharge (A);
+  - a released layer drains as recharge;
+  - the column closes: MODFLOW 6's side and the link to round-off, and SWAT+'s land day by day with the runoff
+    before its surface lag, so the run's residual is what the lag holds at the end;
+  - on the paddy as it ships, the saturation excess is booked to its pond;
+  - a table held mid-layer doesn't flap;
+  - a table below the profile gives the run without the link, bit for bit;
+  - a restart is bit for bit;
+  - `held_lateral = "swatplus"` gives more lateral flow.
+
+  These skip without swatplus-bmi's hooks.
+- **Against swatplus-bmi's first hook build (4c103a2):** all passed but the mid-profile test, which waited for Hook
+  1's change under (A). An apparent gain after a release was the paddy's ponded water, which the first column's
+  balance left out (found by swatplus-bmi's session).
+- **Against its build for (A) (e7909b2, 0.17.0, not released):** all 25 water-table tests pass, and the whole suite
+  passes with the inflow moved before runoff for every run (610 passed): no other test moved past its tolerance.
+
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
 **Decided (Andrew).** Basin Ledger gets a second way in: take a MODFLOW 6 model someone already has (a consultant's,
