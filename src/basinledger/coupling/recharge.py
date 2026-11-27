@@ -52,16 +52,20 @@ class RechargeLink:
         if swat.get_var_units(var) != "m s-1":
             raise ValueError(f"unexpected recharge units {swat.get_var_units(var)}")
 
-    def transfer(self) -> float:
+    def transfer(self, extra: np.ndarray | None = None) -> float:
         """Read the day's recharge from SWAT+ (after its update) and set it in MODFLOW 6 (after prepare_day).
-        Returns the volume sent, m3."""
+        Returns the volume sent, m3. ``extra``: m3 per cell added to the cells' recharge, and not in what's returned
+        (groundwater SWAT+'s soil didn't take, under ``[groundwater_to_soil] rule = "water_table"``)."""
         self.swat.get_value(self.var, self._buf)
         rate = self._buf.astype(np.float64) * DAY  # m d-1 per aquifer
         self.rate = rate  # kept for the mass that goes with it (coupling/surface_mass.py)
         if not getattr(self, "_checked", False):
             self.check_package()
             self._checked = True
-        self.mf6.set_recharge(self.package, self.map.to_cells(rate, self.mf6.cell_area))
+        cells = self.map.to_cells(rate, self.mf6.cell_area)
+        if extra is not None:
+            cells = cells + np.asarray(extra, float) / self.mf6.cell_area
+        self.mf6.set_recharge(self.package, cells)
         self.made = float(np.sum(rate * self.source_area))  # what the surface model made, one day
         return self.map.volume(rate)  # one day
 

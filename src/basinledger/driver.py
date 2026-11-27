@@ -64,6 +64,7 @@ from .coupling.exchange import (
     part_map,
 )
 from .coupling.exchange import requests as exchange_requests
+from .coupling import gwsoil as G
 from .coupling.gwsoil import GroundwaterToSoil
 from .coupling.modflow6 import Models, Modflow6, remaining_simulation
 from .coupling.recharge import RechargeLink
@@ -213,8 +214,14 @@ class Basin:
                 from . import weather as W
                 W.write_first_days(swat_dir, cfg.weather, S._period(swat_dir)[0])
             self.swat = SwatPlusBmi()
+            start = str(swat_dir)
+            gs = cfg.groundwater_to_soil
+            if gs and gs["rule"] == "water_table" and G.takes_start_file():
+                # held_lateral is swatplus-bmi's own option, given at its start through a TOML file (0.17.0)
+                start = str(G.write_start_file(self.folder / "swatplus-bmi.toml", swat_dir,
+                                               gs.get("held_lateral", "none")))
             try:
-                self.swat.initialize(str(swat_dir))
+                self.swat.initialize(start)
             except ExchangeError as e:
                 if "protocol" not in str(e):
                     raise
@@ -620,10 +627,31 @@ class Basin:
         # groundwater up into the soil: SWAT+'s side now, MODFLOW 6's on the first day (coupling/gwsoil.py)
         if cfg.groundwater_to_soil:
             gs = cfg.groundwater_to_soil
+            wt = gs["rule"] == "water_table"
+            # each HRU's land surface, for the check of MODFLOW 6's top at the profile's bottom (water_table) or a
+            # warning that the model looks built for it (drain, gwflow); or each cell's, from a file (water_table)
+            elev = S.hru_elevations(swat_dir)
+            land = np.array([elev[h] for h in self.ground_map.objects])
+            land_cells = None
+            if wt and gs.get("land_surface"):
+                from .coupling.gwsoil import read_land_surface
+                land_cells = read_land_surface(gs["land_surface"], self.mf6.node, len(self.mf6.cell_area))
             self.gw_soil = GroundwaterToSoil(self.sw, self.ground_map, source, gs["rule"], gs["cap"],
-                                             gs["package"], saved.get("gw_soil_due") if saved else None)
-            L.pair("gw_soil:due", "gw_soil:received", rtol=FLOAT32)
-        L.pair("recharge:sent", "recharge:received")
+                                             gs["package"], saved.get("gw_soil_due") if saved else None,
+                                             held_lateral=gs.get("held_lateral", "none"), land=land,
+                                             top_tolerance=float(gs.get("top_tolerance", 1.0)),
+                                             saved=saved.get("gw_soil_state") if saved else None,
+                                             n_cells=len(self.mf6.cell_area), land_cells=land_cells,
+                                             ponded=np.isin(self.ground_map.objects, list(S.ponded_hrus(swat_dir))))
+            if wt:  # what no layer could take goes back to MODFLOW 6 as recharge the same day it was due
+                L.pair("gw_soil:due", ["gw_soil:received", "gw_soil:not_taken"], rtol=FLOAT32)
+                L.pair("gw_soil:not_taken", "gw_soil:returned")
+            else:
+                L.pair("gw_soil:due", "gw_soil:received", rtol=FLOAT32)
+        if self.gw_soil is not None and self.gw_soil.rule == "water_table":
+            L.pair("recharge:received", ["recharge:sent", "gw_soil:returned"])
+        else:
+            L.pair("recharge:sent", "recharge:received")
         # what the surface model made, and what the map added to it (+) or couldn't place (-): water from outside
         L.pair("recharge:sent", ["recharge:made", "recharge:by_the_map"])
 
@@ -1974,6 +2002,8 @@ class Basin:
         gw_soil = getattr(self, "gw_soil", None)
         if gw_soil is not None:  # yesterday's groundwater, into the soil layers today
             L.enter("gw_soil:due", gw_soil.before_swat())
+            if gw_soil.rule == "water_table":  # the layers held below yesterday's water table, a report
+                L.enter("gw_soil:held_layers", float(gw_soil.held_count()))
         if self.direct_exchange:
             names = self.sw.names(S.GW_EXCHANGE)
             self.sw.set(S.GW_EXCHANGE, np.array([self.due.get(c, 0.0) / DAY for c in names]))
@@ -2001,6 +2031,11 @@ class Basin:
             self._irrigate(L, rt)
         if gw_soil is not None:
             L.enter("gw_soil:received", gw_soil.received())
+            if gw_soil.rule == "water_table":
+                L.enter("gw_soil:not_taken", gw_soil.not_taken)  # back to MODFLOW 6 as recharge today
+                runoff, pond = gw_soil.saturation_excess()
+                L.enter("soil:saturation_excess", runoff)  # part of SWAT+'s surface runoff
+                L.enter("soil:saturation_excess_to_ponds", pond)  # a paddy's or wetland's, into its ponded water
         if getattr(self, "hru_water", None) is not None:
             self.hru_water.day()
         for sp, sm in self.surface.items():
@@ -2060,7 +2095,11 @@ class Basin:
                 self.exchange.set_limit_state(self._saved_limit)  # where a restart's first day's limit starts
         if not hasattr(self, "_gw_packages"):
             self._start_takeover()
-        sent = self.recharge.transfer()
+        back = None
+        if self.gw_soil is not None and self.gw_soil.rule == "water_table":
+            back = self.gw_soil.returned  # the groundwater SWAT+'s soil didn't take today, on its cells
+            L.enter("gw_soil:returned", 0.0 if back is None else float(np.sum(back)))
+        sent = self.recharge.transfer(back)
         L.enter("recharge:sent", sent)
         L.enter("recharge:made", self.recharge.made)
         L.enter("recharge:by_the_map", sent - self.recharge.made)
@@ -2100,6 +2139,8 @@ class Basin:
         if self.gw_soil is not None:
             if self.gw_soil.mf6 is None:
                 self.gw_soil.attach(self.mf6)
+                for note in self.gw_soil.notes:
+                    warnings.warn(f"[groundwater_to_soil] {note}", EX.TakeoverNote, stacklevel=2)
             self.gw_soil.before_solve()
         self.mf6.solve_day(limit)
         if limit is not None:
@@ -2468,6 +2509,7 @@ class Basin:
             "limit_lowered": self.exchange.limit_state() if self.exchange is not None else None,
             "lakes_due": self.lakes.due if self.lakes is not None else None,
             "gw_soil_due": self.gw_soil.due.tolist() if getattr(self, "gw_soil", None) is not None else None,
+            "gw_soil_state": self.gw_soil.state() if getattr(self, "gw_soil", None) is not None else None,
             "surface_mass": {sp: sm.state() for sp, sm in self.surface.items()},
             "return_held": self._held,
             "land_held": self._land_held,
@@ -2515,6 +2557,16 @@ class Basin:
                                   for k, w in self.weather.items()}
         if getattr(self, "gw_soil", None) is not None:
             summary["in_transit_gw_soil"] = self.gw_soil.due_volume()
+            if self.gw_soil.rule == "water_table":  # the water-table link's own totals (docs/design.md)
+                t = self.ledger.table()
+                tot = lambda k: float(np.nansum(t[k])) if k in t else 0.0  # noqa: E731
+                summary["water_table"] = {
+                    "held_layer_days": tot("gw_soil:held_layers"),
+                    "groundwater_not_taken_m3": tot("gw_soil:not_taken"),
+                    "saturation_excess_m3": tot("soil:saturation_excess"),
+                    "saturation_excess_to_ponds_m3": tot("soil:saturation_excess_to_ponds"),
+                    "held_lateral": self.gw_soil.held_lateral,
+                }
             # recirculation (bookkeeping only): recharge is gross; some of it came back up into the soil
             tot = self.ledger.totals()
             gross, up = float(tot.get("recharge:received", 0.0)), float(tot.get("gw_soil:sent", 0.0))

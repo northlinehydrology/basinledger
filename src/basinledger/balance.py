@@ -124,6 +124,12 @@ def basin_balance(run: str | Path, outlet: str) -> dict[str, float]:
         "irrigation_runoff_from_routes": float(np.nansum(_sum(t, "route:land:", ":runoff"))),
         "groundwater_into_soil": to_m3(mm("gwsoilq")) if "gwsoilq" in col else 0.0,
         "groundwater_to_soil_sent": float(np.nansum(_sum(t, "gw_soil:sent"))),
+        # rule = "water_table": what no soil layer took, back in the recharge received (a report), and what full
+        # profiles spilled at the surface: a part of runoff_to_channels already, or on a paddy or wetland, of its
+        # ponded water (reports, not added)
+        "groundwater_to_soil_not_taken": float(np.nansum(_sum(t, "gw_soil:not_taken"))),
+        "runoff_saturation_excess": float(np.nansum(_sum(t, "soil:saturation_excess", "excess"))),
+        "saturation_excess_to_ponds": float(np.nansum(_sum(t, "soil:saturation_excess_to_ponds"))),
         "inflow_from_elsewhere": _other_inflow(sw, t),
         "outflow": out_gage,
         "max_daily_closure_share": float(np.nanmax(np.abs(t.get("groundwater:closure_share", np.zeros(1))))),
