@@ -61,7 +61,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - a water-table link (`rule = "water_table"`, built Nov 27, 2026, waiting for swatplus-bmi 0.17.0's held soil
   layers): SWAT+'s layers below MODFLOW 6's water table held, filled from a drain at the profile's bottom (MODFLOW 6's
   top, checked per cell or per HRU), rain on a full profile spilling as saturation excess, and drain water the held
-  layers can't take returned as recharge;
+  layers can't take returned as recharge; optionally each HRU's piece of a cell with its own land surface, its own
+  table (a `land_surface` file per map row);
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
@@ -308,7 +309,8 @@ cap = "none"                   #   or "room") have no default
 package = "soil"               # a DRN package with one entry on each mapped cell
 # held_lateral = "none"        # water_table only: "none" or "swatplus" (lateral flow from held layers); how far
 # top_tolerance = 1.0          #   (m) MODFLOW 6's top may sit from the profile's bottom; each cell's land surface
-# land_surface = "land.csv"    #   (land_m, and the cell as a map table gives it), else hru.con's elev per HRU
+# land_surface = "land.csv"    #   (land_m, and the cell as a map table gives it), else hru.con's elev per HRU;
+                               #   or per map row (object and cell as [recharge] map has them, in its order)
 
 [soil_cover]                   # optional: the soil cover SWAT+'s soil evaporation sees on the HRUs named
 rule = "leaves"                #   "leaves" (leaves + residue) or "swat" (SWAT+'s own, set back: a check)

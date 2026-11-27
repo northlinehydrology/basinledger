@@ -2609,8 +2609,11 @@ There are two causes:
   saturates (valley bottoms, the strips along streams) lies metres below a 200 m cell's mean, so it looks metres
   drier than it is.
 
-**The option: `land_surface = "map"`.** Each map row (an HRU's piece of a cell) gets its own land surface, `L_r`, from
-a `land_m` column in the recharge map (`[recharge] cells`). The study writes it from the 10 m DEM over each piece.
+**The option: a `land_surface` file per map row.** Each map row (an HRU's piece of a cell) gets its own land surface,
+`L_r`: a CSV with the recharge map's rows in its order (`object`, the cell as the map gives it, `land_m`). It can be
+the recharge map's own table, with a `land_m` column. The study writes it from the 10 m DEM over each piece
+(`build/maps/hru_land.csv`, 1,025,254 rows: median +0.09 m against the cell's mean, IQR -2.0 to +2.3 m, 5th
+percentile -7.6 m).
 - **Each piece's profile bottom** is `B_r = L_r - D_h`, where `D_h` is its HRU's profile depth.
 - **The table in each piece** is `z_r = h_c - B_r` above that bottom, where `h_c` is its cell's head. Its depth to
   water is `L_r - h_c`, which sets the row's inflow on its layers (`to_layers`, as now).
@@ -2619,7 +2622,7 @@ a `land_m` column in the recharge map (`[recharge] cells`). The study writes it 
   land surface (its pieces' mean `L_r`) less its HRUs' profiles by share: `profile_bottom_cells` as now. MODFLOW 6's
   top is checked against it, and a lake's or stream's cell can keep its land surface as before.
 - **The per-row column replaces the per-cell file,** so the cells' land surface and the pieces' can't disagree.
-  `land_surface` takes either a per-cell CSV (as built) or `"map"`.
+  `land_surface` takes a per-cell CSV (as built) or a per-row one, told apart by its `object` column.
 - **The drain stays per cell, at `E_c`.** It is MODFLOW 6's top, the same package and conductance.
 
 **The drain's water among the pieces: a change this needs, to keep (A).**
@@ -2678,13 +2681,25 @@ a `land_m` column in the recharge map (`[recharge] cells`). The study writes it 
   - What the held layers can't take still returns as recharge the same day, a loop the solve can't see.
   - This is Andrew's to decide, and not part of this option.
 
-**As it would be built:**
+**As built (Nov 27, 2026):**
 - `coupling/gwsoil.py`:
   - each row's bottom, the HRUs' tables and the split from it;
   - `profile_bottom_cells` taking the cells' land surface as their pieces' mean.
-- `config.py`: `land_surface = "map"`, refused unless `[recharge] cells` is a table with a `land_m` column.
-- `driver.py`: reads the column in the map's row order.
+- `driver.py`: a `land_surface` file with an `object` column is read per row (`is_per_row`, `read_row_land`).
+  - Each row's object and cell must be the recharge map's row's, in its order, and each needs a `land_m`.
+  - The study's 1,025,254 rows read in 1.3 s.
+  - `summary.json`'s `water_table` block says which land surface the run took (`"rows"`, `"cells"` or `"hru"`).
 - The ledger, the restart state and the refusals don't change. The land surface is read at the start, not saved.
+- Tests (`tests/test_water_table.py`, 7 more, 32 in all, passing against swatplus-bmi e7909b2):
+  - each piece's table and its HRU's;
+  - the split, and its fallback;
+  - the cells' land from their pieces, and the file per row (by cell or node, the map's own table too, and its
+    refusals);
+  - a hollow held while its cell is below its top, then taking all the drain's water with none to the rise, and
+    closing;
+  - pieces at their cells' land surface give the per-cell link bit for bit;
+  - the refusals and the config;
+  - on the column, a file per row through the driver gives the run without it, to round-off.
 
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
