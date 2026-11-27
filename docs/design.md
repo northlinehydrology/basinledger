@@ -17,7 +17,8 @@ Status (Nov 26, 2026, release 0.18.0). Built and tested on synthetic examples:
   carries, drains' seepage to the streams, and the coupling's settings checked at start-up;
 - recharge HRU by HRU, each HRU's percolation on the cells under its ground and held to SWAT+'s own aquifer recharge;
 - groundwater up into the soil where the water table rises into it, by a drain at the profile's bottom or SWAT+
-  gwflow's rule (swatplus-bmi 0.7.0; the drain chosen);
+  gwflow's rule (swatplus-bmi 0.7.0; the drain chosen), and its recirculation, gross and net recharge (Recirculation);
+- a floor under a river stage set from SWAT+'s depth, cell by cell (The MODFLOW 6 coupling, Stage floor);
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
 - the soil cover SWAT+'s soil evaporation sees, on the HRUs a study names: a tree's leaves and residue, not its wood
   (Soil cover for soil evaporation; swatplus-bmi's soil cover);
