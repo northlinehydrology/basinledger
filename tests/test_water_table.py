@@ -304,6 +304,144 @@ def test_the_config_takes_water_table_and_its_settings(tmp_path):
         C.load(p)
 
 
+# --- the land surface per map row (a land_surface file per row; docs/design.md, The land surface per map row) ---
+
+def two_pieces():
+    """HRUs a (profile 0.75 m) and b (1.0 m) on one 200 m2 cell, 100 m2 each: a on a rise (land 100.5 m), b in a
+    hollow (99.5 m). The cell's land is 100.0 m, its profile's bottom 100 - (0.75 + 1.0) / 2 = 99.125 m, MODFLOW 6's
+    top; a's piece bottoms at 99.75 m, b's at 98.5 m."""
+    m = AreaMap(["a", "b"], np.array([0, 1]), np.array([0, 0]), np.array([100.0, 100.0]))
+    return m, np.array([100.5, 99.5]), StandInSwat(), StandInModflow([99.125])
+
+
+def test_each_piece_has_its_own_table_and_each_hru_its_pieces():
+    m = AreaMap(["a", "b"], np.array([0, 0, 1]), np.array([0, 1, 1]), np.array([25.0, 75.0, 50.0]))
+    bottom = np.array([99.0, 100.0, 98.0])  # a's two pieces, and b's
+    z = G.row_table_height(m, np.array([99.5, 100.5]), bottom)
+    np.testing.assert_allclose(z, [0.5, 0.5, 2.5])
+    h = G.hru_table_height(m, np.array([99.5, 100.5]), np.zeros(2), 2, row_bottom=bottom)
+    np.testing.assert_allclose(h, [0.5, 2.5])
+    assert G.row_table_height(m, np.array([1e30, 100.5]), bottom)[0] < -1e3  # a dry cell holds nothing
+    # with every piece at its cell's top, the per-cell table
+    top = np.array([99.0, 100.0])
+    np.testing.assert_array_equal(G.hru_table_height(m, np.array([99.5, 100.7]), top, 2, row_bottom=top[m.node]),
+                                  G.hru_table_height(m, np.array([99.5, 100.7]), top, 2))
+
+
+def test_the_drain_water_goes_to_the_pieces_with_soil_below_the_table():
+    m = AreaMap(["a", "b", "c"], np.array([0, 1, 2]), np.array([0, 0, 1]), np.array([100.0, 300.0, 50.0]))
+    # cell 0: a's piece above its table, b's 0.5 m into its soil; cell 1: c's piece above it, nowhere wet
+    s = G.table_shares(m, np.array([-0.2, 0.5, -1.0]), 2)
+    np.testing.assert_allclose(s, [0.0, 1.0, 1.0])  # cell 1 falls back to ground (it gives nothing anyway)
+    s = G.table_shares(m, np.array([0.25, 0.5, 0.3]), 2)
+    np.testing.assert_allclose(s, [25.0 / 175.0, 150.0 / 175.0, 1.0])  # by ground x height in the soil
+    # at one height, by ground: cell_shares
+    np.testing.assert_allclose(G.table_shares(m, np.array([0.4, 0.4, 0.4]), 2), G.cell_shares(m, 2))
+
+
+def test_the_cells_land_is_its_pieces_and_a_file_per_row_carries_it(tmp_path):
+    m = AreaMap(["a", "b"], np.array([0, 1, 1]), np.array([0, 0, 5]), np.array([100.0, 300.0, 50.0]))
+    land = G.cell_land(m, np.array([101.0, 99.0, 50.0]), 6)
+    np.testing.assert_allclose(land[[0, 5]], [99.5, 50.0])
+    assert np.isnan(land[1])
+    node_of = lambda layer, row, col: 3 * row + col  # noqa: E731
+    f = tmp_path / "land.csv"  # the map's rows, in its order, by cell (the study's form) or by node
+    f.write_text("object,layer,row,col,land_m\na,0,0,0,101.0\nb,0,0,0,99.0\nb,0,1,2,50.0\n")
+    assert G.is_per_row(f)
+    np.testing.assert_array_equal(G.read_row_land(f, m, node_of), [101.0, 99.0, 50.0])
+    g = tmp_path / "map.csv"  # the recharge map's own table, with a land_m column
+    g.write_text("object,node,area_m2,land_m\na,0,100,101.0\nb,0,300,99.0\nb,5,50,50.0\n")
+    np.testing.assert_array_equal(G.read_row_land(g, m, node_of), [101.0, 99.0, 50.0])
+    cells = tmp_path / "cells.csv"
+    cells.write_text("layer,row,col,land_m\n0,0,0,100.0\n")
+    assert not G.is_per_row(cells)
+    for text, match in [
+        ("object,node,land_m\na,0,101.0\nb,0,99.0\n", "2 rows, the recharge map has 3"),
+        ("object,node,land_m\na,0,101.0\nb,0,99.0\nb,5,50.0\na,0,1.0\n", "more rows than"),
+        ("object,node,land_m\na,0,101.0\nb,5,50.0\nb,0,99.0\n", "row 2 .* isn't the recharge map's"),
+        ("object,node,land_m\na,0,101.0\nb,0,\nb,5,50.0\n", "row 2 has no land_m"),
+    ]:
+        f.write_text(text)
+        with pytest.raises(ValueError, match=match):
+            G.read_row_land(f, m, node_of)
+
+
+def test_a_hollow_is_held_while_its_cell_is_below_the_top_and_takes_the_drains_water():
+    m, land, sw, mf = two_pieces()
+    area = np.array([100.0, 100.0])
+    gs = G.GroundwaterToSoil(sw, m, area, "water_table", "none", "soil", n_cells=1, land_rows=land)
+    gs.attach(mf)
+    np.testing.assert_allclose(gs.elev0, [99.125])  # the drain per cell, at its top
+    np.testing.assert_allclose(gs.row_bottom, [99.75, 98.5])
+    gs.before_swat()
+    sw.day(area)
+    gs.received()
+    # the head 99.0 m, below the cell's top: the drain gives nothing, but b's table is 0.5 m into its soil (0.5 m
+    # down, above its lower layer's middle at 0.6 m): that layer is held, and fills from rain alone
+    gs.before_solve()
+    mf.h, mf.out = np.array([99.0]), np.array([0.0])
+    assert gs.after_solve() == (0.0, 0.0)
+    np.testing.assert_array_equal(gs.flags, [0, 0, 0, 0, 0, 0, 0, 1])
+    assert gs.due.sum() == 0.0
+    # the per-cell table at the same head holds nothing: the cell's table is below its top
+    cell = G.GroundwaterToSoil(StandInSwat(), m, area, "water_table", "none", "soil", n_cells=1,
+                               land_cells=np.array([100.0]))
+    cell.attach(StandInModflow([99.125]))
+    cell.before_solve()
+    cell.mf6.h, cell.mf6.out = np.array([99.0]), np.array([0.0])
+    cell.after_solve()
+    assert cell.flags.sum() == 0
+    # the head 99.5 m, above the top: the drain's 2 m3 all to b, whose table is at its surface; none to a, whose
+    # piece is above its table (Andrew's A)
+    gs.before_solve()
+    mf.h, mf.out = np.array([99.5]), np.array([2.0])
+    assert gs.after_solve() == (2.0, 0.0)
+    np.testing.assert_allclose(gs.rows, [0.0, 2.0])
+    due = gs.due * G.DAY * area[LAYER_HRU]
+    assert due[:6].sum() == 0.0 and due[6:].sum() == pytest.approx(2.0)
+    np.testing.assert_allclose(due[6:] / 2.0, [0.2, 0.8])  # b's layers by thickness below its table
+    np.testing.assert_array_equal(gs.flags, [0, 0, 0, 0, 0, 0, 1, 1])
+    # and it closes: what b's held layers can't take goes back to the cell
+    gs.before_swat()
+    sw.room[:] = 0.005
+    sw.day(area)
+    got = gs.received()
+    assert got + gs.not_taken == pytest.approx(2.0)
+    np.testing.assert_allclose(gs.returned, [gs.not_taken])
+
+
+def test_pieces_at_their_cells_land_are_the_per_cell_link():
+    def run(**land):
+        m, sw, mf = stand_ins()
+        area = np.array([100.0, 100.0])
+        gs = G.GroundwaterToSoil(sw, m, area, "water_table", "none", "soil", n_cells=2, **land)
+        gs.attach(mf)
+        out = []
+        for h, q in [([99.25 + 0.4, 98.0], [2.0, 0.0]), ([99.25 + 0.1, 99.6], [0.5, 1.5]), ([98.0, 98.5], [0, 0])]:
+            gs.before_swat()
+            sw.day(area)
+            gs.received()
+            gs.before_solve()
+            mf.h, mf.out = np.array(h), np.array(q, float)
+            gs.after_solve()
+            out.append((gs.flags.copy(), gs.due.copy(), gs.rows.copy()))
+        return out
+    for (f1, d1, r1), (f2, d2, r2) in zip(run(land_rows=np.array([100.0, 100.0])),
+                                          run(land_cells=np.array([100.0, 100.0]))):
+        np.testing.assert_array_equal(f1, f2)
+        np.testing.assert_array_equal(d1, d2)
+        np.testing.assert_array_equal(r1, r2)
+
+
+def test_a_land_surface_per_row_is_water_tables_in_place_of_one_per_cell():
+    m, land, sw, _ = two_pieces()
+    with pytest.raises(ValueError, match="in place of one per cell"):
+        G.GroundwaterToSoil(sw, m, np.array([100.0, 100.0]), "water_table", "none", "soil", land_rows=land,
+                            land_cells=np.array([100.0]))
+    with pytest.raises(ValueError, match="water_table's"):
+        G.GroundwaterToSoil(sw, m, np.array([100.0, 100.0]), "drain", "none", "soil", land_rows=land)
+
+
 # --- on the models: Osu_1hru's one HRU on one MODFLOW 6 cell, its head raised and lowered ---------------------
 
 import warnings  # noqa: E402
@@ -555,3 +693,24 @@ def test_lateral_flow_from_held_layers_is_an_option(swatplus, column):
         head, rows = _table(run["folder"] / "swatplus" / "basin_wb_day.txt")
         return sum(float(r[head.index("latq")]) for r in rows)
     assert latq(own) > latq(column)
+
+
+@pytest.mark.slow
+def test_a_land_surface_per_row_at_the_cells_land_is_the_run_without_it(swatplus, column, tmp_path):
+    """A land surface file per map row read through the driver: the one piece at the cell's land surface is the
+    column's run, to round-off (the cell's land comes back as its piece's mean)."""
+    need_water_table()
+    COLUMN_CELL = 100_000.0 ** 0.5  # examples/synthetic/model.py's, the column's one cell of 10 ha
+    f, g = tmp_path / "map.csv", tmp_path / "land.csv"
+    f.write_text(f"object,node,area_m2\nhru0001,0,{COLUMN_CELL ** 2!r}\n")
+    g.write_text(f"object,node,land_m\nhru0001,0,{LAND!r}\n")
+    cfg = column_config()
+    cfg.recharge_map = str(f)
+    cfg.groundwater_to_soil = dict(cfg.groundwater_to_soil, land_surface=g)
+    r = column_run(cfg, "water-table-rows")
+    import json
+    assert json.loads((r["folder"] / "outputs" / "summary.json").read_text())["water_table"]["land_surface"] == "rows"
+    np.testing.assert_array_equal(r["flags"], column["flags"])
+    for k in ("gw_soil:sent", "gw_soil:not_taken", "soil:saturation_excess"):
+        np.testing.assert_allclose(r["table"][k], column["table"][k], rtol=1e-9, atol=1e-6)
+    np.testing.assert_allclose(r["series"]["flow:cha01"], column["series"]["flow:cha01"], rtol=1e-9)
