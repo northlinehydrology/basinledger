@@ -202,6 +202,8 @@ class Basin:
             prepare("swatplus", swat_dir)
             if any(t.get("surface") for t in cfg.transport.values()):
                 S.records_every_year(swat_dir)  # the leached mass is read from SWAT+'s daily records
+            if cfg.outputs.get("recirculation"):
+                S.records_every_year(swat_dir)  # each HRU's day, read from SWAT+'s daily records (balance.HruWater)
             problems = S.coupling_problems(swat_dir, two_way=bool(ex))
             if problems:
                 self._problem(ValueError("SWAT+ isn't set up to be coupled:\n- " + "\n- ".join(problems)))
@@ -357,9 +359,12 @@ class Basin:
         # recharge: SWAT+ aquifers (or HRUs) -> MODFLOW 6 cells
         self.aquifer_check = None
         self.gw_soil = None
+        self.hru_water = None  # [outputs] recirculation: each HRU's water over the run (balance.HruWater)
         self.recharge = None
         if self.mf6 is not None:
             self._part("[recharge]", lambda: self._recharge(cfg, swat_dir, saved))
+        if cfg.outputs.get("recirculation"):
+            self._part("[outputs] recirculation", lambda: self._hru_water(cfg, swat_dir, saved))
         self.surface = {}  # species -> SurfaceMass, for species SWAT+ carries (coupling/surface_mass.py)
         self._track_transport = False  # transport_steady_state's mean flows
         self.swat_aquifer_ha = ({a: v / 1e4 for a, v in S.aquifer_areas(swat_dir).items()}
@@ -566,6 +571,16 @@ class Basin:
             msg = e.args[0] if isinstance(e, KeyError) and e.args else str(e)
             self._problems.append(msg if msg.startswith(where) else f"{where}: {msg}")
             return None
+
+    def _hru_water(self, cfg, swat_dir, saved):
+        """``[outputs] recirculation = true``: each HRU's percolation, groundwater into the soil and where the soil's
+        water went, summed over the run for ``balance.recirculation``. Reads only."""
+        from .balance import HruWater
+        if cfg.outputs["recirculation"] is not True:
+            raise ValueError(f"[outputs] recirculation is true or left out; got {cfg.outputs['recirculation']!r}")
+        if swat_dir is None:
+            raise ValueError("[outputs] recirculation reads SWAT+'s HRUs; the surface model isn't SWAT+")
+        self.hru_water = HruWater(self.sw, S.hru_areas(swat_dir), saved.get("hru_water") if saved else None)
 
     def _recharge(self, cfg, swat_dir, saved):
         """Recharge from the surface model's aquifers or HRUs into MODFLOW 6's cells, and groundwater back up into the
@@ -1980,6 +1995,8 @@ class Basin:
             self._irrigate(L, rt)
         if gw_soil is not None:
             L.enter("gw_soil:received", gw_soil.received())
+        if getattr(self, "hru_water", None) is not None:
+            self.hru_water.day()
         for sp, sm in self.surface.items():
             soil = sm.after_swat(list(self.due))
             if gw_soil is not None:
@@ -2450,6 +2467,7 @@ class Basin:
             "land_held": self._land_held,
             "utilities_held": {n: c.held for n, c in self.utilities.items()},
             "transfers_held": {n: tr.state() for n, tr in self.transfers.items()},
+            **({"hru_water": self.hru_water.state()} if getattr(self, "hru_water", None) is not None else {}),
         }))
 
     # ---------- outputs ----------
@@ -2491,6 +2509,15 @@ class Basin:
                                   for k, w in self.weather.items()}
         if getattr(self, "gw_soil", None) is not None:
             summary["in_transit_gw_soil"] = self.gw_soil.due_volume()
+            # recirculation (bookkeeping only): recharge is gross; some of it came back up into the soil
+            tot = self.ledger.totals()
+            gross, up = float(tot.get("recharge:received", 0.0)), float(tot.get("gw_soil:sent", 0.0))
+            summary["recirculation"] = {"recharge_gross": gross, "groundwater_to_soil": up,
+                                        "recharge_net": gross - up,
+                                        "share": up / gross if gross else float("nan")}
+        if getattr(self, "hru_water", None) is not None:
+            from .balance import HRU_FILE
+            self.hru_water.write(out / HRU_FILE)
         if getattr(self, "river_floors", None):
             self._write_stage_floors(out / "stage_floor.csv")
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
