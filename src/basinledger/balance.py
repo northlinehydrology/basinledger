@@ -26,6 +26,19 @@ Over the area the surface model covers:
 
 An example asks for it with ``[outputs] balance = "<outlet channel>"``: SWAT+ then prints ``basin_wb``,
 ``channel_sd`` and ``reservoir`` daily.
+
+**Recirculation** (with ``[groundwater_to_soil]``). Recharge is gross: some of the water MODFLOW 6 sends up into the
+soil percolates again, the same day or later, and is counted again. The balance reports ``recharge_gross`` (what
+MODFLOW 6 received from the land, ``recharge_received``), ``groundwater_to_soil`` (what it sent up,
+``groundwater_to_soil_sent``), ``recharge_net`` (the difference) and ``recirculation_share`` (sent up over gross).
+Bookkeeping only: nothing it reads changes a flow.
+
+``recirculation`` splits it by HRU group (land use, by default) from the run's ``outputs/recirculation_hru.csv``,
+which the driver writes with ``[outputs] recirculation = true``: each HRU's percolation, groundwater into the soil,
+soil ET, lateral flow and saturation excess, summed from SWAT+'s day (``hru_wb``) over the run. Where the water that
+came up went is an estimate [A]: SWAT+ mixes the soil's water, so it is taken to leave the soil in the proportions
+all the soil's water left it over the run (well mixed). An exact split would need a tracer carried through SWAT+'s
+soil.
 """
 
 from __future__ import annotations
@@ -118,6 +131,12 @@ def basin_balance(run: str | Path, outlet: str) -> dict[str, float]:
     # with the exchange's point sources (swatplus-bmi before 0.2.0), the exchange is in the routes; don't count twice
     b["returns_to_streams"] -= float(np.nansum(_sum(t, "route:swat:point_source:gw_", ":delivered")))
     b["withdrawals_from_streams"] -= float(np.nansum(_sum(t, "route:swat:place_of_use:seep_", ":delivered")))
+    # recirculation (bookkeeping only): gross recharge, what came back up into the soil, and the net
+    b["recharge_gross"] = b["recharge_received"]
+    b["groundwater_to_soil"] = b["groundwater_to_soil_sent"]
+    b["recharge_net"] = b["recharge_gross"] - b["groundwater_to_soil"]
+    b["recirculation_share"] = (b["groundwater_to_soil"] / b["recharge_gross"] if b["recharge_gross"]
+                                else float("nan"))
     b["land_residual"] = (b["precipitation_land"] + b["irrigation"] + b["irrigation_runoff_from_routes"]
                           + b["groundwater_into_soil"] - b["et_land"] - b["runoff_to_channels"] - b["percolation"]
                           - b["soil_water_gain"] - b["snow_gain"])
@@ -215,3 +234,115 @@ def soil_water_trend(swat_dir: str | Path, days: int = 365) -> dict[str, float]:
     return {"days": len(rows), "soil_water_change_mm": change, "precipitation_mm": precip,
             "share": abs(change) / precip if precip > 0 else float("nan"),
             "soil_water_final_mm": float(rows[-1][col["sw_final"]])}
+
+
+# ---------- recirculation by HRU group ----------
+
+# SWAT+'s day per HRU (mm, swatplus-bmi's printed hru_wb columns), summed over a run by HruWater
+HRU_TERMS = {"precipitation": "hru_wb:precip", "irrigation": "hru_wb:irr", "percolation": "hru_wb:perc",
+             "groundwater_to_soil": "hru_wb:gwsoilq", "et": "hru_wb:et", "et_plant": "hru_wb:eplant",
+             "et_soil": "hru_wb:esoil", "lateral": "hru_wb:latq", "tile": "hru_wb:qtile",
+             "saturation_excess": "hru_wb:satex", "surface_runoff": "hru_wb:surq_cont"}
+# where the soil's water leaves it, for the well-mixed split [A]
+LEAVES = {"percolation": ("percolation",), "et": ("et_plant", "et_soil"), "lateral": ("lateral", "tile"),
+          "surface": ("saturation_excess",)}
+HRU_FILE = "recirculation_hru.csv"
+
+
+class HruWater:
+    """Each HRU's water over a run (m3), from SWAT+'s day as swatplus-bmi reads it (``HRU_TERMS``) and the HRUs'
+    areas (``hru.con``, ``areas`` in m2): the driver's ``[outputs] recirculation``. Reads only. SWAT+ makes the records it reads from
+    the first year (``records_every_year``); a NaN read is refused."""
+
+    def __init__(self, sw, areas: dict[str, float], saved: dict | None = None):
+        self.sw = sw
+        self.hrus = sw.names(HRU_TERMS["percolation"])
+        missing = [v for v in HRU_TERMS.values() if not sw.has(v)]
+        if missing:
+            raise ValueError(f"[outputs] recirculation reads SWAT+'s {missing}, which swatplus-bmi doesn't have")
+        self.area = np.array([areas[h] for h in self.hrus])  # m2 (swatplus.hru_areas)
+        self.total = {k: np.array(saved["total"][k], float) for k in HRU_TERMS} if saved else \
+            {k: np.zeros(len(self.hrus)) for k in HRU_TERMS}
+        self.days = int(saved["days"]) if saved else 0
+
+    def day(self):
+        """After SWAT+'s day."""
+        for k, v in HRU_TERMS.items():
+            mm = self.sw.get(v)
+            if not np.isfinite(mm).all():
+                raise ValueError(f"[outputs] recirculation: SWAT+ made no record of {v} for the day (print.prt's "
+                                 "nyskip years)")
+            self.total[k] += mm / 1000.0 * self.area
+        self.days += 1
+
+    def state(self) -> dict:
+        return {"days": self.days, "total": {k: v.tolist() for k, v in self.total.items()}}
+
+    def write(self, path: Path):
+        import csv
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["hru", "area_m2", "days", *HRU_TERMS])
+            for i, h in enumerate(self.hrus):
+                w.writerow([h, repr(float(self.area[i])), self.days, *(repr(float(self.total[k][i]))
+                                                                        for k in HRU_TERMS)])
+
+
+def recirculation(run: str | Path, groups: str | dict = "landuse") -> dict[str, dict[str, float]]:
+    """Recharge and the water that came back up into the soil, by HRU group, from a run's
+    ``outputs/recirculation_hru.csv`` (``[outputs] recirculation = true``). ``groups``: ``"landuse"`` (each HRU's
+    ``lu_mgt``), ``"hru"`` (each HRU alone) or a dict HRU -> group naming every HRU.
+
+    Per group, and for the whole basin (``"basin"``): ``area_m2``, ``years``; ``percolation``, ``groundwater_to_soil``
+    and ``net_recharge`` (the difference), each in m3 and in mm a year (``_mm_yr``); ``recirculation_share``
+    (groundwater to soil over percolation); and where the water that came up went, an estimate [A]: SWAT+ mixes the
+    soil's water, so it is taken to leave the soil in the proportions all the soil's water left it over the run
+    (percolation, soil and plant ET, lateral and tile flow, saturation excess to the surface).
+    ``from_groundwater_<path>`` (m3) and ``from_groundwater_<path>_share`` for each path, which add up to the
+    groundwater to soil. Saturation excess is the part SWAT+ records as ``satex``; where it doesn't (its own gwflow
+    off), what the full profile sheds is in its surface runoff with the rain's and isn't split out. An exact split
+    would need a tracer through SWAT+'s soil."""
+    import csv
+    run = Path(run)
+    path = run / "outputs" / HRU_FILE
+    if not path.exists():
+        raise FileNotFoundError(f"{path}: the run didn't write it; recirculation needs [outputs] recirculation = true")
+    with open(path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    hrus = [r["hru"] for r in rows]
+    if groups == "landuse":
+        from .salt import _hru_data
+        names = _hru_data(run / "swatplus", hrus)["landuse"]
+    elif groups == "hru":
+        names = hrus
+    elif isinstance(groups, dict):
+        missing = sorted(set(hrus) - set(groups))
+        if missing:
+            raise ValueError(f"recirculation: groups names no group for HRUs {missing[:5]}")
+        names = [groups[h] for h in hrus]
+    else:
+        raise ValueError(f"recirculation: groups is 'landuse', 'hru' or a dict HRU -> group; got {groups!r}")
+    years = int(rows[0]["days"]) / 365.25 if rows else float("nan")
+    sums: dict[str, dict[str, float]] = {}
+    for g, r in zip(names, rows):
+        for key in ("basin", g):
+            s = sums.setdefault(key, dict.fromkeys(["area_m2", *HRU_TERMS], 0.0))
+            for k in s:
+                s[k] += float(r[k])
+    out = {}
+    for g in sorted(sums, key=lambda k: (k == "basin", k)):
+        s = sums[g]
+        o = {"area_m2": s["area_m2"], "years": years, "percolation": s["percolation"],
+             "groundwater_to_soil": s["groundwater_to_soil"],
+             "net_recharge": s["percolation"] - s["groundwater_to_soil"]}
+        for k in ("percolation", "groundwater_to_soil", "net_recharge"):
+            o[k + "_mm_yr"] = o[k] / s["area_m2"] / years * 1000.0 if s["area_m2"] and years else float("nan")
+        o["recirculation_share"] = o["groundwater_to_soil"] / o["percolation"] if o["percolation"] else float("nan")
+        leaving = {p: sum(max(s[k], 0.0) for k in ks) for p, ks in LEAVES.items()}
+        total = sum(leaving.values())
+        for p, v in leaving.items():
+            share = v / total if total else float("nan")
+            o[f"from_groundwater_{p}_share"] = share
+            o[f"from_groundwater_{p}"] = s["groundwater_to_soil"] * share if total else 0.0
+        out[g] = o
+    return out
