@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.18.0).** Built and tested:
+**Status: early (0.19.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -41,7 +41,8 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - SWAT+ recharge into MODFLOW 6 (one-way), per aquifer or HRU by HRU (each HRU's percolation on the cells under its
   ground, from swatplus-bmi 0.6.0), and the two-way stream-aquifer exchange through MODFLOW 6's river, drain or
   streamflow routing (SFR) packages, with SFR's reaches built from SWAT+'s channel lines, and lakes at a fixed stage
-  coupled through their outlet channels;
+  coupled through their outlet channels; a floor under a river stage set from SWAT+'s depth, cell by cell from a
+  column of the rivers' map (`[rivers] stage_floor`), for main stems whose bottom sits below the surveyed surface;
 - MODFLOW 6 on a structured grid (DIS) or a vertex grid (DISV, such as a quadtree refined around a site): maps, wells,
   head outputs and rules name cells as `layer, row, col` or `layer, icell2d`; every solve checked for non-finite
   heads, a run stopping at the first with the day, the iteration and the solver settings that usually fix it;
@@ -53,7 +54,10 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   reservoirs booked by source, the whole-basin balance closing with it (swatplus-bmi 0.14.0);
 - groundwater up into SWAT+'s soil layers where MODFLOW 6's water table rises into the profile, by a drain at the
   profile's bottom (chosen) or SWAT+ gwflow's rule, with or without a cap at the layers' room (none chosen;
-  swatplus-bmi 0.7.0);
+  swatplus-bmi 0.7.0), and its recirculation: gross and net recharge in the balance and the summary, and each HRU's
+  water over the run split by land use or HRU (`[outputs] recirculation`, `balance.recirculation`);
+- the soil cover SWAT+'s soil evaporation sees, on the HRUs a study names by HRU or land use: a tree's leaves and
+  residue, not its wood (`[soil_cover] rule = "leaves"`; swatplus-bmi 0.16.0);
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
@@ -298,6 +302,10 @@ change = {temperature = 2.0}   # a scenario's change, on the series or the proje
 rule = "drain"                 #   "hru" and [exchange]); rule ("drain" or "gwflow") and cap ("none" or "room") have
 cap = "none"                   #   no default
 package = "soil"               # a DRN package with one entry on each mapped cell
+
+[soil_cover]                   # optional: the soil cover SWAT+'s soil evaporation sees on the HRUs named
+rule = "leaves"                #   "leaves" (leaves + residue) or "swat" (SWAT+'s own, set back: a check)
+land_uses = ["frst_lum"]       #   and/or hrus = ["hru0001"]
 ```
 
 A scenario changes the weather from a shared warm-up:
@@ -372,6 +380,9 @@ and returns that share the next day. See [docs/design.md](docs/design.md#water-u
 | Replay | from a float64 record, the coupled run's concentrations, salt, transport and user lines bit for bit every day (dry cells too); from float32, within 1e-6; a salt multiplier changes only the salt; porosity and weathering may change; a SWAT+ or MODFLOW 6 parameter, the flow model's files, the users, starting heads or too many days refused; restarts bit for bit, from a replay's state or a full run's; a recording run restarted carries its record on day for day; the forward model replays |
 | Weather | a series equal to the files' records gives the files' run bit for bit; a run's first days are written into its files, other columns kept; a change reaches SWAT+'s records from the run's first day; a case from a warm-up takes its own weather from the first day that can be set; users read the series; a series that ends early stops the run |
 | Groundwater into the soil | for each rule and cap, what leaves MODFLOW 6's cells is what SWAT+'s layers receive the next day; the whole basin closes; a restart carries what is due; a water table below every profile changes nothing, bit for bit |
+| Recirculation | net recharge is gross less what came up; the groups add up and the split follows the soil's water; each HRU's sums agree with the ledger; the ledger is the same to the bit with the table on; a restart carries the sums |
+| Stage floor | a floor that never binds gives the same run to the bit; a floor above the stage holds cell by cell as the ledger and the CSV say; the basin closes; bad settings refused |
+| Soil cover | SWAT+'s own cover set back gives the same run to the bit; leaves and residue on a forest raise soil evaporation and the water balance still closes; HRUs by name and land use; refused without swatplus-bmi 0.16.0 |
 | Restarts and scenarios | saved after a warm-up and carried on, runs match unbroken runs bit for bit; a case with no change matches the baseline |
 | Start-up warnings | soils that start empty, and a warm-up whose soils haven't settled, are warned of, not stopped |
 | Command line, calibration | outputs and status written; statistics on known values; the forward model writes simulated values at observations |
