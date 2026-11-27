@@ -9,6 +9,16 @@
   SWAT+'s low-flow depth. The ledger counts the cells held at their floor each day and their raise;
   `outputs/stage_floor.csv` lists them cell by cell. Without it a run is unchanged, bit for bit. Tested in
   `tests/test_stage_floor.py`.
+- **Recirculation: gross and net recharge** (docs/design.md, Recirculation). Bookkeeping only: no flow changes, and
+  no existing ledger account or balance key changes. With groundwater up into the soil, part of the recharge is water
+  that came up and percolated again.
+  - The whole-basin balance gives `recharge_gross`, `groundwater_to_soil`, `recharge_net` and
+    `recirculation_share`, and the run's `summary.json` gives a `recirculation` block when the link is on.
+  - `[outputs] recirculation = true` sums each HRU's water over the run from SWAT+'s day
+    (`outputs/recirculation_hru.csv`). `balance.recirculation(run, groups)` splits it by land use, HRU or any
+    grouping: percolation, groundwater to soil and net, in m3 and mm a year. It also gives where the water that came
+    up went (percolation, ET, lateral flow, saturation excess), estimated by taking the soil's water as well mixed.
+  - Tested in `tests/test_recirculation.py`.
 
 ## 0.18.0 (2026-11-26)
 

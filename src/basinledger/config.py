@@ -191,6 +191,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     heads = [{name = "pw1", cell = [0, 20, 28]}]
     temperature = true                  # SWAT+ prints what the reach heat balance needs (temperature.py)
     balance = "cha01"                   # the outlet: SWAT+ prints what the whole-basin balance needs (balance.py)
+    recirculation = true                # each HRU's percolation, groundwater into the soil and where its soil water
+                                        #   went, summed over the run (balance.recirculation; reads only)
 
     [calibration]                       # optional: the example's calibration record
     record = "calibration/record.toml"  # without one, the example is a screening run
