@@ -2141,7 +2141,7 @@ channel. A pump fills the reservoir at high flow, and its inflow is the channel'
 the channel up at low flow, never below its keep. A town's outdoor and indoor use is cut in two stages, booked apart
 from a shortfall. A restart matches, bit for bit.
 
-## A water-table link between MODFLOW 6 and SWAT+'s soils (proposed Nov 27, 2026; a design for Andrew to agree, not built)
+## A water-table link between MODFLOW 6 and SWAT+'s soils (proposed Nov 27, 2026; decisions 6-8 taken, the rest open; not built)
 
 Requested by Andrew on Nov 27, 2026, from the Rappahannock's joint calibration. This is a design note only: no code
 until he agrees it. swatplus-bmi's side is being written in its own session, and this note will take it in when it
@@ -2318,7 +2318,7 @@ sessions on Nov 27, 2026, pending Andrew's decision 2:
     - a released layer drains as recharge;
     - the soil and MODFLOW 6's storage together close every day;
     - the flag doesn't flap with a table held mid-layer;
-  - no held layers gives today's `drain` run bit for bit (or its new baseline, by decision 8);
+  - no held layers gives today's `drain` run on its new baseline (decision 8: the inflow at Hook 1);
   - the `drain` and `gwflow` rules are unchanged;
   - a restart carries the flags and what is due;
   - the whole basin closes, with recirculation reported;
@@ -2374,6 +2374,18 @@ sessions on Nov 27, 2026, pending Andrew's decision 2:
      happens). Runoff in today's groundwater-to-soil runs changes.
    - Or keep today's place for HRUs with no held layers, so the current rules stay bit for bit, at the cost of two
      places in SWAT+.
+
+**Andrew's decisions (Nov 27, 2026, relayed from the Virginia study session):**
+- **6: a new rule, `rule = "water_table"`,** beside `drain` and `gwflow`. `drain` stays as it is.
+- **7: ET from held layers is measured on the first run,** bounded by the drain: a soil whose table can't supply its
+  ET dries.
+- **8: the groundwater inflow moves to Hook 1 for every run, in a new version** of swatplus-bmi and Basin Ledger.
+  Runoff in today's groundwater-to-soil runs (`drain` and `gwflow`, the Rappahannock's included) changes, and Basin
+  Ledger's tests that hold them bit for bit move to the new baseline in that version.
+
+Still open: 1 (Hook 2 as a pure wrapper; Andrew asks how it differs from the per-HRU mid-day pause rejected as too
+slow), 2, 3, 4 and 5 (Andrew asks whether lateral flow from held layers should be an option, since it may depend on the
+region).
 
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
