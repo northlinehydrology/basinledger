@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.19.0 (2026-11-27)
 
 - **A floor under the river stage** (`[rivers] stage_floor = "<column>"`; docs/design.md, The MODFLOW 6 coupling,
   Stage floor). Opt-in, off by default. With the stage set each day from the surface model's depth, a column of the
@@ -30,6 +30,8 @@
   - Off without the section; a run without it is unchanged, ledger for ledger.
   - Needs swatplus-bmi's soil cover (`soil_surface_cover__mass-per-area_density`). Tested in
     `tests/test_soil_cover.py`.
+- **swatplus-bmi 0.16.0 locked.** The soil cover needs it and is refused before it; the minimum stays 0.14.0. Tested
+  with swatplus-bmi 0.16.0.
 
 ## 0.18.0 (2026-11-26)
 
