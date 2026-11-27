@@ -54,7 +54,12 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     cap = "none"                        #   bottom, solved by MODFLOW 6) or "gwflow" (SWAT+ gwflow's rule, a well);
     package = "soil"                    #   cap "none" or "room" (no more than the layers' room). The package (DRN for
                                         #   drain, WEL for gwflow) has one entry on each mapped cell. Needs recharge by
-                                        #   HRU and the two-way [exchange]
+                                        #   HRU and the two-way [exchange]. Or "water_table" (cap "none", a DRN): the
+    # held_lateral = "none"             #   layers below MODFLOW 6's water table held saturated, its top the profile's
+    # top_tolerance = 1.0               #   bottom (checked per HRU against hru.con's elev less the profile, m, or
+    # land_surface = "land.csv"         #   cell by cell against land_m per cell, a map table's cell columns);
+                                        #   held_lateral "none" (default) or "swatplus" (SWAT+'s own lateral flow from
+                                        #   held layers). Not with transport, salt or a replay record (yet)
     [soil_cover]                        # optional, SWAT+ only: the soil cover its soil evaporation sees, for the HRUs
     rule = "leaves"                     #   and land uses named (coupling/soilcover.py). "leaves": a tree's leaves and
     land_uses = ["frst_lum"]            #   the residue, no wood; other plants SWAT+'s own. And/or hrus = ["hru0001"].
@@ -605,10 +610,30 @@ def load(path: str | Path) -> ExampleConfig:
         missing = [k for k in ("rule", "cap", "package") if k not in gs]
         if missing:
             raise ValueError(f"{path}: [groundwater_to_soil] needs {missing}: the rule and the cap have no default")
-        if set(gs) - {"rule", "cap", "package"}:
-            raise ValueError(f"{path}: [groundwater_to_soil] unknown settings {sorted(set(gs) - {'rule', 'cap', 'package'})}")
+        own = {"held_lateral", "top_tolerance", "land_surface"}
+        known = {"rule", "cap", "package"} | (own if gs.get("rule") == "water_table" else set())
+        if set(gs) - known:
+            raise ValueError(f"{path}: [groundwater_to_soil] unknown settings {sorted(set(gs) - known)}"
+                             + (" (held_lateral, top_tolerance and land_surface are water_table's)"
+                                if set(gs) & own else ""))
         if gs["rule"] not in RULES or gs["cap"] not in CAPS:
             raise ValueError(f"{path}: [groundwater_to_soil] rule is one of {RULES}, cap one of {CAPS}")
+        if gs["rule"] == "water_table":
+            from .coupling.gwsoil import HELD_LATERAL
+            if gs["cap"] != "none":
+                raise ValueError(f'{path}: [groundwater_to_soil] rule = "water_table" takes cap = "none"')
+            if gs.get("held_lateral", "none") not in HELD_LATERAL:
+                raise ValueError(f"{path}: [groundwater_to_soil] held_lateral is one of {HELD_LATERAL}")
+            tol = gs.get("top_tolerance", 1.0)
+            if isinstance(tol, bool) or not isinstance(tol, (int, float)) or not tol > 0:
+                raise ValueError(f"{path}: [groundwater_to_soil] top_tolerance is a positive number of metres")
+            if "land_surface" in gs:
+                gs = dict(gs, land_surface=_path(base, gs["land_surface"]))
+            with_ = [k for k in ("transport", "salt", "replay") if k in c]
+            if with_:
+                raise ValueError(f'{path}: [groundwater_to_soil] rule = "water_table" is not built with '
+                                 f"{', '.join('[' + k + ']' for k in with_)} yet: the water no layer takes goes back "
+                                 "as recharge, and its mass isn't carried")
         if rch.get("source") != "hru" or "exchange" not in c or "modflow6" not in c or "swatplus" not in c:
             raise ValueError(f"{path}: [groundwater_to_soil] needs SWAT+, MODFLOW 6, [recharge] source = \"hru\" (the "
                              "HRU map) and the two-way [exchange] (SWAT+'s aquifers passing recharge through)")
