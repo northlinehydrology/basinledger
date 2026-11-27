@@ -2346,8 +2346,30 @@ Groundwater-fed ET:
   a day later, not the same day.
 - Unlike the unconditional top-up, a soil whose water table can't supply its ET dries.
 
-This is the one point where Basin Ledger's design differs from swatplus-bmi's note. The two sessions should settle it
-before either builds.
+swatplus-bmi's session agrees it can be built this way, and that the double store is real. Settled between the two
+sessions on Nov 27, 2026, pending Andrew's decision 2:
+- **Hook 2 fills before it recharges.** Held now means "doesn't drain", not "full", so a held layer can have room
+  left. Water percolating into the first held layer fills the held layers to saturation first, and only the rest
+  becomes `sepbtm`, recharge. MODFLOW 6 gets recharge once the held zone is full, as the soil zone is SWAT+'s.
+- **Hook 1's rule, applied by swatplus-bmi at the hook.** It can't be done at the pause, because the day's ET and
+  lateral inflow change the room before the hook.
+  - Basin Ledger sets the per-layer inflow as now.
+  - At Hook 1 the HRU's total fills the held layers bottom up to saturation.
+  - The rest goes to the unheld layers in proportion to what was set on them. If nothing was set there, it goes to
+    the lowest unheld layer.
+  - If there is none, the rest isn't taken. Basin Ledger then returns it to MODFLOW 6 the next day as recharge on the
+    cells it came from, booked `gw_soil:not_taken`.
+  - Reading the inflow back gives what went into each layer, which the ledger books.
+  - A held layer above an unheld one is refused. Basin Ledger's flags always run up from the bottom.
+- **A released layer drains for days.** That water arrives as recharge, which is correct, not a leak.
+- **Saturation excess, read-only:** `land_surface_water__saturation_excess_runoff_rate` (HRU, m s-1). It is what leaves
+  the top of the profile in `swr_satexcess` whatever `gw_soil_flag`, already part of SWAT+'s surface runoff (or a
+  wetland's inflow). The ledger books it as a part of runoff, not on top of it.
+- **Moving the inflow is a behaviour change for every run that uses it.** At Hook 1 the groundwater raises `soil%sw`
+  before the curve number is set, so runoff changes in every coupled run with groundwater up into the soil, today's
+  `drain` and `gwflow` rules included, the Rappahannock's runs too. swatplus-bmi would move it rather than keep two
+  places. It stays stock when nothing is set, and the nitrate and P hooks don't depend on the timing. Basin Ledger's
+  tests that hold today's rules bit for bit would then hold them to a new baseline. Decision 8 below.
 
 ### The questions
 
@@ -2386,7 +2408,7 @@ before either builds.
     - a released layer drains as recharge;
     - the soil and MODFLOW 6's storage together close every day;
     - the flag doesn't flap with a table held mid-layer;
-  - no held layers gives today's `drain` run bit for bit;
+  - no held layers gives today's `drain` run bit for bit (or its new baseline, by decision 8);
   - the `drain` and `gwflow` rules are unchanged;
   - a restart carries the flags and what is due;
   - the whole basin closes, with recirculation reported;
@@ -2436,6 +2458,12 @@ before either builds.
    - The plants can draw on saturated layers within the root zone, and the Rappahannock's ET is already about 85 mm a
      year high. A hold could raise it. This is a risk to measure on the first run.
    - Under this note's choice 2, a soil whose table can't supply its ET dries. That bounds it.
+8. **When the groundwater goes in, for every run.** Today it goes in after the day's runoff, so it raises the next
+   day's curve number. At Hook 1 it would go in before, and raise the same day's.
+   - Move it for every run, the current rules included (swatplus-bmi's preference: one place, and closer to what
+     happens). Runoff in today's groundwater-to-soil runs changes.
+   - Or keep today's place for HRUs with no held layers, so the current rules stay bit for bit, at the cost of two
+     places in SWAT+.
 
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
