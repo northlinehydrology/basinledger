@@ -765,6 +765,26 @@ through a river (RIV) or a streamflow routing (SFR) package, and that exchange r
   the bed thickness plus SWAT+'s channel depth for day *d* (`channel_water__depth`, on SWAT+'s rating curve,
   swatplus-bmi 0.2.0). Otherwise it is fixed in the input. Under a NextGen replay the same setting uses t-route's
   depth.
+- **Stage floor** (built Nov 27, 2026, for the Virginia study; opt-in, off by default). A river whose bottom was
+  set below a surveyed water surface sits that far below it when SWAT+'s channel is shallow. In the Rappahannock
+  build the main stems' bottom is the DEM's water surface less 2 m (1 m of channel, 1 m of bed), and SWAT+'s
+  low-flow depth on those 100-190 m wide stems is about 0.4 m, so their stage was about 0.6 m below the surveyed
+  surface: an extra drain through the lower basin. With `stage_floor = "<column>"`, a column of the rivers' map
+  gives each cell's floor (m, the model's datum; blank for none), and the day's stage is the larger of the floor and
+  bottom + bed thickness + depth, cell by cell.
+  - It needs a stage set from the depth (`surface_depth` or `nextgen_depth`) and a map file (not `all:`), and the
+    column; a value that isn't a finite number is refused. Cells no channel sets keep their own stage.
+  - The exchange's supply limit still lowers a floored stage when the channel can't supply the loss, so a dry
+    channel doesn't leak water it doesn't have. The floor is the stage before the limit.
+  - Logged: a start note gives how many cells have a floor and how many of those floors are above the bed's top;
+    the ledger counts the cells held at their floor each day (`rivers:stage_floor:cells`) and the raise summed over
+    them (`rivers:stage_floor:raise_m`, m); `outputs/stage_floor.csv` lists each floored cell with its channel, its
+    floor, the days held at it and the raise summed over those days (m days).
+  - Tested (`tests/test_stage_floor.py`, the synthetic two-way example's river): a floor below every day's stage
+    gives the run without it bit for bit (the new counts aside); a floor above it holds on the cells that have it and
+    not elsewhere, as the ledger and the CSV say; the whole basin closes over two years with half the river floored;
+    bad settings are refused. Without `stage_floor` the ledger is the same bit for bit as 0.18.0's, with and without
+    a stage from the depth.
 - **Timing.** The exchange is explicit with a one-day lag. Volume is conserved (ledger pairs): each day's exchange is
   due in SWAT+ the next day, and the last day's is reported as in transit. Timing shifts by a day, which is small
   against the time scales of groundwater response. Iterating within the day by branching SWAT+

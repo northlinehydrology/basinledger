@@ -161,6 +161,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     map = "maps/river_cells.csv"        # object (flowpath or channel), layer, row, col (or layer, icell2d)
     stage = "nextgen_depth"             # or "fixed": the stage in MODFLOW 6's input
     bed_thickness = 1.0                 # m [A]: stage = RBOT + bed thickness + the day's depth
+    # stage_floor = "surface"           # optional: a column of the map, each cell's floor under the day's stage (m;
+                                        #   blank for none): stage = max(floor, RBOT + bed thickness + depth)
 
     [[utilities]]                       # optional: a water system (see chain.py)
     name = "city"
