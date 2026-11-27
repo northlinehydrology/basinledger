@@ -122,6 +122,52 @@ def build_small(workspace: str | Path, days: int, start: dt.date, drain_elevatio
     return ws
 
 
+COLUMN_CELL = 100_000.0 ** 0.5  # m: one cell of 10 ha, Osu_1hru's HRU
+
+
+def build_column(workspace: str | Path, days: int, start: dt.date, top: float, stages: list[float],
+                 conductance: float = 1e5, river_conductance: float = 1.0, soil_conductance: float = 1e4,
+                 thickness: float = 20.0, stages_from: str | dt.date | None = None) -> Path:
+    """One cell under Osu_1hru's one HRU, for the water-table link's single-column tests: ``top`` is the soil
+    profile's bottom (the HRU's land surface less its profile depth), a drain named "soil" on it at ``top``
+    (conductance ``soil_conductance`` m2 d-1 [A]), and the head driven by a general head boundary whose stage
+    follows ``stages`` (m, one per day, linear between them; conductance m2 d-1 [A]). A river at the cell, at the
+    first stage with a small conductance, for the two-way exchange the link needs; recharge and a well as the
+    driver sets them. ``stages_from``: the date of ``stages[0]``, so a model built for a restart's days takes up the
+    series on its own first day (the run's start unless given)."""
+    ws = Path(workspace)
+    river_stage = stages[0]  # the series' first stage, a restart's model too
+    if stages_from is not None:
+        stages = stages[(start - dt.date.fromisoformat(str(stages_from))).days:]
+    sim = flopy.mf6.MFSimulation(sim_name="column", sim_ws=ws, exe_name="mf6")
+    flopy.mf6.ModflowTdis(sim, time_units="days", start_date_time=start.isoformat(),
+                          nper=1, perioddata=[(float(days), days, 1.0)])
+    # one cell, flows of thousands of m3 a day at heads near 350 m: closed to 1e-6 m and 1e-4 m3 d-1 [A]
+    flopy.mf6.ModflowIms(sim, complexity="simple", outer_dvclose=1e-6, inner_dvclose=1e-8,
+                         rcloserecord=[1e-4, "strict"])
+    gwf = flopy.mf6.ModflowGwf(sim, modelname="gwf", save_flows=True)
+    flopy.mf6.ModflowGwfdis(gwf, length_units="meters", nlay=1, nrow=1, ncol=1, delr=COLUMN_CELL,
+                            delc=COLUMN_CELL, top=top, botm=top - thickness)
+    flopy.mf6.ModflowGwfnpf(gwf, icelltype=0, k=2.0)
+    flopy.mf6.ModflowGwfsto(gwf, iconvert=1, sy=0.15, ss=1e-5, transient={0: True})
+    flopy.mf6.ModflowGwfic(gwf, strt=stages[0])
+    flopy.mf6.ModflowGwfrcha(gwf, recharge=0.0, pname="rch")
+    flopy.mf6.ModflowGwfwel(gwf, stress_period_data={0: [((0, 0, 0), 0.0)]}, pname="wel")
+    flopy.mf6.ModflowGwfriv(gwf, stress_period_data={0: [((0, 0, 0), river_stage, river_conductance,
+                                                          top - thickness + 1.0)]}, pname="riv")
+    ghb = flopy.mf6.ModflowGwfghb(gwf, stress_period_data={0: [((0, 0, 0), "stage", conductance)]}, pname="ghb",
+                                  filename="gwf.ghb")
+    ghb.ts.initialize(filename="gwf.ghb.ts", time_series_namerecord="stage", interpolation_methodrecord="linear",
+                      timeseries=[(float(d), float(v)) for d, v in enumerate(stages)]
+                      + [(float(days), float(stages[-1]))] * (len(stages) <= days))
+    flopy.mf6.ModflowGwfdrn(gwf, stress_period_data={0: [((0, 0, 0), top, soil_conductance)]}, pname="soil",
+                            filename="gwf.soil.drn")
+    flopy.mf6.ModflowGwfoc(gwf, budget_filerecord="gwf.cbc", head_filerecord="gwf.hds",
+                           saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")], printrecord=[("BUDGET", "ALL")])
+    sim.write_simulation(silent=True)
+    return ws
+
+
 SFR_WIDTH = 2.0      # m [A]
 SFR_SLOPE = 0.001    # [A]
 SFR_BED_K = 20.0 / (SFR_WIDTH * SMALL_CELL)  # m d-1 [A]: with a 1 m bed, a reach conducts as a RIV entry, 20 m2 d-1
