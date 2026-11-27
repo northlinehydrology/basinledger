@@ -2592,6 +2592,100 @@ Tests are in `tests/test_water_table.py`:
 - **Against its build for (A) (e7909b2, 0.17.0, not released):** all 25 water-table tests pass, and the whole suite
   passes with the inflow moved before runoff for every run (610 passed): no other test moved past its tolerance.
 
+### The land surface per map row (asked by the Virginia study, approved by Andrew, Nov 27, 2026)
+
+**What the Rappahannock's first coupled run showed** (WY2011-2014, iteration 2's best parameters, swatplus-bmi
+e7909b2, MODFLOW 6's top at the profile's bottom):
+- The ledger closes: 1.0095e9 m3 due = 0.9120e9 received + 0.0974e9 not taken.
+- 171 lake cells keep the DEM top.
+- Held layers are rare: 1,178 a day on average, of about 145,000.
+- Saturation excess was 0.9e6 m3 in four years (0.06 mm a year). Storm runoff, the soil's fullness before storms and
+  ET were the drain rule's.
+
+There are two causes:
+- **The profiles.** They are 3 m deep with a bottom layer of about 1.45 m, so the table must rise above 2.3 m before
+  anything is held. The study is splitting thick layers and keeping the 3 m saprolite under forest only.
+- **The scale.** Each HRU's table is its cells' heads against each cell's mean land surface. The ground that
+  saturates (valley bottoms, the strips along streams) lies metres below a 200 m cell's mean, so it looks metres
+  drier than it is.
+
+**The option: `land_surface = "map"`.** Each map row (an HRU's piece of a cell) gets its own land surface, `L_r`, from
+a `land_m` column in the recharge map (`[recharge] cells`). The study writes it from the 10 m DEM over each piece.
+- **Each piece's profile bottom** is `B_r = L_r - D_h`, where `D_h` is its HRU's profile depth.
+- **The table in each piece** is `z_r = h_c - B_r` above that bottom, where `h_c` is its cell's head. Its depth to
+  water is `L_r - h_c`, which sets the row's inflow on its layers (`to_layers`, as now).
+- **Each HRU's table** is its pieces' `z_r`, weighted by their ground. The flags follow decision 4, as now.
+- **The cell's profile bottom** is `E_c`, its pieces' `B_r` weighted by their shares of its ground. That is the cell's
+  land surface (its pieces' mean `L_r`) less its HRUs' profiles by share: `profile_bottom_cells` as now. MODFLOW 6's
+  top is checked against it, and a lake's or stream's cell can keep its land surface as before.
+- **The per-row column replaces the per-cell file,** so the cells' land surface and the pieces' can't disagree.
+  `land_surface` takes either a per-cell CSV (as built) or `"map"`.
+- **The drain stays per cell, at `E_c`.** It is MODFLOW 6's top, the same package and conductance.
+
+**The drain's water among the pieces: a change this needs, to keep (A).**
+- Today a cell's drain water is split among its pieces by ground. That works because every piece has the same table.
+- Per row, a piece can be above its table while its cell's drain flows: a hillside piece in a cell whose valley
+  bottom is wet. Its share by ground would go to its bottom layer (`to_layers`' path for a table below the profile).
+  - If its HRU has no held layers, the water goes in above that piece's table, which (A) rules out.
+  - If its HRU has held layers, the water fills them or is returned.
+- **Proposed: split by each piece's soil below its table,** `a_r * max(z_r, 0)`. This is gwflow's split within a row
+  (by thickness below the table) carried across a cell's pieces.
+  - Because `E_c` is the pieces' mean bottom by ground, `sum(a_r * z_r) = A_c * (h_c - E_c)`. A cell whose drain flows
+    always has a piece with `z_r > 0`. If rounding ever left none, the split falls back to ground.
+  - Where a cell's pieces have the same bottom (the same land and profile), it is today's split exactly.
+  - This is [A]: the split could also be by ground among the pieces with `z_r > 0`. The proposed one sends most to
+    the lowest pieces, where the table is highest in the soil.
+
+**Does it conserve water?** Yes. Nothing moves that isn't booked today:
+- Each cell's split adds to 1, so its whole drain outflow is due in SWAT+ the next day, as now.
+- `gw_soil:due` = `received` + `not_taken`, and `not_taken` = `returned`, spread back over the rows it came from
+  (`split_back`), recharge the same day, as now.
+- The flags move no water. A piece held while its cell's head is between its bottom and `E_c` gets no drain water. Its
+  held layers fill from rain and don't drain, so their water leaves by ET, lateral flow (with `held_lateral`) or
+  saturation excess, all in SWAT+'s own balance. MODFLOW 6 gets less recharge from that HRU, which is the point.
+- Tests:
+  - a day against stand-ins, with pieces of one cell at different land surfaces, closes;
+  - the split sends nothing to a piece above its table;
+  - with every piece at its cell's land surface and equal profiles, a run is the per-cell run bit for bit.
+
+**Against (A):**
+- With the split above, no piece above its own table gets drain water.
+- Within an HRU, swatplus-bmi's Hook 1 fills its held layers (from the HRU's weighted table) and returns the rest.
+- An HRU with no held layers takes the inflow per layer as set: below its wet pieces' tables, but above its own
+  weighted table. That is today's case of a table in the bottom layer below its middle, now possible a little higher.
+  SWAT+'s single column per HRU can't keep a wet piece's water apart from a dry one's. It percolates back down, as
+  recirculation.
+
+**What it doesn't fix, and what it adds:**
+- **The HRU's resolution.** Flags are per HRU, so this helps as far as the HRUs separate low ground. An HRU spread
+  over valley bottoms and hillsides averages them. HRUs split by landscape position (riparian, valley bottom) take it
+  fully.
+- **A second pore store under low pieces.** Where a cell's head is between a piece's bottom `B_r` and `E_c`, the
+  piece's soil below the table is also below MODFLOW 6's top. That space is counted twice: in MODFLOW 6 as aquifer
+  storage, and in SWAT+ as held soil.
+  - It isn't a mass error: every m3 is in one ledger.
+  - Held means "doesn't drain", not "full", and the drain at `E_c` gives those layers nothing. So they absorb rain that
+    would run off saturated ground, and the table doesn't feed their ET.
+  - On those pieces it understates saturation excess and groundwater ET, while it cuts their recharge correctly.
+  - The overlap is at most `E_c - B_r` high, the piece's depth below its cell's mean for equal profiles. This is the
+    lake cells' double store (as built), now on low ground.
+- **Not built: a drain per piece.** One DRN entry per map row at `B_r` (the cell's conductance by ground share) would
+  give low pieces their groundwater inside MODFLOW 6's solve, even with the head below the cell's top, and the split
+  would come out of the solve.
+  - It changes each cell's discharge: the drain at the lowest piece pulls the head lower (the valley bottom's
+    seepage).
+  - It needs the study's DRN package with an entry per row, and the attach check changes.
+  - What the held layers can't take still returns as recharge the same day, a loop the solve can't see.
+  - This is Andrew's to decide, and not part of this option.
+
+**As it would be built:**
+- `coupling/gwsoil.py`:
+  - each row's bottom, the HRUs' tables and the split from it;
+  - `profile_bottom_cells` taking the cells' land surface as their pieces' mean.
+- `config.py`: `land_surface = "map"`, refused unless `[recharge] cells` is a table with a `land_m` column.
+- `driver.py`: reads the column in the map's row order.
+- The ledger, the restart state and the refusals don't change. The land surface is read at the start, not saved.
+
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
 **Decided (Andrew).** Basin Ledger gets a second way in: take a MODFLOW 6 model someone already has (a consultant's,
