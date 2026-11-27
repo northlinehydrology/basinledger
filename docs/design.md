@@ -2231,7 +2231,7 @@ growing from the start, its paddy and management schedule taken away):
 - `"swat"`: the same run as off, to the bit, every day;
 - `"leaves"`: the forest's ET rises and the whole basin still closes.
 
-## A water-table link between MODFLOW 6 and SWAT+'s soils (proposed Nov 27, 2026; decisions 6-8 taken, the rest open; not built)
+## A water-table link between MODFLOW 6 and SWAT+'s soils (proposed Nov 27, 2026; all eight decisions taken, Nov 27; being built)
 
 Requested by Andrew on Nov 27, 2026, from the Rappahannock's joint calibration. This is a design note only: no code
 until he agrees it. swatplus-bmi's side is being written in its own session, and this note will take it in when it
@@ -2465,17 +2465,24 @@ sessions on Nov 27, 2026, pending Andrew's decision 2:
    - Or keep today's place for HRUs with no held layers, so the current rules stay bit for bit, at the cost of two
      places in SWAT+.
 
-**Andrew's decisions (Nov 27, 2026, relayed from the Virginia study session):**
+**Andrew's decisions (Nov 27, 2026, relayed from the Virginia study session).** All eight are settled:
+- **1: Hook 2 is within the pure-wrapper rule,** as a boundary hook. It differs from the per-HRU mid-day pause
+  rejected as too slow: the hooks run inside SWAT+'s own loop on flags set at the daily pause, so no control returns
+  to Python during the day.
+- **2: the held layers are filled from MODFLOW 6's drain,** and the soil zone is SWAT+'s alone (the first option).
+- **3: MODFLOW 6's top is the profile's bottom.** The study's build sets it (the Rappahannock's `mf6/build_mf6.py`),
+  and the link checks it at start-up.
+- **4: the flag's rule as proposed:** held when the table is above the layer's middle, released when it falls below
+  the layer's bottom.
+- **5: lateral flow from held layers is an option,** `held_lateral = "none"` (the default: MODFLOW 6's drains carry
+  it) or `"swatplus"` (SWAT+'s own lateral flow from the held layers, for a region with perched water over a
+  restrictive layer), chosen per study.
 - **6: a new rule, `rule = "water_table"`,** beside `drain` and `gwflow`. `drain` stays as it is.
 - **7: ET from held layers is measured on the first run,** bounded by the drain: a soil whose table can't supply its
   ET dries.
 - **8: the groundwater inflow moves to Hook 1 for every run, in a new version** of swatplus-bmi and Basin Ledger.
   Runoff in today's groundwater-to-soil runs (`drain` and `gwflow`, the Rappahannock's included) changes, and Basin
   Ledger's tests that hold them bit for bit move to the new baseline in that version.
-
-Still open: 1 (Hook 2 as a pure wrapper; Andrew asks how it differs from the per-HRU mid-day pause rejected as too
-slow), 2, 3, 4 and 5 (Andrew asks whether lateral flow from held layers should be an option, since it may depend on the
-region).
 
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
