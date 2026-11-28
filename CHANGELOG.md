@@ -20,7 +20,9 @@
     HRU's piece of a cell) takes its own land surface (`object`, cell, `land_m`, the recharge map's rows in its
     order, checked row by row), so valley bottoms within a cell have their own table. Each HRU's table is its
     pieces' by ground. The drain stays per cell, and its water goes to the pieces with soil below the table, by how
-    much (docs/design.md, The land surface per map row).
+    much (docs/design.md, The land surface per map row). `cell_land_surface` (per cell) beside it checks
+    MODFLOW 6's top against the whole cell where a cell is only partly under HRU ground. The drain stays at the
+    pieces' mean profile bottom, so (A) holds there too.
   - swatplus-bmi 0.17.0 moves the groundwater inflow before runoff for every run, so the `drain` and `gwflow` rules'
     numbers change with it.
   - Not yet with transport, salt or a replay record. Tested in `tests/test_water_table.py`, whose SWAT+ tests skip

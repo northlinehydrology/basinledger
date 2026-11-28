@@ -2681,6 +2681,34 @@ percentile -7.6 m).
   - What the held layers can't take still returns as recharge the same day, a loop the solve can't see.
   - This is Andrew's to decide, and not part of this option.
 
+**Cells only partly under HRU ground (after the Rappahannock's first per-row run, Nov 27, 2026).**
+- The first run stopped at the top check: 2,035 cells were neither at the profile's bottom nor at the land surface.
+  - Example: node 22208, top 994.62 m, its pieces' mean land 1062.22 m.
+  - These are mostly cells on the Blue Ridge divide. Their pieces cover only the inside part of the cell, while
+    MODFLOW 6's top is the whole cell's 3DEP mean less the profile.
+- **The study's proposal:**
+  - a per-cell file beside the per-row one (`cell_land_surface`), for the top check and the cell's drain;
+  - each piece's own `land_m` for its table and the split.
+- **It conserves,** as before: the split still adds to 1, and the not-taken water is still returned.
+- **But a drain at the whole cell's top breaks (A) on exactly these cells.**
+  - The pieces' mean bottom `E_p` is no longer the drain's elevation `E_c`, so `sum(a_r * z_r) = A_c * (h_c - E_p)`,
+    not `A_c * (h_c - E_c)`.
+  - On node 22208 the drain at 994.62 m gives water whenever the head is above it. Every piece's bottom is about
+    1,059 m, so no piece is wet.
+  - The split then falls back to ground, and that water goes into the bottom layers of soils some 60 m above the
+    table.
+- **As built:**
+  - `cell_land_surface` is taken for the top check, and for which cells keep their land surface (lakes, streams).
+  - The tables, the split and **each cell's drain** use the pieces: the drain sits at the pieces' mean profile
+    bottom, `E_p`.
+  - Where a cell is wholly under HRUs, `E_p` is the cell's top within the tolerance, as before.
+  - Where it is partly under them, the drain sits above or below the top. Nothing comes up until the head reaches
+    the pieces' soil. A start-up note counts these cells and gives the largest offset.
+  - Without `cell_land_surface`, the cells' land surface is their pieces' mean, as before.
+- MODFLOW 6's top stays the whole cell's (the study's choice, right for MODFLOW 6). On a divide cell the head reaches
+  the drain only above the top, where MODFLOW 6 stores by specific storage alone. That is the grid's limit there, not
+  a loss.
+
 **As built (Nov 27, 2026):**
 - `coupling/gwsoil.py`:
   - each row's bottom, the HRUs' tables and the split from it;

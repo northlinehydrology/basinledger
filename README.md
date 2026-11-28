@@ -310,7 +310,8 @@ package = "soil"               # a DRN package with one entry on each mapped cel
 # held_lateral = "none"        # water_table only: "none" or "swatplus" (lateral flow from held layers); how far
 # top_tolerance = 1.0          #   (m) MODFLOW 6's top may sit from the profile's bottom; each cell's land surface
 # land_surface = "land.csv"    #   (land_m, and the cell as a map table gives it), else hru.con's elev per HRU;
-                               #   or per map row (object and cell as [recharge] map has them, in its order)
+                               #   or per map row (object and cell as [recharge] map has them, in its order),
+# cell_land_surface = "cells.csv"  #   with each cell's whole land surface for the top check (partly covered cells)
 
 [soil_cover]                   # optional: the soil cover SWAT+'s soil evaporation sees on the HRUs named
 rule = "leaves"                #   "leaves" (leaves + residue) or "swat" (SWAT+'s own, set back: a check)
