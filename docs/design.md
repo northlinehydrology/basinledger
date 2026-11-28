@@ -2729,6 +2729,87 @@ percentile -7.6 m).
   - the refusals and the config;
   - on the column, a file per row through the driver gives the run without it, to round-off.
 
+### Drain water with nowhere to go, and recirculation counted once (asked by the Virginia study, approved by Andrew, Nov 27, 2026)
+
+**What the Rappahannock's run with the land surfaces showed** (per-row and cell land surfaces, swatplus-bmi e7909b2,
+WY2011-2014, iteration 2's best):
+- It closes. But of 1.574e9 m3 sent up, 0.866e9 m3 wasn't taken: about 52 mm a year over the basin.
+- The held layers of the valley-bottom pieces are full. The drain still gives `C (h - E)` every day, and that water
+  goes back as recharge the same day: a loop that moves nothing.
+- The recirculation share rose from 0.556 (the per-cell link) to 0.618, while the water that really entered the soil
+  fell from 86 to 61 mm a year. Returned water was counted once as water up and again as recharge.
+
+**1. The drain limited to the held layers' room: `cap = "room"` with `water_table`.** Before each solve, cell by
+cell:
+- `q_c = C_c x max(h0_c - E_c, 0)`: what the drain would give at the day's starting heads (its conductance times
+  its auxiliary multiplier, as MODFLOW 6 takes it).
+- Each piece's part of it, `w_r = q_c x s_r`, by the split as built at those heads.
+- What the piece can take, `t_r`:
+  - if its HRU has held layers, `min(w_r, a_r x R_h)`, where `R_h` is the room in the HRU's held layers (saturation
+    less water, m, summed over them) at SWAT+'s pause;
+  - else `w_r`. Under (A) an HRU with no held layers takes its inflow as set.
+- The drain's conductance for the day is `C_c x sum(t_r) / q_c` (unchanged where `q_c` is 0). After the solve its
+  water goes to the pieces by `t_r` (by the split as built where every `t_r` is 0).
+
+What it does:
+- A cell whose pieces are all full gets conductance 0, and nothing is drawn from MODFLOW 6.
+- It opens again by itself as soon as ET, plant uptake or a falling table make room. A cell with no held layers isn't
+  limited.
+- The room is read at the pause after day d. The solve's water goes in at Hook 1 of day d+1, after that day's ET, so
+  the room there is at least what was read.
+- On a fixed table the drain settles at the day before's ET, and the held layers stay about a day's ET below
+  saturation.
+
+Why this rule, and not the on/off rule or a threshold:
+- **On/off** (0 when full, open again on any room) flaps on a steady table with ET.
+  - One day's ET of room opens the whole drain.
+  - The held layers take that ET and return the rest, and the drain closes again.
+  - That is every other day: half the loop left, and half the table's water for ET lost.
+- **A threshold on not_taken / due** adds a parameter and flaps around it the same way.
+- **Scaling by the share of pieces with room** fixes the mixed cell, but not a full piece's ET.
+- **Scaling by the room** is the on/off rule with its threshold at the room itself:
+  - no parameter, and nothing to flap;
+  - 0 when full, and the full conductance when the room is more than the drain gives.
+
+How it fits:
+- It is the drain rule's `cap = "room"` (no cell gives more than its soils can take), applied to the held layers'
+  room and to the conductance, not by raising the drain.
+- The drain stays at the table's zero, the elevation the flags are measured from. It is set once a day, so MODFLOW
+  6 stays implicit within the day, and the lag is the usual one day.
+- **What isn't taken now** is only:
+  - the head's rise during the day;
+  - a held set that changes with the day's heads (a newly held layer's room counts from the next day);
+  - float32 room.
+  It still returns as recharge under (A).
+- **The conductance** is the package's input, taken again where MODFLOW 6 reads a new period's (an entry that differs
+  from what was set the day before).
+- **Restart.** Nothing new is carried: the room is SWAT+'s saved state, the flags are already carried, and the
+  conductance is the input.
+- The ledger and its identities don't change. The flows do.
+- **`cap` has no default for any rule.** `"room"` is the one recommended with `water_table`. `"none"` is the link as
+  built before, every day's excess returned. It is kept for comparison and for (A)'s return path.
+- **Reports:**
+  - `gw_soil:drains_limited`: the cells whose conductance was cut that day;
+  - `gw_soil:drains_closed`: the cells cut to 0.
+  - `summary.json`'s `water_table` block gives both, summed over the run as cell-days, and the cap.
+
+**2. Recirculation counted once.**
+- The returned water isn't recharge from the soil, and it never came up into the soil. The whole-basin balance and
+  `summary.json`'s `recirculation` block take it out of both and book it apart:
+  - `recharge_gross` = recharge received less `gw_soil:returned`;
+  - `groundwater_to_soil` = sent less `gw_soil:returned`, which is what went into the soil, up to what is in transit
+    at the start and the end;
+  - `recharge_net` is unchanged;
+  - the share is the two's;
+  - `recharge_returned` (balance) and `returned_not_taken` (summary) are the returned water.
+- **Per HRU** (`[outputs] recirculation`), SWAT+'s percolation and `gwsoilq` never held it:
+  - the returned water goes straight into MODFLOW 6's recharge;
+  - `gwsoilq` is what Hook 1 put in.
+  `recirculation_hru.csv` gets the not-taken water per HRU as a column of its own, `groundwater_not_taken`.
+  `balance.recirculation` reports it beside the others (m3 and mm a year), in none of them.
+- Without `water_table`, nothing is returned and every number is as before.
+- Bookkeeping only: no flow changes.
+
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
 **Decided (Andrew).** Basin Ledger gets a second way in: take a MODFLOW 6 model someone already has (a consultant's,
