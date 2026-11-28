@@ -282,6 +282,25 @@ def cell_land(amap: AreaMap, row_land: np.ndarray, n_cells: int) -> np.ndarray:
     return np.divide(s, w, out=np.full(n_cells, np.nan), where=w > 0)
 
 
+def held_room(flags: np.ndarray, water: np.ndarray, saturation: np.ndarray, layer_hru: np.ndarray,
+              n_hru: int) -> tuple[np.ndarray, np.ndarray]:
+    """Per HRU, the room (m: saturation less water, summed) in its held layers, and whether it has any held."""
+    held = np.asarray(flags, float) > 0.5
+    room = np.clip(np.asarray(saturation, float) - np.asarray(water, float), 0.0, None)
+    return (np.bincount(layer_hru, weights=np.where(held, room, 0.0), minlength=n_hru),
+            np.bincount(layer_hru, weights=held.astype(float), minlength=n_hru) > 0)
+
+
+def room_takes(amap: AreaMap, want: np.ndarray, room: np.ndarray,
+               has_held: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Per map row, what its piece can take of the drain water ``want`` (m3), and whether that is less: its ground
+    times its HRU's held room (``held_room``) where the HRU has held layers, else all of it (under (A) an HRU with no
+    held layers takes its inflow as set)."""
+    cap = np.asarray(room, float)[amap.obj] * np.asarray(amap.area, float)
+    short = np.asarray(has_held, bool)[amap.obj] & (want > cap)
+    return np.where(short, cap, want), short
+
+
 def is_per_row(path) -> bool:
     """Whether a ``land_surface`` file gives each map row's land surface (an ``object`` column, as the recharge map
     has) rather than each cell's."""
@@ -372,7 +391,9 @@ class GroundwaterToSoil:
     SWAT+ had it at the end of its day) in the layers of its HRUs below its water table, at the day's starting heads:
     the drain's elevation is raised so its outflow at those heads fits (a head that rises during the day takes a
     little more, which SWAT+ sends to the surface), or the well's rate is cut. The drain isn't moved within the solve:
-    moving its elevations between outer iterations stopped MODFLOW 6 converging, and aborted it on some runs. After the solve
+    moving its elevations between outer iterations stopped MODFLOW 6 converging, and aborted it on some runs. With
+    ``rule = "water_table"`` the drain is never raised: ``cap = "room"`` cuts its conductance for the day to the room
+    in the held layers over the cell, 0 where they are full (``_limit``). After the solve
     (``after_solve``), what left each cell is split among the HRUs over it by their ground and among each HRU's
     layers below the water table, and set in SWAT+ the next day (``before_swat``). What SWAT+ reports went in
     (``received``) is what was due."""
@@ -401,9 +422,8 @@ class GroundwaterToSoil:
         if not sw.has(INFLOW):
             raise ValueError(f"[groundwater_to_soil] needs swatplus-bmi's {INFLOW} (0.7.0)")
         if rule == "water_table":
-            if cap != "none":
-                raise ValueError('[groundwater_to_soil] rule = "water_table" takes cap = "none": the held layers '
-                                 "take what they have room for, and what no layer takes goes back as recharge")
+            # cap "room": the drain's conductance cut to the held layers' room each day; "none": every day's excess
+            # returned as recharge (docs/design.md, Drain water with nowhere to go)
             if held_lateral not in HELD_LATERAL:
                 raise ValueError(f"[groundwater_to_soil] held_lateral must be one of {HELD_LATERAL}")
             missing = [v for v in (FLAG, NOT_TAKEN, SATURATION_EXCESS) if not sw.has(v)]
@@ -434,6 +454,9 @@ class GroundwaterToSoil:
         self.notes = []  # what attach found worth saying (a warning, or the cells keeping the land surface)
         self.n_cells = int(np.max(amap.node)) + 1 if n_cells is None else int(n_cells)
         self.not_taken = 0.0
+        self.limited = self.closed = 0  # water_table with cap "room": the cells whose drain was cut, and cut to 0
+        self.takes = None  # per map row, what its piece could take of the day's drain water (m3), where it was less
+        self.cond_base = self.cond_set = None  # the drain's conductance from the input, and as set for the day
         if rule == "water_table":
             self.hrus = hrus
             self.top_depth = layer_tops(self.layer_hru, self.bottom)
@@ -572,7 +595,7 @@ class GroundwaterToSoil:
         if self.rule in ("drain", "water_table"):  # water_table: a drain at the top, never raised
             elev = self.elev0.copy()
             self.raised = 0
-            if self.cap == "room":
+            if self.cap == "room" and self.rule == "drain":
                 # the drain raised so it gives no more than the room at the day's starting heads: q = C (h - elev)
                 cond = mf.entry_values("COND", self.package)
                 cap = self._cell_cap(h0)
@@ -580,6 +603,8 @@ class GroundwaterToSoil:
                 elev = np.maximum(self.elev0, want)
                 self.raised = int(np.sum(elev > self.elev0))
             mf.set_entries("ELEV", self.package, elev)
+            if self.rule == "water_table" and self.cap == "room":
+                self._limit(h0)
             return
         # gwflow: Sy x the water table's height above each HRU's profile bottom x its ground in the cell
         bottom_elev = self.top[self.map.node] - self.depth[self.map.obj]
@@ -590,6 +615,33 @@ class GroundwaterToSoil:
         self.planned = np.bincount(self.map.node, weights=row, minlength=mf.nodes)[self.nodes]
         mf.set_entries("Q", self.package, -self.planned)
         return None
+
+    def _limit(self, h0: np.ndarray):
+        """``water_table`` with ``cap = "room"``: each cell's drain conductance for the day cut to what its pieces'
+        held layers have room for at SWAT+'s pause, at the day's starting heads (docs/design.md, Drain water with
+        nowhere to go): 0 where they are all full, the input's where nothing is short. The conductance is the
+        input's, taken again where MODFLOW 6 read a new period's."""
+        mf, n = self.mf6, self.mf6.nodes
+        now = mf.entry_values("COND", self.package)
+        self.cond_base = now if self.cond_set is None else np.where(now != self.cond_set, now, self.cond_base)
+        mult = mf.entry_multipliers(self.package)
+        q = np.zeros(n)
+        q[self.nodes] = self.cond_base * mult * np.clip(h0[self.nodes] - self.elev0, 0.0, None)
+        share = (table_shares(self.map, row_table_height(self.map, h0, self.row_bottom), n)
+                 if self.row_bottom is not None else self.shares)
+        want = q[self.map.node] * share
+        n_hru = len(self.depth)
+        room, has = ((np.zeros(n_hru), np.zeros(n_hru, bool)) if self.flags is None else
+                     held_room(self.flags, self.sw.get(WATER), self.sw.get(SATURATION), self.layer_hru, n_hru))
+        take, short = room_takes(self.map, want, room, has)
+        cut = np.bincount(self.map.node, weights=short.astype(float), minlength=n)[self.nodes] > 0
+        got = np.bincount(self.map.node, weights=take, minlength=n)[self.nodes]
+        qn = q[self.nodes]
+        scale = np.where(cut, np.clip(np.divide(got, qn, out=np.zeros_like(qn), where=qn > 0), 0.0, 1.0), 1.0)
+        self.limited, self.closed = int(cut.sum()), int((cut & (scale == 0.0)).sum())
+        self.takes = take if self.limited else None
+        self.cond_set = np.where(cut, self.cond_base * scale, self.cond_base)
+        mf.set_entries("COND", self.package, self.cond_set)
 
     def after_solve(self) -> tuple[float, float]:
         """What left the cells on the day just solved (m3), split for SWAT+'s next day; returns it and the part that
@@ -621,6 +673,14 @@ class GroundwaterToSoil:
             self.row_depth = self.depth[self.map.obj] - (head - self.bottom_elev)[self.map.node]
             height = hru_table_height(self.map, head, self.bottom_elev, len(self.depth))
             self.flags = held_layers(height, self.depth, self.layer_hru, self.top_depth, self.bottom, self.flags)
+        if self.takes is not None:  # a cut drain's water to its pieces by what each could take
+            planned = np.bincount(self.map.node, weights=self.takes, minlength=self.mf6.nodes)[self.map.node]
+            cut = np.zeros(self.mf6.nodes, bool)
+            cut[self.nodes] = self.cond_set != self.cond_base
+            use = cut[self.map.node] & (planned > 0)
+            row = np.where(use, cell[self.map.node] * np.divide(self.takes, planned, out=np.zeros_like(planned),
+                                                                  where=planned > 0), row)
+            self.rows = row
         vol, at_bottom = to_layers(row, self.row_depth, self.map, self.layer_hru, self.bottom)
         self.due = layer_rates(vol, self.layer_hru, self.hru_area, DAY)
         return float(out.sum()), at_bottom

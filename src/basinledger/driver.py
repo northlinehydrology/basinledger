@@ -2172,6 +2172,9 @@ class Basin:
             L.enter("gw_soil:to_bottom_layer", at_bottom)  # of it, from cells whose water table is below the HRU's profile
             if self.gw_soil.rule == "drain" and self.gw_soil.cap == "room":
                 L.enter("gw_soil:drains_raised", float(self.gw_soil.raised))
+            if self.gw_soil.rule == "water_table" and self.gw_soil.cap == "room":  # the drain cut to the room
+                L.enter("gw_soil:drains_limited", float(self.gw_soil.limited))
+                L.enter("gw_soil:drains_closed", float(self.gw_soil.closed))
         rt.read_wells()
         if self.cfg.rivers:
             self._rivers_out()
@@ -2575,6 +2578,9 @@ class Basin:
                     "saturation_excess_to_ponds_m3": tot("soil:saturation_excess_to_ponds"),
                     "held_lateral": self.gw_soil.held_lateral,
                     "land_surface": self.gw_soil.land_source,
+                    "cap": self.gw_soil.cap,
+                    "drain_limited_cell_days": tot("gw_soil:drains_limited"),
+                    "drain_closed_cell_days": tot("gw_soil:drains_closed"),
                 }
             # recirculation (bookkeeping only): recharge is gross; some of it came back up into the soil
             tot = self.ledger.totals()

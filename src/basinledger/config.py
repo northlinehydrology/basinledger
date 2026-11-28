@@ -54,7 +54,8 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     cap = "none"                        #   bottom, solved by MODFLOW 6) or "gwflow" (SWAT+ gwflow's rule, a well);
     package = "soil"                    #   cap "none" or "room" (no more than the layers' room). The package (DRN for
                                         #   drain, WEL for gwflow) has one entry on each mapped cell. Needs recharge by
-                                        #   HRU and the two-way [exchange]. Or "water_table" (cap "none", a DRN): the
+                                        #   HRU and the two-way [exchange]. Or "water_table" (a DRN; cap "room", the
+                                        #   drain's conductance cut each day to the held layers' room, or "none"): the
     # held_lateral = "none"             #   layers below MODFLOW 6's water table held saturated, its top the profile's
     # top_tolerance = 1.0               #   bottom (checked per HRU against hru.con's elev less the profile, m, or
     # land_surface = "land.csv"         #   cell by cell against land_m per cell, a map table's cell columns);
@@ -624,8 +625,6 @@ def load(path: str | Path) -> ExampleConfig:
             raise ValueError(f"{path}: [groundwater_to_soil] rule is one of {RULES}, cap one of {CAPS}")
         if gs["rule"] == "water_table":
             from .coupling.gwsoil import HELD_LATERAL
-            if gs["cap"] != "none":
-                raise ValueError(f'{path}: [groundwater_to_soil] rule = "water_table" takes cap = "none"')
             if gs.get("held_lateral", "none") not in HELD_LATERAL:
                 raise ValueError(f"{path}: [groundwater_to_soil] held_lateral is one of {HELD_LATERAL}")
             tol = gs.get("top_tolerance", 1.0)
