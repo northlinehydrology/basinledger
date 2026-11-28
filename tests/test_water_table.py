@@ -910,3 +910,33 @@ def test_a_restart_with_the_drain_cut_is_bit_for_bit(swatplus):
         np.testing.assert_array_equal(rest["table"][k], whole["table"][k])
     np.testing.assert_array_equal(rest["series"]["flow:cha01"], whole["series"]["flow:cha01"])
     np.testing.assert_array_equal(rest["heads"], whole["heads"])
+
+
+@pytest.mark.slow
+def test_the_recirculation_counts_only_water_that_entered_the_soil(swatplus):
+    """The returned water never entered the soil: out of gross recharge and groundwater to soil alike, booked apart,
+    in the balance, the summary and each HRU's sums (docs/design.md, Drain water with nowhere to go)."""
+    need_water_table()
+    import json
+    from basinledger.balance import basin_balance, recirculation
+    cfg = column_config("mid_profile")
+    cfg.outputs = dict(cfg.outputs, recirculation=True)
+    r = column_run(cfg, "water-table-recirculation", days=60)
+    t = r["table"]
+    back = t["gw_soil:returned"].sum()
+    assert back > 0.9 * t["gw_soil:sent"].sum()
+    b = basin_balance(r["folder"], "cha01")
+    assert b["recharge_returned"] == pytest.approx(back)
+    assert b["recharge_gross"] == pytest.approx(t["recharge:received"].sum() - back)
+    assert b["groundwater_to_soil"] == pytest.approx(t["gw_soil:sent"].sum() - back)
+    assert b["recharge_net"] == pytest.approx(t["recharge:received"].sum() - t["gw_soil:sent"].sum())
+    # what came up and stayed is what SWAT+ took, and the last day's, in transit at the end
+    assert b["groundwater_to_soil"] == pytest.approx(t["gw_soil:received"].sum() + t["gw_soil:sent"][-1], rel=1e-5)
+    rc = json.loads((r["folder"] / "outputs" / "summary.json").read_text())["recirculation"]
+    assert rc["returned_not_taken"] == pytest.approx(back)
+    assert rc["recharge_gross"] == pytest.approx(b["recharge_gross"])
+    assert rc["groundwater_to_soil"] == pytest.approx(b["groundwater_to_soil"])
+    assert rc["share"] == pytest.approx(b["recirculation_share"])
+    basin = recirculation(r["folder"], "hru")["basin"]
+    assert basin["groundwater_not_taken"] == pytest.approx(t["gw_soil:not_taken"].sum(), rel=1e-4)
+    assert basin["groundwater_to_soil"] == pytest.approx(t["gw_soil:received"].sum(), rel=1e-3)
