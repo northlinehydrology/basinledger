@@ -134,7 +134,8 @@ class StandInSwat:
         self.vars = set(vars_ if vars_ is not None else (G.INFLOW, G.FLAG, G.NOT_TAKEN,
                                                           G.SATURATION_EXCESS, G.BOTTOM))
         self.values = {G.BOTTOM: BOTTOMS.copy(), G.INFLOW: np.zeros(8), G.FLAG: np.zeros(8),
-                       G.NOT_TAKEN: np.zeros(2), G.SATURATION_EXCESS: np.zeros(2)}
+                       G.NOT_TAKEN: np.zeros(2), G.SATURATION_EXCESS: np.zeros(2),
+                       G.WATER: np.zeros(8), G.SATURATION: np.full(8, 0.01)}  # the layers at the pause, m
         self.sets = []
         self.room = np.full(8, 0.01)  # m of room per layer
 
@@ -168,6 +169,7 @@ class StandInModflow:
         self.h = self.top - 1.0
         self.elev = None
         self.out = np.zeros(self.nodes)
+        self.entries = {"COND": np.full(self.nodes, 10.0)}  # the drain's input conductance, m2 d-1
 
     def node_values(self, name, pkg):
         return self.top.copy()
@@ -179,7 +181,15 @@ class StandInModflow:
         return self.h.copy()
 
     def set_entries(self, name, pkg, v):
-        self.elev = np.asarray(v, float)
+        self.entries[name] = np.asarray(v, float).copy()
+        if name == "ELEV":
+            self.elev = np.asarray(v, float)
+
+    def entry_values(self, name, pkg):
+        return self.entries[name].copy()
+
+    def entry_multipliers(self, pkg):
+        return np.ones(self.nodes)
 
     def simvals(self, pkg):
         return -self.out
@@ -190,13 +200,12 @@ def stand_ins():
     return m, StandInSwat(), StandInModflow([99.25, 99.0])
 
 
-def test_water_table_refuses_an_older_swatplus_bmi_and_a_cap():
+def test_water_table_refuses_an_older_swatplus_bmi():
     m, sw, _ = stand_ins()
     with pytest.raises(ValueError, match="newer swatplus-bmi"):
         G.GroundwaterToSoil(StandInSwat({G.INFLOW, G.BOTTOM}), m, np.array([100.0, 100.0]), "water_table", "none",
                             "soil")
-    with pytest.raises(ValueError, match='cap = "none"'):
-        G.GroundwaterToSoil(sw, m, np.array([100.0, 100.0]), "water_table", "room", "soil")
+    assert G.GroundwaterToSoil(sw, m, np.array([100.0, 100.0]), "water_table", "room", "soil").cap == "room"
     with pytest.raises(ValueError, match="held_lateral"):
         G.GroundwaterToSoil(sw, m, np.array([100.0, 100.0]), "water_table", "none", "soil", held_lateral="all")
 
@@ -292,8 +301,8 @@ def test_the_config_takes_water_table_and_its_settings(tmp_path):
     gs = load('rule = "water_table"\ncap = "none"\npackage = "soil"\nland_surface = "rows.csv"\n'
               'cell_land_surface = "cells.csv"\n')
     assert gs.groundwater_to_soil["cell_land_surface"] == tmp_path / "cells.csv"
+    assert load('rule = "water_table"\ncap = "room"\npackage = "soil"\n').groundwater_to_soil["cap"] == "room"
     for extra, match in [
-        ('rule = "water_table"\ncap = "room"\npackage = "soil"\n', 'takes cap = "none"'),
         ('rule = "water_table"\ncap = "none"\npackage = "soil"\nheld_lateral = "some"\n', "held_lateral is one of"),
         ('rule = "water_table"\ncap = "none"\npackage = "soil"\ntop_tolerance = 0\n', "top_tolerance"),
         ('rule = "drain"\ncap = "none"\npackage = "soil"\nheld_lateral = "none"\n', "water_table's"),
@@ -307,6 +316,93 @@ def test_the_config_takes_water_table_and_its_settings(tmp_path):
                  'package = "soil"\n')
     with pytest.raises(ValueError, match=r"not built with \[transport\]"):
         C.load(p)
+
+
+# --- the drain cut to the held layers' room (cap = "room"; docs/design.md, Drain water with nowhere to go) ------
+
+def test_the_held_layers_room_and_what_each_piece_can_take():
+    flags = np.array([0, 0, 0, 1, 1, 1, 0, 0])
+    water = np.array([0.0, 0.0, 0.0, 0.009, 0.01, 0.012, 0.0, 0.0])  # the last above saturation: no room
+    room, has = G.held_room(flags, water, np.full(8, 0.01), LAYER_HRU, 2)
+    np.testing.assert_allclose(room, [0.001, 0.0])
+    np.testing.assert_array_equal(has, [True, False])
+    m = AreaMap(["a", "b"], np.array([0, 1, 0]), np.array([0, 0, 1]), np.array([100.0, 300.0, 50.0]))
+    take, short = G.room_takes(m, np.array([2.0, 2.0, 0.04]), np.array([0.01, 0.0]), np.array([True, False]))
+    np.testing.assert_allclose(take, [1.0, 2.0, 0.04])  # a's pieces: 1 m3 and 0.5 m3 of room; b holds nothing
+    np.testing.assert_array_equal(short, [True, False, False])
+
+
+def test_a_full_profile_closes_the_drain_and_room_opens_it_again():
+    m, sw, mf = stand_ins()
+    area = np.array([100.0, 100.0])
+    gs = G.GroundwaterToSoil(sw, m, area, "water_table", "room", "soil", land=np.array([100.0, 100.0]), n_cells=2)
+    gs.attach(mf)
+    # day 0: nothing held, the drain as its input has it
+    gs.before_swat()
+    sw.day(area)
+    gs.received()
+    mf.h = np.array([99.25 + 0.4, 98.0])  # a's head 0.4 m above its top (the drain), b's below
+    gs.before_solve()
+    np.testing.assert_array_equal(mf.entries["COND"], [10.0, 10.0])
+    assert (gs.limited, gs.closed) == (0, 0)
+    mf.out = np.array([2.0, 0.0])
+    assert gs.after_solve()[0] == 2.0
+    assert gs.held_count() == 3
+    # day 1: a's held layers full at the pause: its cell draws nothing; b's, with nothing held, isn't cut
+    gs.before_swat()
+    sw.room[:] = 0.0
+    sw.day(area)
+    gs.received()
+    assert gs.not_taken == pytest.approx(2.0)
+    sw.values[G.WATER] = sw.values[G.SATURATION].copy()
+    gs.before_solve()
+    np.testing.assert_array_equal(mf.entries["COND"], [0.0, 10.0])
+    assert (gs.limited, gs.closed) == (1, 1)
+    mf.out = np.array([0.0, 0.0])
+    assert gs.after_solve()[0] == 0.0 and gs.due.sum() == 0.0
+    # day 2: ET took 1 mm from each held layer: 0.3 m3 of room, of the 10 x 0.4 = 4 m3 the drain would give
+    gs.before_swat()
+    sw.day(area)
+    gs.received()
+    assert gs.not_taken == 0.0
+    sw.values[G.WATER][3:6] -= 0.001
+    gs.before_solve()
+    np.testing.assert_allclose(mf.entries["COND"], [10.0 * 0.3 / 4.0, 10.0])
+    assert (gs.limited, gs.closed) == (1, 0)
+    mf.out = np.array([0.3, 0.0])
+    gs.after_solve()
+    assert (gs.due * G.DAY * area[LAYER_HRU]).sum() == pytest.approx(0.3)
+    # a new period's conductance in MODFLOW 6's input is taken as the input's
+    mf.entries["COND"] = np.array([20.0, 20.0])
+    gs.before_solve()
+    np.testing.assert_array_equal(gs.cond_base, [20.0, 20.0])
+    np.testing.assert_allclose(mf.entries["COND"], [0.3 / 0.4, 20.0])
+    # with room for more than the drain gives (30 m3 of 8), it is the input's, bit for bit
+    sw.values[G.WATER][3:6] = 0.0
+    sw.values[G.SATURATION][3:6] = 0.1
+    gs.before_solve()
+    np.testing.assert_array_equal(mf.entries["COND"], [20.0, 20.0])
+    assert gs.limited == 0 and gs.takes is None
+
+
+def test_a_mixed_cells_drain_is_cut_to_its_pieces_room_and_its_water_goes_where_the_room_is():
+    m, land, sw, mf = two_pieces()
+    area = np.array([100.0, 100.0])
+    gs = G.GroundwaterToSoil(sw, m, area, "water_table", "room", "soil", n_cells=1, land_rows=land)
+    gs.attach(mf)
+    gs.before_solve()
+    mf.h, mf.out = np.array([100.0]), np.array([0.0])  # a's table 0.25 m into its soil, b's above its surface
+    gs.after_solve()
+    np.testing.assert_array_equal(gs.flags, [0, 0, 0, 0, 1, 1, 1, 1])
+    # a's held layers full; b's with 2 mm of room each, 0.4 m3. The drain would give 10 x 0.875 = 8.75 m3, 1.25 to
+    # a and 7.5 to b by their tables
+    sw.values[G.WATER] = np.where(gs.flags > 0.5, 0.01, 0.0)
+    sw.values[G.WATER][6:] = 0.008
+    gs.before_solve()
+    np.testing.assert_allclose(mf.entries["COND"], [10.0 * 0.4 / 8.75])
+    mf.out = np.array([0.4])
+    gs.after_solve()
+    np.testing.assert_allclose(gs.rows, [0.0, 0.4])  # all to b, none to a's full layers
 
 
 # --- the land surface per map row (a land_surface file per row; docs/design.md, The land surface per map row) ---
@@ -533,7 +629,7 @@ def not_ponded():
     return p
 
 
-def column_config(kind="cycle", link=True, held_lateral="none", ponded=False):
+def column_config(kind="cycle", link=True, held_lateral="none", ponded=False, cap="none"):
     from basinledger import config as C
     from conftest import ROOT, RUNS
     cfg = C.load(ROOT / "examples" / "synthetic" / "two_way.toml")
@@ -547,7 +643,7 @@ def column_config(kind="cycle", link=True, held_lateral="none", ponded=False):
     cfg.mf6_builder_args = {"top": TOP, "stages": stages(kind), "stages_from": first.isoformat()}
     cfg.wells, cfg.users = [], []
     cfg.outputs = {"balance": "cha01"}
-    cfg.groundwater_to_soil = ({"rule": "water_table", "cap": "none", "package": "soil",
+    cfg.groundwater_to_soil = ({"rule": "water_table", "cap": cap, "package": "soil",
                                 "held_lateral": held_lateral} if link else None)
     return cfg
 
@@ -740,3 +836,77 @@ def test_a_land_surface_per_row_at_the_cells_land_is_the_run_without_it(swatplus
     for k in ("gw_soil:sent", "gw_soil:not_taken", "soil:saturation_excess"):
         np.testing.assert_allclose(r["table"][k], column["table"][k], rtol=1e-9, atol=1e-6)
     np.testing.assert_allclose(r["series"]["flow:cha01"], column["series"]["flow:cha01"], rtol=1e-9)
+
+
+# --- on the column: the drain cut to the held layers' room (cap = "room"), and the recirculation counted once ------
+
+@pytest.fixture(scope="module")
+def column_room(swatplus):
+    need_water_table()
+    return column_run(column_config(cap="room"), "water-table-column-room")
+
+
+@pytest.mark.slow
+def test_a_full_profile_stops_drawing_on_modflow6_and_room_starts_it_again(column, column_room):
+    """The Virginia study's null loop (Rappahannock, Nov 27, 2026): with the held layers full, the drain's water went
+    back as recharge the same day. Cut to their room, a full profile draws nothing from MODFLOW 6, and draws again
+    when ET makes room; the soil takes about what it took with every day's excess returned."""
+    t, none = column_room["table"], column["table"]
+    closed, limited = t["gw_soil:drains_closed"] > 0, t["gw_soil:drains_limited"] > 0
+    assert closed.sum() > 30
+    np.testing.assert_array_equal(t["gw_soil:sent"][closed], 0.0)  # nothing drawn from MODFLOW 6
+    opened = np.flatnonzero(closed[:-1] & ~closed[1:] & limited[1:]) + 1  # open again, cut to the room ET made
+    assert len(opened) > 5 and (t["gw_soil:sent"][opened] > 0).all()
+    assert none["gw_soil:not_taken"].sum() > 0.9 * none["gw_soil:sent"].sum()  # the loop, without the cap
+    assert t["gw_soil:not_taken"].sum() < 0.01 * none["gw_soil:not_taken"].sum()
+    assert t["gw_soil:received"].sum() == pytest.approx(none["gw_soil:received"].sum(), rel=0.05)
+    # the table below the profile again (stages, from day 125): nothing to cut
+    assert not limited[130:].any() and (t["gw_soil:sent"][130:] == 0).all()
+
+
+@pytest.mark.slow
+def test_the_column_closes_with_the_drain_cut(column_room):
+    from basinledger.balance import basin_balance
+    t = column_room["table"]
+    np.testing.assert_allclose(t["gw_soil:due"], t["gw_soil:received"] + t["gw_soil:not_taken"], rtol=1e-6,
+                               atol=1e-6)
+    np.testing.assert_allclose(t["gw_soil:returned"], t["gw_soil:not_taken"], rtol=1e-12, atol=1e-9)
+    np.testing.assert_allclose(t["recharge:received"], t["recharge:sent"] + t["gw_soil:returned"], rtol=1e-9,
+                               atol=1e-6)
+    r = basin_balance(column_room["folder"], "cha01")
+    assert abs(r["groundwater_residual"]) <= 1e-6 * (r["recharge_received"] + r["groundwater_to_soil_sent"])
+    import json
+    wt = json.loads((column_room["folder"] / "outputs" / "summary.json").read_text())["water_table"]
+    assert wt["cap"] == "room"
+    assert wt["drain_closed_cell_days"] == t["gw_soil:drains_closed"].sum() > 0
+    assert wt["drain_limited_cell_days"] >= wt["drain_closed_cell_days"]
+
+
+@pytest.mark.slow
+def test_a_steady_full_table_stays_shut_without_flapping(swatplus):
+    need_water_table()
+    room = column_run(column_config("mid_profile", cap="room"), "water-table-mid-profile-room", days=90)
+    none = column_run(column_config("mid_profile"), "water-table-mid-profile-none", days=90)
+    t = room["table"]
+    late = np.arange(90) >= 25  # the held layers full, nothing for ET to take from them
+    assert (t["gw_soil:drains_closed"][late] == 1).all()
+    np.testing.assert_array_equal(t["gw_soil:sent"][late], 0.0)
+    assert (room["flags"][late] == room["flags"][-1]).all()
+    # what the soil took, and the stream, are the run that returned the excess every day
+    assert t["gw_soil:received"].sum() == pytest.approx(none["table"]["gw_soil:received"].sum(), rel=1e-3)
+    np.testing.assert_allclose(room["series"]["flow:cha01"], none["series"]["flow:cha01"], rtol=1e-3, atol=1e-6)
+    assert t["gw_soil:not_taken"].sum() < 1e-3 * none["table"]["gw_soil:not_taken"].sum()
+
+
+@pytest.mark.slow
+def test_a_restart_with_the_drain_cut_is_bit_for_bit(swatplus):
+    need_water_table()
+    cfg = column_config(cap="room")
+    whole = column_run(cfg, "water-table-room-whole", days=90)
+    first = column_run(cfg, "water-table-room-first", days=90, save_at=45)
+    rest = column_run(cfg, "water-table-room-rest", days=90, restart=first["folder"] / "state")
+    assert whole["table"]["gw_soil:drains_limited"][45:].sum() > 0
+    for k in ("gw_soil:sent", "gw_soil:drains_limited", "gw_soil:not_taken"):
+        np.testing.assert_array_equal(rest["table"][k], whole["table"][k])
+    np.testing.assert_array_equal(rest["series"]["flow:cha01"], whole["series"]["flow:cha01"])
+    np.testing.assert_array_equal(rest["heads"], whole["heads"])
