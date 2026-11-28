@@ -22,6 +22,11 @@ Status (Nov 27, 2026, release 0.19.0). Built and tested on synthetic examples:
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
 - the soil cover SWAT+'s soil evaporation sees, on the HRUs a study names: a tree's leaves and residue, not its wood
   (Soil cover for soil evaporation; swatplus-bmi's soil cover);
+- a water-table link: SWAT+'s layers below MODFLOW 6's table held saturated, filled from a drain at the profile's
+  bottom, cut each day to the held layers' room (`cap = "room"`), the rest returned as recharge (A water-table link
+  between MODFLOW 6 and SWAT+'s soils; swatplus-bmi 0.17.0);
+- swatplus-bmi's fix for SWAT+'s daily Muskingum routing, passed through when a study sets it (The routing fix
+  passed through to swatplus-bmi; swatplus-bmi 0.18.0);
 - the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
 - intakes on any channel or reservoir, several to one served senior first, a user returning only the share its intake
   delivered, the next day, and SWAT+'s own irrigation from its channels and reservoirs booked by source
@@ -2846,6 +2851,32 @@ How it fits:
     - a steady full table stays shut without flapping, with the soil's water and the stream as without the cap;
     - a restart is bit for bit;
     - the recirculation without the returned water, in the balance, the summary and per HRU.
+
+## The routing fix passed through to swatplus-bmi (approved by Andrew Nov 27, 2026, for the Virginia study; built)
+
+**Why.** With `rte_cha` 1 on a daily step, SWAT+ 62.0.1's `ch_rtmusk.f90` resets the stability substeps that
+`sd_hydsed_init.f90` computed. Each day becomes one Muskingum step with a substep's coefficients, so every reach delays
+about 0.6 day whatever its K. swatplus-bmi 0.18.0 fixes it when a run asks (`routing_fix = "muskingum_daily"` in its
+start file; its `patches/62.0.1/0004`). The fix is swatplus-bmi's, as a wrapper's bug fix; Basin Ledger only passes the
+setting on.
+
+**The setting.** `[swatplus] routing_fix = "muskingum_daily"` (or `"none"`), checked on read, refused before
+swatplus-bmi 0.18.0.
+- Set, Basin Ledger writes it into swatplus-bmi's start file (`swatplus-bmi.toml` in the run folder): the project,
+  then `held_lateral` when the water-table link is on, then `routing_fix`.
+- Unset, nothing changes. A run without the water-table link starts SWAT+ from its project folder, as before, and the
+  link's start file is the same bytes. `summary.json` gives the setting when it is set.
+
+**Restarts.** swatplus-bmi's saved state carries the setting, and a load takes it whatever the start file says: a state
+saved with the fix goes on fixed, and one saved before 0.18.0 (or without the fix) goes on as stock. So Basin Ledger
+saves the setting in `basin.json` and refuses a restart whose config says otherwise. A `basin.json` without it was
+saved unset, which is `"none"`.
+
+**Tested** (`tests/test_routing_fix.py`): the setting and its refusals; the start file's lines and their order, and the
+water-table link's file as it was; on the synthetic example with Muskingum routing, the key reaching the start file and
+SWAT+ routing cha01 differently (a year's daily outflow, its centroid 5 days earlier), and no start file unset; refused
+before 0.18.0; a restart refused against another setting either way, and with the same one matching the unbroken run
+to the bit. How the fix routes is swatplus-bmi's to test (its `tests/test_routing_fix.py`).
 
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 

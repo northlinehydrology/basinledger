@@ -58,12 +58,13 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   water over the run split by land use or HRU (`[outputs] recirculation`, `balance.recirculation`);
 - the soil cover SWAT+'s soil evaporation sees, on the HRUs a study names by HRU or land use: a tree's leaves and
   residue, not its wood (`[soil_cover] rule = "leaves"`; swatplus-bmi 0.16.0);
-- a water-table link (`rule = "water_table"`, built Nov 27, 2026, waiting for swatplus-bmi 0.17.0's held soil
-  layers): SWAT+'s layers below MODFLOW 6's water table held, filled from a drain at the profile's bottom (MODFLOW 6's
-  top, checked per cell or per HRU), rain on a full profile spilling as saturation excess, and drain water the held
-  layers can't take returned as recharge, or with `cap = "room"` the drain cut each day to the held layers' room;
-  optionally each HRU's piece of a cell with its own land surface, its own table (a `land_surface` file per map
-  row);
+- a water-table link (`rule = "water_table"`, built Nov 27, 2026, on swatplus-bmi 0.17.0's held soil layers): SWAT+'s
+  layers below MODFLOW 6's water table held, filled from a drain at the profile's bottom (MODFLOW 6's top, checked per
+  cell or per HRU), rain on a full profile spilling as saturation excess, and drain water the held layers can't take
+  returned as recharge, or with `cap = "room"` the drain cut each day to the held layers' room; optionally each HRU's
+  piece of a cell with its own land surface, its own table (a `land_surface` file per map row);
+- swatplus-bmi's fix for SWAT+'s daily Muskingum routing passed through (`[swatplus] routing_fix =
+  "muskingum_daily"`; swatplus-bmi 0.18.0), off unless set;
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
@@ -269,6 +270,7 @@ An example's config (abridged; the full schema is in `src/basinledger/config.py`
 ```toml
 [swatplus]
 project = "{swatplus_refdata}/Osu_1hru"
+# routing_fix = "muskingum_daily"  # optional: swatplus-bmi's fix for SWAT+'s daily Muskingum (rte_cha 1); off unset
 
 [modflow6]
 builder = "model:build"        # model.py writes the MODFLOW 6 simulation for the run's days

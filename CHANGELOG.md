@@ -37,6 +37,17 @@
     numbers change with it.
   - Not yet with transport, salt or a replay record. Tested in `tests/test_water_table.py`, whose SWAT+ tests skip
     without the hooks.
+- **swatplus-bmi's routing fix passed through** (`[swatplus] routing_fix = "muskingum_daily"`; docs/design.md, The
+  routing fix passed through to swatplus-bmi). Approved by Andrew on Nov 27, 2026, for the Virginia study.
+  - SWAT+ 62.0.1's daily Muskingum routing (`rte_cha` 1) resets its stability substeps, so every reach delays about
+    0.6 day whatever its K. swatplus-bmi 0.18.0 fixes it when its start file asks; Basin Ledger writes the key there.
+  - Unset (the default), nothing changes: a run without `[groundwater_to_soil] rule = "water_table"` still starts
+    SWAT+ from its project, and the water-table link's start file is as it was. `"none"` routes as stock too.
+  - A restart keeps the setting it was saved with (swatplus-bmi's state carries it; a state saved before 0.18.0
+    routes as stock), so a restart whose config says otherwise is refused. `summary.json` gives the setting.
+  - Refused before swatplus-bmi 0.18.0. Tested in `tests/test_routing_fix.py`.
+- **swatplus-bmi 0.18.0 locked.** The water-table link needs 0.17.0 and the routing fix 0.18.0, each refused before
+  it; the minimum stays 0.14.0. Tested with swatplus-bmi 0.18.0.
 
 ## 0.19.0 (2026-11-27)
 
