@@ -635,6 +635,12 @@ class Basin:
             land_cells = land_rows = None
             if wt and gs.get("land_surface") and G.is_per_row(gs["land_surface"]):  # each map row's, its order
                 land_rows = G.read_row_land(gs["land_surface"], self.ground_map, self.mf6.node)
+                if gs.get("cell_land_surface"):  # the whole cell's, for the check of MODFLOW 6's top
+                    land_cells = G.read_land_surface(gs["cell_land_surface"], self.mf6.node,
+                                                     len(self.mf6.cell_area))
+            elif wt and gs.get("cell_land_surface"):
+                raise ValueError("[groundwater_to_soil] cell_land_surface goes with a land_surface file per map row "
+                                 "(an object column); a per-cell file is land_surface itself")
             elif wt and gs.get("land_surface"):
                 land_cells = G.read_land_surface(gs["land_surface"], self.mf6.node, len(self.mf6.cell_area))
             self.gw_soil = GroundwaterToSoil(self.sw, self.ground_map, source, gs["rule"], gs["cap"],
@@ -2568,8 +2574,7 @@ class Basin:
                     "saturation_excess_m3": tot("soil:saturation_excess"),
                     "saturation_excess_to_ponds_m3": tot("soil:saturation_excess_to_ponds"),
                     "held_lateral": self.gw_soil.held_lateral,
-                    "land_surface": ("rows" if self.gw_soil.land_rows is not None else
-                                     "cells" if self.gw_soil.land_cells is not None else "hru"),
+                    "land_surface": self.gw_soil.land_source,
                 }
             # recirculation (bookkeeping only): recharge is gross; some of it came back up into the soil
             tot = self.ledger.totals()

@@ -389,7 +389,9 @@ class GroundwaterToSoil:
         ``saved`` (a saved run's flags and the rows its due came from) and ``n_cells`` (MODFLOW 6's nodes).
         ``land_cells``: each cell's land surface (m), ``water_table``'s check cell by cell in place of hru.con's.
         ``land_rows``: each map row's land surface (m, a ``land_surface`` file per row): each piece's own profile bottom
-        and table, the cells' land surface its pieces'.
+        and table, and each cell's drain at its pieces' mean profile bottom. The check of MODFLOW 6's top is against
+        ``land_cells`` when given (``cell_land_surface``: the whole cell's, where a cell is only partly under HRU
+        ground), else against the pieces' mean.
         ``ponded``: per HRU, whether it is a paddy or wetland (``swatplus.ponded_hrus``), whose saturation excess
         SWAT+ puts into its ponded water, not its runoff."""
         if rule not in RULES:
@@ -422,9 +424,11 @@ class GroundwaterToSoil:
         self.held_lateral, self.land, self.top_tolerance = held_lateral, land, top_tolerance
         self.land_cells = None if land_cells is None else np.asarray(land_cells, float)
         self.land_rows = None if land_rows is None else np.asarray(land_rows, float)
-        if self.land_rows is not None and (rule != "water_table" or self.land_cells is not None):
-            raise ValueError('[groundwater_to_soil] a land surface per map row is water_table\'s, in place of one '
-                             "per cell")
+        if self.land_rows is not None and rule != "water_table":
+            raise ValueError("[groundwater_to_soil] a land surface per map row is water_table's")
+        self.land_source = ("rows and cells" if self.land_rows is not None and self.land_cells is not None else
+                            "rows" if self.land_rows is not None else "cells" if self.land_cells is not None else
+                            "hru")
         self.row_bottom = None  # each piece's profile bottom (m), with land_rows
         self.ponded = np.zeros(len(hrus), bool) if ponded is None else np.asarray(ponded, bool)
         self.notes = []  # what attach found worth saying (a warning, or the cells keeping the land surface)
@@ -453,9 +457,12 @@ class GroundwaterToSoil:
             need = (f'[groundwater_to_soil] rule = "water_table" needs MODFLOW 6\'s top at the soil profile\'s '
                     f"bottom (its land surface less its profile depth, within top_tolerance = {self.top_tolerance} m)")
             self.bottom_elev = self.top.copy()  # the profile's bottom per cell: the drain's elevation, the table's zero
-            if self.land_rows is not None:  # each piece's own: the cells' land surface is their pieces'
-                self.land_cells = cell_land(self.map, self.land_rows, n)
+            pieces = None
+            if self.land_rows is not None:  # each piece's own; the cells' land surface their pieces' unless given
                 self.row_bottom = self.land_rows - self.depth[self.map.obj]
+                pieces = cell_land(self.map, self.land_rows, n)
+                if self.land_cells is None:
+                    self.land_cells = pieces
             if self.land_cells is not None:  # cell by cell; a stream's or lake's cell may keep its land surface
                 self.bottom_elev, kept, bad = profile_bottom_cells(self.map, self.top, self.land_cells, self.depth,
                                                                    n, self.top_tolerance)
@@ -466,6 +473,17 @@ class GroundwaterToSoil:
                     self.notes.append(f"{int(kept.sum())} cells keep the land surface as MODFLOW 6's top (streams' "
                                       "and lakes' cells): their drain and water table are a profile below the top, "
                                       "and their soil zone is in both models")
+                if pieces is not None:  # the drain at the pieces' mean profile bottom, where their tables start
+                    d = np.bincount(self.map.node, weights=self.shares * self.depth[self.map.obj], minlength=n)
+                    at_pieces = pieces - d
+                    off = np.abs(at_pieces - self.bottom_elev) > self.top_tolerance
+                    if off.any():
+                        worst = float(np.nanmax(np.abs(at_pieces - self.bottom_elev)[off]))
+                        self.notes.append(
+                            f"{int(off.sum())} cells' HRU pieces lie off the cell's land surface by more than "
+                            f"top_tolerance (cells partly under HRU ground, up to {worst:.1f} m): their drain is at "
+                            "their pieces' mean profile bottom, not their top")
+                    self.bottom_elev = np.where(np.isfinite(at_pieces), at_pieces, self.bottom_elev)
             elif self.land is not None:  # HRU by HRU, from hru.con's elev
                 bad = top_problems(self.map, self.top, self.land, self.depth, self.hrus, self.top_tolerance)
                 if bad:

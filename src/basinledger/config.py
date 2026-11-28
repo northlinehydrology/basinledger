@@ -59,7 +59,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     # top_tolerance = 1.0               #   bottom (checked per HRU against hru.con's elev less the profile, m, or
     # land_surface = "land.csv"         #   cell by cell against land_m per cell, a map table's cell columns);
                                         #   or each map row's (a file with the recharge map's object and cell
-                                        #   columns, in its order: each HRU's piece of a cell its own table);
+                                        #   columns, in its order: each HRU's piece of a cell its own table, the
+                                        #   drain at the pieces' mean profile bottom), with cell_land_surface (per
+                                        #   cell) for the top check where cells are only partly under HRUs;
                                         #   held_lateral "none" (default) or "swatplus" (SWAT+'s own lateral flow from
                                         #   held layers). Not with transport, salt or a replay record (yet)
     [soil_cover]                        # optional, SWAT+ only: the soil cover its soil evaporation sees, for the HRUs
@@ -612,11 +614,11 @@ def load(path: str | Path) -> ExampleConfig:
         missing = [k for k in ("rule", "cap", "package") if k not in gs]
         if missing:
             raise ValueError(f"{path}: [groundwater_to_soil] needs {missing}: the rule and the cap have no default")
-        own = {"held_lateral", "top_tolerance", "land_surface"}
+        own = {"held_lateral", "top_tolerance", "land_surface", "cell_land_surface"}
         known = {"rule", "cap", "package"} | (own if gs.get("rule") == "water_table" else set())
         if set(gs) - known:
             raise ValueError(f"{path}: [groundwater_to_soil] unknown settings {sorted(set(gs) - known)}"
-                             + (" (held_lateral, top_tolerance and land_surface are water_table's)"
+                             + (" (held_lateral, top_tolerance, land_surface and cell_land_surface are water_table's)"
                                 if set(gs) & own else ""))
         if gs["rule"] not in RULES or gs["cap"] not in CAPS:
             raise ValueError(f"{path}: [groundwater_to_soil] rule is one of {RULES}, cap one of {CAPS}")
@@ -629,8 +631,12 @@ def load(path: str | Path) -> ExampleConfig:
             tol = gs.get("top_tolerance", 1.0)
             if isinstance(tol, bool) or not isinstance(tol, (int, float)) or not tol > 0:
                 raise ValueError(f"{path}: [groundwater_to_soil] top_tolerance is a positive number of metres")
-            if "land_surface" in gs:
-                gs = dict(gs, land_surface=_path(base, gs["land_surface"]))
+            if "cell_land_surface" in gs and "land_surface" not in gs:
+                raise ValueError(f"{path}: [groundwater_to_soil] cell_land_surface goes with a land_surface file "
+                                 "per map row")
+            for k in ("land_surface", "cell_land_surface"):
+                if k in gs:
+                    gs = dict(gs, **{k: _path(base, gs[k])})
             with_ = [k for k in ("transport", "salt", "replay") if k in c]
             if with_:
                 raise ValueError(f'{path}: [groundwater_to_soil] rule = "water_table" is not built with '
