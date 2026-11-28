@@ -289,11 +289,16 @@ def test_the_config_takes_water_table_and_its_settings(tmp_path):
                                       "held_lateral": "swatplus", "top_tolerance": 0.5}
     gs = load('rule = "water_table"\ncap = "none"\npackage = "soil"\nland_surface = "land.csv"\n')
     assert gs.groundwater_to_soil["land_surface"] == tmp_path / "land.csv"
+    gs = load('rule = "water_table"\ncap = "none"\npackage = "soil"\nland_surface = "rows.csv"\n'
+              'cell_land_surface = "cells.csv"\n')
+    assert gs.groundwater_to_soil["cell_land_surface"] == tmp_path / "cells.csv"
     for extra, match in [
         ('rule = "water_table"\ncap = "room"\npackage = "soil"\n', 'takes cap = "none"'),
         ('rule = "water_table"\ncap = "none"\npackage = "soil"\nheld_lateral = "some"\n', "held_lateral is one of"),
         ('rule = "water_table"\ncap = "none"\npackage = "soil"\ntop_tolerance = 0\n', "top_tolerance"),
         ('rule = "drain"\ncap = "none"\npackage = "soil"\nheld_lateral = "none"\n', "water_table's"),
+        ('rule = "water_table"\ncap = "none"\npackage = "soil"\ncell_land_surface = "c.csv"\n',
+         "goes with a land_surface file per map row"),
     ]:
         with pytest.raises(ValueError, match=match):
             load(extra)
@@ -433,13 +438,34 @@ def test_pieces_at_their_cells_land_are_the_per_cell_link():
         np.testing.assert_array_equal(r1, r2)
 
 
-def test_a_land_surface_per_row_is_water_tables_in_place_of_one_per_cell():
+def test_a_land_surface_per_row_is_water_tables():
     m, land, sw, _ = two_pieces()
-    with pytest.raises(ValueError, match="in place of one per cell"):
-        G.GroundwaterToSoil(sw, m, np.array([100.0, 100.0]), "water_table", "none", "soil", land_rows=land,
-                            land_cells=np.array([100.0]))
     with pytest.raises(ValueError, match="water_table's"):
         G.GroundwaterToSoil(sw, m, np.array([100.0, 100.0]), "drain", "none", "soil", land_rows=land)
+
+
+def test_a_cell_partly_under_hrus_is_checked_on_its_whole_land_and_drains_at_its_pieces():
+    """A cell on the divide: its HRU pieces (land 100.5 and 99.5 m) sit high on it, the whole cell's land surface is
+    95 m, and MODFLOW 6's top is that less the profile (94.125 m). Checked against the pieces' mean (100 m) it is
+    refused; against the whole cell's (cell_land_surface) it passes, and its drain sits at the pieces' mean profile
+    bottom (99.125 m), where their tables start: a head between the two gives nothing to soils far above it."""
+    m, land, sw, _ = two_pieces()
+    area = np.array([100.0, 100.0])
+    with pytest.raises(ValueError, match="1 cells are neither"):
+        G.GroundwaterToSoil(StandInSwat(), m, area, "water_table", "none", "soil", n_cells=1,
+                            land_rows=land).attach(StandInModflow([94.125]))
+    gs = G.GroundwaterToSoil(sw, m, area, "water_table", "none", "soil", n_cells=1, land_rows=land,
+                             land_cells=np.array([95.0]))
+    mf = StandInModflow([94.125])
+    gs.attach(mf)
+    assert gs.land_source == "rows and cells"
+    np.testing.assert_allclose(gs.elev0, [99.125])
+    assert "1 cells' HRU pieces lie off" in gs.notes[0] and "up to 5.0 m" in gs.notes[0]
+    gs.before_solve()
+    np.testing.assert_allclose(mf.elev, [99.125])
+    mf.h, mf.out = np.array([97.0]), np.array([0.0])  # above the top, below every piece's bottom
+    gs.after_solve()
+    assert gs.flags.sum() == 0 and gs.due.sum() == 0.0
 
 
 # --- on the models: Osu_1hru's one HRU on one MODFLOW 6 cell, its head raised and lowered ---------------------
