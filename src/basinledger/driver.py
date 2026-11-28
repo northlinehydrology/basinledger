@@ -2582,12 +2582,17 @@ class Basin:
                     "drain_limited_cell_days": tot("gw_soil:drains_limited"),
                     "drain_closed_cell_days": tot("gw_soil:drains_closed"),
                 }
-            # recirculation (bookkeeping only): recharge is gross; some of it came back up into the soil
+            # recirculation (bookkeeping only): recharge is gross; some of it came back up into the soil. What
+            # water_table's soils didn't take and returned is neither, booked apart (docs/design.md, Drain water with
+            # nowhere to go)
             tot = self.ledger.totals()
-            gross, up = float(tot.get("recharge:received", 0.0)), float(tot.get("gw_soil:sent", 0.0))
+            back = float(tot.get("gw_soil:returned", 0.0) or 0.0)
+            gross = float(tot.get("recharge:received", 0.0)) - back
+            up = float(tot.get("gw_soil:sent", 0.0)) - back
             summary["recirculation"] = {"recharge_gross": gross, "groundwater_to_soil": up,
                                         "recharge_net": gross - up,
-                                        "share": up / gross if gross else float("nan")}
+                                        "share": up / gross if gross else float("nan"),
+                                        "returned_not_taken": back}
         if getattr(self, "hru_water", None) is not None:
             from .balance import HRU_FILE
             self.hru_water.write(out / HRU_FILE)
