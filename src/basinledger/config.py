@@ -16,6 +16,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
                                         #   {name, reservoir = "res01"}; sharing a channel or reservoir, served in
                                         #   this order (the first is senior)
     point_sources = [{name = "wwtp", channel = "cha01"}]   # or {name, reservoir = "res01"}: into a reservoir
+    # routing_fix = "muskingum_daily"   # optional, swatplus-bmi 0.18.0: SWAT+ 62.0.1's daily Muskingum routing
+                                        #   (rte_cha 1) fixed; "none" or unset routes as stock. Given to swatplus-bmi
+                                        #   in its start file; a restart keeps the setting it was saved with
 
     # or [nextgen]                      # the surface model: a finished NGIAB run, replayed (coupling/nextgen.py)
     # run = "{nextgen_michigan}/runs/scenarios/baseline"
@@ -54,7 +57,17 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
     cap = "none"                        #   bottom, solved by MODFLOW 6) or "gwflow" (SWAT+ gwflow's rule, a well);
     package = "soil"                    #   cap "none" or "room" (no more than the layers' room). The package (DRN for
                                         #   drain, WEL for gwflow) has one entry on each mapped cell. Needs recharge by
-                                        #   HRU and the two-way [exchange]
+                                        #   HRU and the two-way [exchange]. Or "water_table" (a DRN; cap "room", the
+                                        #   drain's conductance cut each day to the held layers' room, or "none"): the
+    # held_lateral = "none"             #   layers below MODFLOW 6's water table held saturated, its top the profile's
+    # top_tolerance = 1.0               #   bottom (checked per HRU against hru.con's elev less the profile, m, or
+    # land_surface = "land.csv"         #   cell by cell against land_m per cell, a map table's cell columns);
+                                        #   or each map row's (a file with the recharge map's object and cell
+                                        #   columns, in its order: each HRU's piece of a cell its own table, the
+                                        #   drain at the pieces' mean profile bottom), with cell_land_surface (per
+                                        #   cell) for the top check where cells are only partly under HRUs;
+                                        #   held_lateral "none" (default) or "swatplus" (SWAT+'s own lateral flow from
+                                        #   held layers). Not with transport, salt or a replay record (yet)
     [soil_cover]                        # optional, SWAT+ only: the soil cover its soil evaporation sees, for the HRUs
     rule = "leaves"                     #   and land uses named (coupling/soilcover.py). "leaves": a tree's leaves and
     land_uses = ["frst_lum"]            #   the residue, no wood; other plants SWAT+'s own. And/or hrus = ["hru0001"].
@@ -463,6 +476,7 @@ class ExampleConfig:
     recharge_add: bool = False          # a recharge package Basin Ledger adds, for a model without one
     weather: dict | None = None        # kind -> CSV path, and change (weather.py)
     groundwater_to_soil: dict | None = None  # rule, cap, package (coupling/gwsoil.py)
+    routing_fix: str | None = None     # [swatplus] routing_fix: swatplus-bmi's, into its start file; None unset
     soil_cover: object | None = None   # soilcover.Settings: the soil cover SWAT+'s soil evaporation sees
     mf6_length_units: str | None = None  # the model's, where its DIS leaves them undefined (coupling/modflow6.py)
     mf6_time_units: str | None = None
@@ -581,6 +595,10 @@ def load(path: str | Path) -> ExampleConfig:
     if ("swatplus" in c) == ("nextgen" in c):
         raise ValueError(f"{path}: needs one surface model, [swatplus] or [nextgen]")
     sw = c.get("swatplus", {})
+    if "routing_fix" in sw:
+        from .coupling.swatplus import ROUTING_FIXES
+        if sw["routing_fix"] not in ROUTING_FIXES:
+            raise ValueError(f"{path}: [swatplus] routing_fix is one of {ROUTING_FIXES}; got {sw['routing_fix']!r}")
     rch = c.get("recharge", {})
     if rch.get("source", "aquifer") not in ("aquifer", "hru"):
         raise ValueError(f"{path}: [recharge] source must be aquifer or hru")
@@ -605,10 +623,32 @@ def load(path: str | Path) -> ExampleConfig:
         missing = [k for k in ("rule", "cap", "package") if k not in gs]
         if missing:
             raise ValueError(f"{path}: [groundwater_to_soil] needs {missing}: the rule and the cap have no default")
-        if set(gs) - {"rule", "cap", "package"}:
-            raise ValueError(f"{path}: [groundwater_to_soil] unknown settings {sorted(set(gs) - {'rule', 'cap', 'package'})}")
+        own = {"held_lateral", "top_tolerance", "land_surface", "cell_land_surface"}
+        known = {"rule", "cap", "package"} | (own if gs.get("rule") == "water_table" else set())
+        if set(gs) - known:
+            raise ValueError(f"{path}: [groundwater_to_soil] unknown settings {sorted(set(gs) - known)}"
+                             + (" (held_lateral, top_tolerance, land_surface and cell_land_surface are water_table's)"
+                                if set(gs) & own else ""))
         if gs["rule"] not in RULES or gs["cap"] not in CAPS:
             raise ValueError(f"{path}: [groundwater_to_soil] rule is one of {RULES}, cap one of {CAPS}")
+        if gs["rule"] == "water_table":
+            from .coupling.gwsoil import HELD_LATERAL
+            if gs.get("held_lateral", "none") not in HELD_LATERAL:
+                raise ValueError(f"{path}: [groundwater_to_soil] held_lateral is one of {HELD_LATERAL}")
+            tol = gs.get("top_tolerance", 1.0)
+            if isinstance(tol, bool) or not isinstance(tol, (int, float)) or not tol > 0:
+                raise ValueError(f"{path}: [groundwater_to_soil] top_tolerance is a positive number of metres")
+            if "cell_land_surface" in gs and "land_surface" not in gs:
+                raise ValueError(f"{path}: [groundwater_to_soil] cell_land_surface goes with a land_surface file "
+                                 "per map row")
+            for k in ("land_surface", "cell_land_surface"):
+                if k in gs:
+                    gs = dict(gs, **{k: _path(base, gs[k])})
+            with_ = [k for k in ("transport", "salt", "replay") if k in c]
+            if with_:
+                raise ValueError(f'{path}: [groundwater_to_soil] rule = "water_table" is not built with '
+                                 f"{', '.join('[' + k + ']' for k in with_)} yet: the water no layer takes goes back "
+                                 "as recharge, and its mass isn't carried")
         if rch.get("source") != "hru" or "exchange" not in c or "modflow6" not in c or "swatplus" not in c:
             raise ValueError(f"{path}: [groundwater_to_soil] needs SWAT+, MODFLOW 6, [recharge] source = \"hru\" (the "
                              "HRU map) and the two-way [exchange] (SWAT+'s aquifers passing recharge through)")
@@ -763,6 +803,7 @@ def load(path: str | Path) -> ExampleConfig:
         recharge_source=rch.get("source", "aquifer"),
         weather=weather,
         groundwater_to_soil=dict(gs) if gs is not None else None,
+        routing_fix=sw.get("routing_fix"),
         soil_cover=soil_cover,
         irrigation=irrigation,
         lakes=lakes,

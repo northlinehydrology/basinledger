@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+- **A water-table link** (`[groundwater_to_soil] rule = "water_table"`; docs/design.md, A water-table link between
+  MODFLOW 6 and SWAT+'s soils). Andrew's design of Nov 27. It needs swatplus-bmi 0.17.0's held soil layers and is
+  refused without them.
+  - SWAT+'s layers below MODFLOW 6's water table are held: they don't drain, and they fill from a drain at the
+    profile's bottom.
+  - The study's model sets MODFLOW 6's top at the profile's bottom. The link checks it at start-up, per cell from a
+    `land_surface` CSV (a lake's or stream's cell may keep its land surface as its top) or per HRU from hru.con
+    (`top_tolerance`).
+  - A layer is held when the table is above its middle and released below its bottom, from the bottom up.
+  - Drain water the held layers can't take is never put above the table (Andrew's choice A). It goes back to
+    MODFLOW 6 as recharge on its cells the same day (`gw_soil:not_taken`, `gw_soil:returned`).
+  - Saturation excess is booked as part of runoff (`soil:saturation_excess`).
+  - `held_lateral = "none"` (default) or `"swatplus"`, given to swatplus-bmi in a start file.
+  - The `drain` and `gwflow` rules warn on a model built for it.
+  - A `land_surface` file per map row (asked by the Virginia study, approved by Andrew, Nov 27). Each map row (an
+    HRU's piece of a cell) takes its own land surface (`object`, cell, `land_m`, the recharge map's rows in its
+    order, checked row by row), so valley bottoms within a cell have their own table. Each HRU's table is its
+    pieces' by ground. The drain stays per cell, and its water goes to the pieces with soil below the table, by how
+    much (docs/design.md, The land surface per map row). `cell_land_surface` (per cell) beside it checks
+    MODFLOW 6's top against the whole cell where a cell is only partly under HRU ground. The drain stays at the
+    pieces' mean profile bottom, so (A) holds there too.
+  - `cap = "room"` with `water_table` (asked by the Virginia study, approved by Andrew, Nov 27). Each day, each
+    cell's drain conductance is cut to the room in its pieces' held layers at SWAT+'s pause: 0 where they are full,
+    the input's where nothing is short. This ends the loop where full held layers returned the drain's water as
+    recharge every day. `cap = "none"` keeps every day's excess returned. Reported as `gw_soil:drains_limited` and
+    `gw_soil:drains_closed` (docs/design.md, Drain water with nowhere to go).
+  - The recirculation counts only water that entered the soil. The returned water is taken out of gross recharge and
+    groundwater to soil and booked apart:
+    - `recharge_returned` in the balance;
+    - `returned_not_taken` in `summary.json`'s `recirculation` block;
+    - `groundwater_not_taken` per HRU in `recirculation_hru.csv` and `balance.recirculation`.
+  - swatplus-bmi 0.17.0 moves the groundwater inflow before runoff for every run, so the `drain` and `gwflow` rules'
+    numbers change with it.
+  - Not yet with transport, salt or a replay record. Tested in `tests/test_water_table.py`, whose SWAT+ tests skip
+    without the hooks.
+- **swatplus-bmi's routing fix passed through** (`[swatplus] routing_fix = "muskingum_daily"`; docs/design.md, The
+  routing fix passed through to swatplus-bmi). Approved by Andrew on Nov 27, 2026, for the Virginia study.
+  - SWAT+ 62.0.1's daily Muskingum routing (`rte_cha` 1) resets its stability substeps, so every reach delays about
+    0.6 day whatever its K. swatplus-bmi 0.18.0 fixes it when its start file asks; Basin Ledger writes the key there.
+  - Unset (the default), nothing changes: a run without `[groundwater_to_soil] rule = "water_table"` still starts
+    SWAT+ from its project, and the water-table link's start file is as it was. `"none"` routes as stock too.
+  - A restart keeps the setting it was saved with (swatplus-bmi's state carries it; a state saved before 0.18.0
+    routes as stock), so a restart whose config says otherwise is refused. `summary.json` gives the setting.
+  - Refused before swatplus-bmi 0.18.0. Tested in `tests/test_routing_fix.py`.
+- **swatplus-bmi 0.18.0 required** (`>=0.18.0`, from 0.14.0) **and locked.** The routing fix needs it and the
+  water-table link 0.17.0, and CI only tests the locked version, so the floor is the version tested. Build SWAT+ again
+  with it (`uv run swatplus-bmi build`).
+
 ## 0.19.0 (2026-11-27)
 
 - **A floor under the river stage** (`[rivers] stage_floor = "<column>"`; docs/design.md, The MODFLOW 6 coupling,

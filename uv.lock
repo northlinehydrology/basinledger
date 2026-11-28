@@ -107,7 +107,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyyaml", marker = "extra == 'users'", specifier = ">=6" },
     { name = "shapely", marker = "extra == 'gis'", specifier = ">=2" },
-    { name = "swatplus-bmi", specifier = ">=0.14.0" },
+    { name = "swatplus-bmi", specifier = ">=0.18.0" },
     { name = "waterledger-models", marker = "extra == 'users'", specifier = ">=3.11" },
 ]
 provides-extras = ["users", "nextgen", "gis"]
@@ -2599,7 +2599,7 @@ wheels = [
 
 [[package]]
 name = "swatplus-bmi"
-version = "0.16.0"
+version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bmipy" },
@@ -2607,12 +2607,12 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/40/ecb01e846cecc304241a851dc87fcd74e4b6975da644f6c068d425b9c37a/swatplus_bmi-0.16.0.tar.gz", hash = "sha256:f466541c9efbda6c332871da8b5f2e2973256c5d4bb3e87e609e14ca357f4a92", size = 775524, upload-time = "2026-11-27T21:10:43.083Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/77/2b22f5b89e107464821b36f20b423f7a1a5073466d961a093a0622df07f2/swatplus_bmi-0.18.0.tar.gz", hash = "sha256:f127ef42f76c5f59379a550104458e9f9d27198de8ac2dabc7b14f97aaddc226", size = 800175, upload-time = "2026-11-28T04:23:12.964Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/46/aaa3d6824ead5d3214ab93554a929cf94505c0d21175175e86d94b6de994/swatplus_bmi-0.16.0-py3-none-any.whl", hash = "sha256:5027dfa51dfca5dda0e0a4557a25e7cfbc8f43737626f33661dffe2b8457b19f", size = 137668, upload-time = "2026-11-27T21:10:36.091Z" },
-    { url = "https://files.pythonhosted.org/packages/2d/57/ab8e59d82bdc8ad13c4f541e229100f5defee20fa53a8a70bbacc38c9115/swatplus_bmi-0.16.0-py3-none-macosx_15_0_arm64.whl", hash = "sha256:d34624922d33dec7e02965dbf8a116c0f9a18a19bee79fbd75a71de6e0ae17ac", size = 2831176, upload-time = "2026-11-27T21:10:37.599Z" },
-    { url = "https://files.pythonhosted.org/packages/2c/0c/aec7bade3851ab1af2a75ad74cb105b492e64ee4314918f9dc0a055d2d35/swatplus_bmi-0.16.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:76f9136f2c47d5c9f7d0e73428267db80afb6bd5486949b5e683d49a8783e8bb", size = 3562741, upload-time = "2026-11-27T21:10:39.503Z" },
-    { url = "https://files.pythonhosted.org/packages/05/f8/b887e795ea20f6af39693a1b4c779020fae67bc1f4867e4135ef83065a25/swatplus_bmi-0.16.0-py3-none-win_amd64.whl", hash = "sha256:49c4b0312ffc4fa3b763fa96fd2624b4410ffd8ab29ff350120e1303e10a2c79", size = 3191683, upload-time = "2026-11-27T21:10:41.628Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/47/705e64963a5caf82625ab9c38a75eaa7a889de4087ca045591713e00e3a9/swatplus_bmi-0.18.0-py3-none-any.whl", hash = "sha256:a1eb4fee0ac9b74f63bf6b2df649e1fbaf65dd44765361240adcfdb825050d61", size = 144451, upload-time = "2026-11-28T04:23:07.004Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/bb/7ddde519f6a4f447517267a348b027fd9f4c0bdf8d96e4a7b7b7ff531313/swatplus_bmi-0.18.0-py3-none-macosx_15_0_arm64.whl", hash = "sha256:8657fe53e80b4e324d4647998105b0f0f3eb3bd2ed7496fa3d7de3998f33c495", size = 2841185, upload-time = "2026-11-28T04:23:08.473Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/af/a98b8aea8c68c0a140737e25a4e547670f88ee44ef1a52d5894286341f38/swatplus_bmi-0.18.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0c81d0404d5aafe0490c6a67ebd9b05fb9d8ed7d048c7d909196d3a33cbce431", size = 3575049, upload-time = "2026-11-28T04:23:09.823Z" },
+    { url = "https://files.pythonhosted.org/packages/11/ba/9818ea00a6ae251b4c2cc987f48bb28ba87760c0f8b1cd779ea3b4995566/swatplus_bmi-0.18.0-py3-none-win_amd64.whl", hash = "sha256:00d3f4ce9b09d1d6f3411c3356e4d3ac936125121a16161fbc60ba6f4176bd30", size = 3203407, upload-time = "2026-11-28T04:23:11.462Z" },
 ]
 
 [[package]]

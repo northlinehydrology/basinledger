@@ -58,6 +58,13 @@ estimates one campus's water from public data. Basin Ledger follows that water t
   water over the run split by land use or HRU (`[outputs] recirculation`, `balance.recirculation`);
 - the soil cover SWAT+'s soil evaporation sees, on the HRUs a study names by HRU or land use: a tree's leaves and
   residue, not its wood (`[soil_cover] rule = "leaves"`; swatplus-bmi 0.16.0);
+- a water-table link (`rule = "water_table"`, built Nov 27, 2026, on swatplus-bmi 0.17.0's held soil layers): SWAT+'s
+  layers below MODFLOW 6's water table held, filled from a drain at the profile's bottom (MODFLOW 6's top, checked per
+  cell or per HRU), rain on a full profile spilling as saturation excess, and drain water the held layers can't take
+  returned as recharge, or with `cap = "room"` the drain cut each day to the held layers' room; optionally each HRU's
+  piece of a cell with its own land surface, its own table (a `land_surface` file per map row);
+- swatplus-bmi's fix for SWAT+'s daily Muskingum routing passed through (`[swatplus] routing_fix =
+  "muskingum_daily"`; swatplus-bmi 0.18.0), off unless set;
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
@@ -184,7 +191,7 @@ pip install "basinledger[users,nextgen]"      # or: uv add "basinledger[users,ne
 On Windows x86-64, Linux x86-64 (glibc 2.34 or later: Ubuntu 22.04, RHEL 9 and newer) and macOS 15 or later on Apple
 silicon, that's all (0.10.0). Both models come with it, nothing to compile or fetch:
 
-- **SWAT+**, built with the exchange mode, inside swatplus-bmi's wheel (swatplus-bmi 0.14.0 or later);
+- **SWAT+**, built with the exchange mode, inside swatplus-bmi's wheel (swatplus-bmi 0.18.0 or later);
 - **MODFLOW 6's shared library** (`libmf6`), USGS's release unchanged (6.8.2), inside Basin Ledger's own wheel
   (`basinledger/_lib/`, with a note on its source and license).
 
@@ -263,6 +270,7 @@ An example's config (abridged; the full schema is in `src/basinledger/config.py`
 ```toml
 [swatplus]
 project = "{swatplus_refdata}/Osu_1hru"
+# routing_fix = "muskingum_daily"  # optional: swatplus-bmi's fix for SWAT+'s daily Muskingum (rte_cha 1); off unset
 
 [modflow6]
 builder = "model:build"        # model.py writes the MODFLOW 6 simulation for the run's days
@@ -299,9 +307,15 @@ precipitation = "weather/pcp.csv"
 change = {temperature = 2.0}   # a scenario's change, on the series or the project's own records
 
 [groundwater_to_soil]          # optional: MODFLOW 6's water up into SWAT+'s soil layers (needs [recharge] source =
-rule = "drain"                 #   "hru" and [exchange]); rule ("drain" or "gwflow") and cap ("none" or "room") have
-cap = "none"                   #   no default
+rule = "drain"                 #   "hru" and [exchange]); rule ("drain", "gwflow" or "water_table") and cap ("none"
+cap = "none"                   #   or "room"; with water_table, "room" cuts the drain to the held layers' room) have
+                               #   no default
 package = "soil"               # a DRN package with one entry on each mapped cell
+# held_lateral = "none"        # water_table only: "none" or "swatplus" (lateral flow from held layers); how far
+# top_tolerance = 1.0          #   (m) MODFLOW 6's top may sit from the profile's bottom; each cell's land surface
+# land_surface = "land.csv"    #   (land_m, and the cell as a map table gives it), else hru.con's elev per HRU;
+                               #   or per map row (object and cell as [recharge] map has them, in its order),
+# cell_land_surface = "cells.csv"  #   with each cell's whole land surface for the top check (partly covered cells)
 
 [soil_cover]                   # optional: the soil cover SWAT+'s soil evaporation sees on the HRUs named
 rule = "leaves"                #   "leaves" (leaves + residue) or "swat" (SWAT+'s own, set back: a check)

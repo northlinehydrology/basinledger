@@ -22,6 +22,11 @@ Status (Nov 27, 2026, release 0.19.0). Built and tested on synthetic examples:
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start that can drift;
 - the soil cover SWAT+'s soil evaporation sees, on the HRUs a study names: a tree's leaves and residue, not its wood
   (Soil cover for soil evaporation; swatplus-bmi's soil cover);
+- a water-table link: SWAT+'s layers below MODFLOW 6's table held saturated, filled from a drain at the profile's
+  bottom, cut each day to the held layers' room (`cap = "room"`), the rest returned as recharge (A water-table link
+  between MODFLOW 6 and SWAT+'s soils; swatplus-bmi 0.17.0);
+- swatplus-bmi's fix for SWAT+'s daily Muskingum routing, passed through when a study sets it (The routing fix
+  passed through to swatplus-bmi; swatplus-bmi 0.18.0);
 - the whole-basin balance, the capture of pumping, and depletion against Glover and Balmer (1954);
 - intakes on any channel or reservoir, several to one served senior first, a user returning only the share its intake
   delivered, the next day, and SWAT+'s own irrigation from its channels and reservoirs booked by source
@@ -2230,6 +2235,648 @@ growing from the start, its paddy and management schedule taken away):
   0.18.0's;
 - `"swat"`: the same run as off, to the bit, every day;
 - `"leaves"`: the forest's ET rises and the whole basin still closes.
+
+## A water-table link between MODFLOW 6 and SWAT+'s soils (proposed Nov 27, 2026; all eight decisions taken, Nov 27; being built)
+
+Requested by Andrew on Nov 27, 2026, from the Rappahannock's joint calibration. This is a design note only: no code
+until he agrees it. swatplus-bmi's side is being written in its own session, and this note will take it in when it
+arrives.
+
+### Why: what the Rappahannock shows
+
+The best realization of the joint calibration's second iteration shows three things:
+- **The fifth of the basin with the most groundwater to soil (WY2014, per HRU).** 360 mm a year comes up into its
+  soil and 502 mm percolates back down. Its soils sit at field capacity (0.39 of saturation) the day before each of
+  the 10 largest storms.
+- **Storm runoff.** Surface runoff is 3% of storm rain basin-wide, where the observations put quick flow near 55%.
+  The groundwater-fed fifth gives only 27% of that 3%. SWAT+'s saturation overflow (`swr_satexcess`) never fires,
+  and storm water leaves as lateral flow (221 mm a year).
+- **1997-2025 budget.** Of 165 mm a year of recharge, 110 comes back up into the soil through the SOIL drain. Net
+  recharge is about 55 mm a year. What doesn't percolate again feeds ET, which is about 85 mm a year too high.
+
+The link adds water to the soil, but nothing keeps the layers below the water table saturated, and SWAT+ drains
+them. In SWAT+ 62.0.1:
+- **Percolation drains everything above field capacity.** Each day `swr_percmain` adds water to the layers and
+  drains each layer's water above field capacity (`swr_percmicro`: `sepday = (st - fc)(1 - exp(-24/TT))`, plus
+  lateral flow). It does this whatever the water table, so a layer below the table returns to field capacity in a
+  few days. Its water goes down and becomes recharge again, or goes out sideways as lateral flow.
+- **Saturation overflow only spills what percolation leaves.** `swr_satexcess` spills only water above saturation
+  (`ul`) that remains after percolation. A drained profile never has any.
+- **Today's groundwater arrives after the day's runoff.** The day's curve number comes from the profile's water at
+  the start of `surface` (`sq_dailycn`: retention from `soil%sw`, reaching CN3 at `sumfc + cn3_swf (sumul - sumfc)`
+  in `curno`). Groundwater set through swatplus-bmi goes into the layers inside `swr_percmain`, after runoff. So
+  yesterday's groundwater never raises the day's curve number unless it is still in the soil a day later.
+- **What a full profile spills is lumped in with rain runoff.** SWAT+ books saturation overflow as `satexq` only
+  with its own gwflow on (`gw_soil_flag`). Otherwise it goes into `surfq` with the rain's runoff.
+
+### What the link should do
+
+Where the water table is in an HRU's profile:
+- the layers below it are groundwater: saturated, and they don't drain;
+- water percolating down to the table crosses it as recharge;
+- rain on a profile whose lower layers are full has less room, so the curve number rises and what the profile can't
+  hold spills (`swr_satexcess`);
+- as the table falls, the water it leaves in those layers drains as recharge.
+
+The saturated areas then come from MODFLOW 6's heads, placed by the simulated water table, not by an index.
+
+### swatplus-bmi's side (its note of Nov 27, 2026: `swatplus-bmi-water-table-hold-design`)
+
+swatplus-bmi's session proposes one variable and two hooks:
+- **The variable: `soil_layer__saturated_zone_flag`.** One flag per HRU layer, 1 or 0. It is set at the pause after
+  day d and holds from day d+1 until set again. Which layers are below the table is Basin Ledger's rule.
+- **Hook 1: the hold before runoff.** In `hru_control`, after `et_act` and before `surface`, each held layer's water
+  is raised to saturation (`ul`) and `soil%sw` is recomputed, so the day's curve number sees the wet profile. The
+  water added is counted in `gwsoilq`.
+- **Hook 2: the table is the bottom of the profile for the day.** In `swr_percmain`'s layer loop, water percolating
+  into the first held layer goes to `sepbtm`: SWAT+'s own recharge path, read as now. Held layers neither percolate
+  nor give lateral flow. What the unsaturated layers above can't pass on or hold, `swr_satexcess` moves up, and
+  what is still left leaves as `surfq`: saturation-excess runoff.
+- **Release.** A cleared flag lets SWAT+ drain the layer through `sepbtm`, the recharge Basin Ledger already sends to
+  MODFLOW 6.
+
+It rejects lighter options:
+- **Setting `st` alone.** The held layers drain into each other, and the loop comes back a day later.
+- **Closing the bottom (`perco_lim` = 0).** Water reaching the table can't cross it, so MODFLOW 6 never gets the
+  recharge.
+
+An earlier draft of this note had a third light option: a percolation floor keeping each layer's water from
+draining. It fails the same way: water percolating down to a held layer was pushed back up rather than recharging.
+Hook 2 is the better boundary, and this note takes it.
+
+### Where the water comes from: the one change Basin Ledger asks of Hook 1
+
+As swatplus-bmi proposes it, Hook 1 tops the held layers up to saturation whatever water MODFLOW 6 has, and MODFLOW 6
+would pay the top-up afterwards, as a withdrawal from the HRU's cells on the same day. That closes the water, but it
+puts the soil zone's pores in two stores at once:
+- MODFLOW 6's specific yield above the profile's bottom, where its top is the land surface;
+- SWAT+'s held layers.
+
+A rising table would be counted twice: once as MODFLOW 6's head rising into the soil zone, and again as the top-up
+taken from it. Filling a layer would drop the head by about the layer's thickness (at a specific yield near the
+soil's drainable porosity), the flag would clear, the release would raise the head again, and the flag would flap.
+
+**Proposed instead: the soil zone is SWAT+'s, and the water comes up through MODFLOW 6's drain.**
+1. **MODFLOW 6's top is the profile's bottom.** Where the link is on, the top of MODFLOW 6's top layer is the land
+   surface less the profile depth: the cell's HRUs' profiles, weighted by their ground in it, as the drain's
+   elevation is today.
+   - The water between the profile's bottom and the surface is stored once, in SWAT+'s layers.
+   - The Rappahannock's `mf6/build_mf6.py` would set the top this way. It is a model-building choice, and the link
+     checks it at start-up.
+2. **Up: today's drain, implicit in MODFLOW 6's solve.** The drain sits at the profile's bottom, a conductance [A], as
+   `rule = "drain"` now. Its water is due in SWAT+ the next day, as now.
+3. **Hook 1 fills the held layers from that water, not from nowhere.** At Hook 1's place (before `surface`), the
+   groundwater set for the day goes into the held layers first, from the bottom up to saturation. Any rest goes as
+   today's inflow does. A held layer the water doesn't fill stays below saturation: held means it doesn't drain, not
+   that it is full. This is `exch_hru_gwsoil` moved to Hook 1's place and pointed at the held layers.
+4. **Down: Hook 2, unchanged.** What crosses the table is SWAT+'s recharge, mapped to MODFLOW 6's cells HRU by HRU as
+   now. A released layer drains the same way.
+5. **The flag: from MODFLOW 6's head at the end of the day.** With the top at the profile's bottom, a head above it is
+   the groundwater's pressure into the soil: the table's height in the profile.
+   - A layer is held when the table, weighted by the HRU's ground over its cells, is above the layer's middle.
+   - It is released when the table falls below the layer's bottom.
+   - That half-layer gap [A] keeps a table that sits mid-layer from flipping the flag day to day.
+   - An HRU over cells with different heads takes the weighted table. A flag is per layer, so partial saturation
+     within an HRU is only as fine as its layers.
+
+Stability:
+- Water moves up only through the implicit drain, solved at MODFLOW 6's converging heads, and down only as recharge.
+  Neither is an explicit withdrawal sized from yesterday's head.
+- The flag moves no water. It changes which water may drain, with the half-layer gap against flapping.
+- The drain's elevation stays fixed through the solve: moving it between outer iterations broke convergence when
+  `cap = "room"` was tried.
+
+Groundwater-fed ET:
+- The day's ET from a held layer is refilled by the next day's drain water. The ET shows as groundwater into the soil
+  a day later, not the same day.
+- Unlike the unconditional top-up, a soil whose water table can't supply its ET dries.
+
+swatplus-bmi's session agrees it can be built this way, and that the double store is real. Settled between the two
+sessions on Nov 27, 2026, pending Andrew's decision 2:
+- **Hook 2 fills before it recharges.** Held now means "doesn't drain", not "full", so a held layer can have room
+  left. Water percolating into the first held layer fills the held layers to saturation first, and only the rest
+  becomes `sepbtm`, recharge. MODFLOW 6 gets recharge once the held zone is full, as the soil zone is SWAT+'s.
+- **Hook 1's rule, applied by swatplus-bmi at the hook.** It can't be done at the pause, because the day's ET and
+  lateral inflow change the room before the hook.
+  - Basin Ledger sets the per-layer inflow as now.
+  - At Hook 1 the HRU's total fills the held layers bottom up to saturation.
+  - The rest goes to the unheld layers in proportion to what was set on them. If nothing was set there, it goes to
+    the lowest unheld layer.
+  - If there is none, the rest isn't taken. Basin Ledger then returns it to MODFLOW 6 the next day as recharge on the
+    cells it came from, booked `gw_soil:not_taken`.
+  - Reading the inflow back gives what went into each layer, which the ledger books.
+  - A held layer above an unheld one is refused. Basin Ledger's flags always run up from the bottom.
+- **A released layer drains for days.** That water arrives as recharge, which is correct, not a leak.
+- **Saturation excess, read-only:** `land_surface_water__saturation_excess_runoff_rate` (HRU, m s-1). It is what leaves
+  the top of the profile in `swr_satexcess` whatever `gw_soil_flag`, already part of SWAT+'s surface runoff (or a
+  wetland's inflow). The ledger books it as a part of runoff, not on top of it.
+- **Moving the inflow is a behaviour change for every run that uses it.** At Hook 1 the groundwater raises `soil%sw`
+  before the curve number is set, so runoff changes in every coupled run with groundwater up into the soil, today's
+  `drain` and `gwflow` rules included, the Rappahannock's runs too. swatplus-bmi would move it rather than keep two
+  places. It stays stock when nothing is set, and the nitrate and P hooks don't depend on the timing. Basin Ledger's
+  tests that hold today's rules bit for bit would then hold them to a new baseline. Decision 8 below.
+
+### The questions
+
+- **What swatplus-bmi must expose:**
+  - the flag;
+  - Hook 2;
+  - Hook 1 as the place where the day's groundwater goes into the held layers, with `soil%sw` recomputed;
+  - read-only, each HRU's saturation-excess runoff whatever `gw_soil_flag`, so the ledger can book it (today it is in
+    `surfq` with the rain's);
+  - already there: each layer's bottom depth, water, saturation and field capacity.
+- **Where in the day.** The flag is set at the pause before day d, from day d-1's heads. The drain's water from day
+  d-1 goes into the held layers at Hook 1 on day d, before canopy, snow and the curve number. Everything lags by a
+  day, as every exchange in the link does. No mid-day pause is needed.
+- **Storage counted once.** The soil zone is SWAT+'s, and MODFLOW 6 starts at the profile's bottom. The drain moves
+  water up from MODFLOW 6 and recharge moves it down. Neither store holds the other's water.
+- **A table mid-layer.** The flag's half-layer gap. The layer's water above field capacity still drains until the
+  table passes its middle.
+- **HRUs over cells with different heads.** The drain stays per cell and splits among the cell's HRUs by ground, as
+  today. The flag takes the HRU's ground-weighted table.
+- **Stability.** As above: implicit up, recharge down, a flag that moves no water, a gap against flapping.
+- **Ledger and closure.** Kept from today:
+  - `gw_soil:sent` = `gw_soil:due` = `gw_soil:received`;
+  - recharge HRU by HRU, with `recharge:made` held to SWAT+'s aquifers;
+  - MODFLOW 6's budget.
+
+  New:
+  - `soil:saturation_excess`, booked as runoff in the whole-basin balance;
+  - `gw_soil:held_layers`, the count of held layers each day: a report.
+
+  Tests:
+  - a single column (one HRU on one cell), its head raised and lowered:
+    - the held layers fill from the drain and hold;
+    - nothing percolates or flows sideways out of them;
+    - water crossing the table is recharge;
+    - rain on a full profile spills what the profile couldn't take;
+    - a released layer drains as recharge;
+    - the soil and MODFLOW 6's storage together close every day;
+    - the flag doesn't flap with a table held mid-layer;
+  - no held layers gives today's `drain` run on its new baseline (decision 8: the inflow at Hook 1);
+  - the `drain` and `gwflow` rules are unchanged;
+  - a restart carries the flags and what is due;
+  - the whole basin closes, with recirculation reported;
+  - on the Rappahannock, before and after:
+    - the groundwater-fed fifth's gross up and down;
+    - recirculation;
+    - storm quick flow;
+    - the soil's state before the largest storms;
+    - ET.
+- **SWAT+'s own gwflow (Bailey et al. 2020).**
+  - Its soil transfer (`gwflow_soil`) adds water to the layers below the table, by specific yield times the saturated
+    thickness. That is the `rule = "gwflow"` Basin Ledger already offers, and it doesn't hold the layers saturated
+    either.
+  - Its saturation excess (`gwflow_satexcess`) is a different process. Groundwater above the land surface goes
+    straight to a channel by specific yield, without passing through the soil, and only in cells linked to a channel.
+  - Here, that water comes up through the drain and spills through `swr_satexcess`. The ledger books it as soil
+    saturation excess.
+  - Projects running gwflow are refused, as the groundwater-into-soil inflow already is.
+- **SWAT-VSA (Easton et al. 2008).** SWAT-VSA keeps SWAT's curve number machinery but redefines HRUs by topographic
+  wetness classes. Each class gets its own effective soil storage, so the wettest classes saturate and run off first:
+  variable source areas placed by topography, without a groundwater model.
+  - This link places them by MODFLOW 6's simulated water table, on the HRUs SWAT+ already has.
+  - Runoff from a held profile is the curve number's, raised by the fuller profile, plus what the profile spills. It
+    is not all the rain on the saturated share.
+  - A paper could compare the two on the same basin: storm quick-flow share, where and how often the soil saturates,
+    base flow, and ET.
+  - Caveat: SWAT+'s curve number answers to the whole profile's water (`soil%sw`), so a full lower profile under a dry
+    topsoil still raises it.
+  - If quick flow still falls short, the next step would be a change to SWAT+'s runoff, which the pure-wrapper rule
+    doesn't allow. That would be Andrew's call.
+  - This summary of SWAT-VSA is from memory of the paper and should be checked against it before it's cited.
+
+### For Andrew to decide
+
+1. **Is Hook 2 still a pure wrapper?** It adds no process: SWAT+'s recharge path starts at the table instead of at
+   the profile's bottom, a boundary condition. But it is the first hook that changes the structure of SWAT+'s
+   percolation loop rather than replacing a value. Both sessions think it is the right boundary.
+2. **Where the held layers' water comes from.**
+   - From MODFLOW 6's drain, with the soil zone SWAT+'s (proposed here).
+   - Or swatplus-bmi's top-up to saturation, paid by MODFLOW 6 the same day, with the soil zone in both models.
+3. **MODFLOW 6's top at the profile's bottom.** Proposed, and needed by choice 2's first option. The Rappahannock's
+   build would change.
+4. **The flag's rule.** Held above the layer's middle, released below its bottom (proposed), or another gap.
+5. **Lateral flow from held layers.** None, so MODFLOW 6 carries it (proposed by both sessions), or SWAT+'s own.
+6. **A new rule, `rule = "water_table"`,** beside `drain` and `gwflow` (proposed), or a change to `drain`.
+7. **ET from held layers.**
+   - The plants can draw on saturated layers within the root zone, and the Rappahannock's ET is already about 85 mm a
+     year high. A hold could raise it. This is a risk to measure on the first run.
+   - Under this note's choice 2, a soil whose table can't supply its ET dries. That bounds it.
+8. **When the groundwater goes in, for every run.** Today it goes in after the day's runoff, so it raises the next
+   day's curve number. At Hook 1 it would go in before, and raise the same day's.
+   - Move it for every run, the current rules included (swatplus-bmi's preference: one place, and closer to what
+     happens). Runoff in today's groundwater-to-soil runs changes.
+   - Or keep today's place for HRUs with no held layers, so the current rules stay bit for bit, at the cost of two
+     places in SWAT+.
+
+**Andrew's decisions (Nov 27, 2026, relayed from the Virginia study session).** All eight are settled:
+- **1: Hook 2 is within the pure-wrapper rule,** as a boundary hook. It differs from the per-HRU mid-day pause
+  rejected as too slow: the hooks run inside SWAT+'s own loop on flags set at the daily pause, so no control returns
+  to Python during the day.
+- **2: the held layers are filled from MODFLOW 6's drain,** and the soil zone is SWAT+'s alone (the first option).
+- **3: MODFLOW 6's top is the profile's bottom.** The study's build sets it (the Rappahannock's `mf6/build_mf6.py`),
+  and the link checks it at start-up.
+- **4: the flag's rule as proposed:** held when the table is above the layer's middle, released when it falls below
+  the layer's bottom.
+- **5: lateral flow from held layers is an option,** `held_lateral = "none"` (the default: MODFLOW 6's drains carry
+  it) or `"swatplus"` (SWAT+'s own lateral flow from the held layers, for a region with perched water over a
+  restrictive layer), chosen per study.
+- **6: a new rule, `rule = "water_table"`,** beside `drain` and `gwflow`. `drain` stays as it is.
+- **7: ET from held layers is measured on the first run,** bounded by the drain: a soil whose table can't supply its
+  ET dries.
+- **8: the groundwater inflow moves to Hook 1 for every run, in a new version** of swatplus-bmi and Basin Ledger.
+  Runoff in today's groundwater-to-soil runs (`drain` and `gwflow`, the Rappahannock's included) changes, and Basin
+  Ledger's tests that hold them bit for bit move to the new baseline in that version.
+
+### After the first column runs: drain water the held layers can't take (Andrew, Nov 27, 2026)
+
+The soil drain at the profile's bottom gives C (h - top) every day the head is above the top, whatever room the held
+layers have. Run against swatplus-bmi's first hook build, the agreed Hook 1 put what the held layers couldn't take into
+the lowest unheld layer. With the table mid-profile those layers filled with groundwater and `swr_satexcess` ran it off.
+In the column (a stiff drain, the table 0.35 m down), that was 37 mm a day of drain water and 31 mm a day of runoff.
+With every layer held, the same water wasn't taken and went back to MODFLOW 6. A mid-profile table sent its excess to
+the stream, and a high one sent it back to the aquifer.
+
+**Andrew chose (A):** drain water beyond the held layers' room is never put above the table.
+- In an HRU with any held layer, it isn't taken. It goes back to MODFLOW 6 as recharge on the cells it came from
+  (`gw_soil:not_taken` = `gw_soil:returned`), as in the all-held case.
+- An HRU with no held layers takes its inflow per layer as set, as agreed.
+- Groundwater reaches the surface only through a land-surface relief drain, where the study's model has one and the
+  head rises above the land.
+- The layers above the table get rain and SWAT+'s own redistribution, never groundwater.
+- This is a change to swatplus-bmi's Hook 1, asked for the same day.
+
+### Basin Ledger's side, as built (Nov 27, 2026)
+
+`[groundwater_to_soil] rule = "water_table"`, `cap = "none"`, a DRN `package`, and settings of its own:
+- `held_lateral`: `"none"`, the default, or `"swatplus"`;
+- `top_tolerance`: m, 1.0 by default;
+- `land_surface`: a CSV with each cell's `land_m` and the cell as a map table gives it.
+
+The pieces are in `coupling/gwsoil.py`:
+- **The drain sits at the profile's bottom,** and is never raised.
+  - With `land_surface`, each cell's profile bottom is its land surface less its HRUs' profile depths by ground
+    share (`profile_bottom_cells`).
+  - A cell whose top is that bottom has its drain at its top.
+  - A cell that keeps its land surface as its top (a lake's or stream's cell) has its drain and table a profile below
+    its top. A start-up note counts these cells, since their soil zone is in both models.
+  - Any other cell, or a mapped cell with no land surface, is refused, worst first.
+  - Without the file, each HRU's mean top is checked against hru.con's `elev` less its profile (`top_problems`).
+- **The flags.** After each solve, each HRU's table is its cells' heads above their profile bottoms, weighted by its
+  ground in each (`hru_table_height`; a dry cell counts as far below). The flags follow decision 4 with the previous
+  day's flags for the gap, held from the bottom up (`held_layers`). They are set at the next pause.
+- **The inflow** is set per layer as today (`to_layers`, at the depth to water below the land surface).
+  swatplus-bmi's Hook 1 places it: held layers first, bottom up; under (A), nothing above the table.
+- **What no layer took** (`soil_water__groundwater_inflow_not_taken_rate`, per HRU) is spread back over the cells
+  its water came from, by each map row's part of it (`split_back`). It is added to that day's recharge, the same day
+  SWAT+ couldn't take it.
+- **`held_lateral`** is swatplus-bmi's option, given at its start. Basin Ledger writes a TOML start file in the run
+  folder (`project`, `held_lateral = "none"` or `"swat"`) and initializes SWAT+ from it (swatplus-bmi 0.17.0).
+  Saved states carry it.
+- **The `drain` and `gwflow` rules** warn at start-up when MODFLOW 6's top looks like the profile's bottom under
+  most of the mapped ground (`looks_like_profile_bottom`, from hru.con's `elev`): a model built for `water_table`,
+  where they would put the soil link a second profile down.
+- **The ledger:**
+  - `gw_soil:due` = `gw_soil:received` + `gw_soil:not_taken` (to float32);
+  - `gw_soil:not_taken` = `gw_soil:returned`;
+  - `recharge:received` = `recharge:sent` + `gw_soil:returned`;
+  - reports: `gw_soil:held_layers` (the layers held each day), `soil:saturation_excess` (m3, part of SWAT+'s
+    surface runoff, which SWAT+ prints after its surface lag) and `soil:saturation_excess_to_ponds` (m3, a paddy's or
+    wetland's, which SWAT+'s `swr_satexcess` puts into the ponded water instead).
+- **The balance and the summary.** The whole-basin balance reports `groundwater_to_soil_not_taken`,
+  `runoff_saturation_excess` and `saturation_excess_to_ponds`, all already inside its other terms, and
+  `summary.json` gets a `water_table` block.
+- **A restart** carries the flags and the rows the due water came from, beside the due.
+- **Refused for now:** with `[transport]`, `[salt]` or a `[replay]` record (the returned water's mass isn't
+  carried), and with a swatplus-bmi without the flag, the not-taken read or the saturation-excess read.
+
+swatplus-bmi's interface (its branch `claude/water-table-hold`, 0.17.0, not released):
+- `soil_layer__saturated_zone_flag`: hly, a state, saved;
+- `soil_water__groundwater_inflow_not_taken_rate`: hru, m s-1, read-only;
+- `land_surface_water__saturation_excess_runoff_rate`: hru, m s-1, read-only;
+- the start file's `held_lateral`.
+
+It also notes:
+- the layer just above the table percolates as SWAT+'s bottom layer does (times `perco_lim`);
+- ET and tile flow from held layers stay SWAT+'s own;
+- plant uptake after Hook 1 can leave a held layer slightly below saturation at the pause;
+- nitrate and P set with the inflow stay on the layers they were set on (transport is refused here).
+
+Its per-day cost on a copy of the Rappahannock's 33,525-HRU project was 0.146 s with 67,050 layers held, against
+0.133 s with none.
+
+Tests are in `tests/test_water_table.py`:
+- **Without models:**
+  - the flag's rule and its gap, held from the bottom up;
+  - the weighted table;
+  - the top checks, per HRU and per cell (a lake's cell kept), and the warning for `drain`;
+  - the land surface file;
+  - the return's placement;
+  - the link's day against stand-ins;
+  - the config.
+- **On one HRU over one MODFLOW 6 cell** (`examples/synthetic/model.py`'s `build_column`, the head driven by a GHB),
+  Osu_1hru's HRU made a forest with no management. As it ships it is an irrigated rice paddy, whose saturation excess
+  and seepage pass through its ponded water:
+  - the held layers fill from the drain and hold;
+  - every layer held, then rain spills as saturation excess, and what isn't taken returns as recharge;
+  - a table mid-profile with a stiff drain spills nothing on a dry day, and its excess returns as recharge (A);
+  - a released layer drains as recharge;
+  - the column closes: MODFLOW 6's side and the link to round-off, and SWAT+'s land day by day with the runoff
+    before its surface lag, so the run's residual is what the lag holds at the end;
+  - on the paddy as it ships, the saturation excess is booked to its pond;
+  - a table held mid-layer doesn't flap;
+  - a table below the profile gives the run without the link, bit for bit;
+  - a restart is bit for bit;
+  - `held_lateral = "swatplus"` gives more lateral flow.
+
+  These skip without swatplus-bmi's hooks.
+- **Against swatplus-bmi's first hook build (4c103a2):** all passed but the mid-profile test, which waited for Hook
+  1's change under (A). An apparent gain after a release was the paddy's ponded water, which the first column's
+  balance left out (found by swatplus-bmi's session).
+- **Against its build for (A) (e7909b2, 0.17.0, not released):** all 25 water-table tests pass, and the whole suite
+  passes with the inflow moved before runoff for every run (610 passed): no other test moved past its tolerance.
+
+### The land surface per map row (asked by the Virginia study, approved by Andrew, Nov 27, 2026)
+
+**What the Rappahannock's first coupled run showed** (WY2011-2014, iteration 2's best parameters, swatplus-bmi
+e7909b2, MODFLOW 6's top at the profile's bottom):
+- The ledger closes: 1.0095e9 m3 due = 0.9120e9 received + 0.0974e9 not taken.
+- 171 lake cells keep the DEM top.
+- Held layers are rare: 1,178 a day on average, of about 145,000.
+- Saturation excess was 0.9e6 m3 in four years (0.06 mm a year). Storm runoff, the soil's fullness before storms and
+  ET were the drain rule's.
+
+There are two causes:
+- **The profiles.** They are 3 m deep with a bottom layer of about 1.45 m, so the table must rise above 2.3 m before
+  anything is held. The study is splitting thick layers and keeping the 3 m saprolite under forest only.
+- **The scale.** Each HRU's table is its cells' heads against each cell's mean land surface. The ground that
+  saturates (valley bottoms, the strips along streams) lies metres below a 200 m cell's mean, so it looks metres
+  drier than it is.
+
+**The option: a `land_surface` file per map row.** Each map row (an HRU's piece of a cell) gets its own land surface,
+`L_r`: a CSV with the recharge map's rows in its order (`object`, the cell as the map gives it, `land_m`). It can be
+the recharge map's own table, with a `land_m` column. The study writes it from the 10 m DEM over each piece
+(`build/maps/hru_land.csv`, 1,025,254 rows: median +0.09 m against the cell's mean, IQR -2.0 to +2.3 m, 5th
+percentile -7.6 m).
+- **Each piece's profile bottom** is `B_r = L_r - D_h`, where `D_h` is its HRU's profile depth.
+- **The table in each piece** is `z_r = h_c - B_r` above that bottom, where `h_c` is its cell's head. Its depth to
+  water is `L_r - h_c`, which sets the row's inflow on its layers (`to_layers`, as now).
+- **Each HRU's table** is its pieces' `z_r`, weighted by their ground. The flags follow decision 4, as now.
+- **The cell's profile bottom** is `E_c`, its pieces' `B_r` weighted by their shares of its ground. That is the cell's
+  land surface (its pieces' mean `L_r`) less its HRUs' profiles by share: `profile_bottom_cells` as now. MODFLOW 6's
+  top is checked against it, and a lake's or stream's cell can keep its land surface as before.
+- **The per-row column replaces the per-cell file,** so the cells' land surface and the pieces' can't disagree.
+  `land_surface` takes a per-cell CSV (as built) or a per-row one, told apart by its `object` column.
+- **The drain stays per cell, at `E_c`.** It is MODFLOW 6's top, the same package and conductance.
+
+**The drain's water among the pieces: a change this needs, to keep (A).**
+- Today a cell's drain water is split among its pieces by ground. That works because every piece has the same table.
+- Per row, a piece can be above its table while its cell's drain flows: a hillside piece in a cell whose valley
+  bottom is wet. Its share by ground would go to its bottom layer (`to_layers`' path for a table below the profile).
+  - If its HRU has no held layers, the water goes in above that piece's table, which (A) rules out.
+  - If its HRU has held layers, the water fills them or is returned.
+- **Proposed: split by each piece's soil below its table,** `a_r * max(z_r, 0)`. This is gwflow's split within a row
+  (by thickness below the table) carried across a cell's pieces.
+  - Because `E_c` is the pieces' mean bottom by ground, `sum(a_r * z_r) = A_c * (h_c - E_c)`. A cell whose drain flows
+    always has a piece with `z_r > 0`. If rounding ever left none, the split falls back to ground.
+  - Where a cell's pieces have the same bottom (the same land and profile), it is today's split exactly.
+  - This is [A]: the split could also be by ground among the pieces with `z_r > 0`. The proposed one sends most to
+    the lowest pieces, where the table is highest in the soil.
+
+**Does it conserve water?** Yes. Nothing moves that isn't booked today:
+- Each cell's split adds to 1, so its whole drain outflow is due in SWAT+ the next day, as now.
+- `gw_soil:due` = `received` + `not_taken`, and `not_taken` = `returned`, spread back over the rows it came from
+  (`split_back`), recharge the same day, as now.
+- The flags move no water. A piece held while its cell's head is between its bottom and `E_c` gets no drain water. Its
+  held layers fill from rain and don't drain, so their water leaves by ET, lateral flow (with `held_lateral`) or
+  saturation excess, all in SWAT+'s own balance. MODFLOW 6 gets less recharge from that HRU, which is the point.
+- Tests:
+  - a day against stand-ins, with pieces of one cell at different land surfaces, closes;
+  - the split sends nothing to a piece above its table;
+  - with every piece at its cell's land surface and equal profiles, a run is the per-cell run bit for bit.
+
+**Against (A):**
+- With the split above, no piece above its own table gets drain water.
+- Within an HRU, swatplus-bmi's Hook 1 fills its held layers (from the HRU's weighted table) and returns the rest.
+- An HRU with no held layers takes the inflow per layer as set: below its wet pieces' tables, but above its own
+  weighted table. That is today's case of a table in the bottom layer below its middle, now possible a little higher.
+  SWAT+'s single column per HRU can't keep a wet piece's water apart from a dry one's. It percolates back down, as
+  recirculation.
+
+**What it doesn't fix, and what it adds:**
+- **The HRU's resolution.** Flags are per HRU, so this helps as far as the HRUs separate low ground. An HRU spread
+  over valley bottoms and hillsides averages them. HRUs split by landscape position (riparian, valley bottom) take it
+  fully.
+- **A second pore store under low pieces.** Where a cell's head is between a piece's bottom `B_r` and `E_c`, the
+  piece's soil below the table is also below MODFLOW 6's top. That space is counted twice: in MODFLOW 6 as aquifer
+  storage, and in SWAT+ as held soil.
+  - It isn't a mass error: every m3 is in one ledger.
+  - Held means "doesn't drain", not "full", and the drain at `E_c` gives those layers nothing. So they absorb rain that
+    would run off saturated ground, and the table doesn't feed their ET.
+  - On those pieces it understates saturation excess and groundwater ET, while it cuts their recharge correctly.
+  - The overlap is at most `E_c - B_r` high, the piece's depth below its cell's mean for equal profiles. This is the
+    lake cells' double store (as built), now on low ground.
+- **Not built: a drain per piece.** One DRN entry per map row at `B_r` (the cell's conductance by ground share) would
+  give low pieces their groundwater inside MODFLOW 6's solve, even with the head below the cell's top, and the split
+  would come out of the solve.
+  - It changes each cell's discharge: the drain at the lowest piece pulls the head lower (the valley bottom's
+    seepage).
+  - It needs the study's DRN package with an entry per row, and the attach check changes.
+  - What the held layers can't take still returns as recharge the same day, a loop the solve can't see.
+  - This is Andrew's to decide, and not part of this option.
+
+**Cells only partly under HRU ground (after the Rappahannock's first per-row run, Nov 27, 2026).**
+- The first run stopped at the top check: 2,035 cells were neither at the profile's bottom nor at the land surface.
+  - Example: node 22208, top 994.62 m, its pieces' mean land 1062.22 m.
+  - These are mostly cells on the Blue Ridge divide. Their pieces cover only the inside part of the cell, while
+    MODFLOW 6's top is the whole cell's 3DEP mean less the profile.
+- **The study's proposal:**
+  - a per-cell file beside the per-row one (`cell_land_surface`), for the top check and the cell's drain;
+  - each piece's own `land_m` for its table and the split.
+- **It conserves,** as before: the split still adds to 1, and the not-taken water is still returned.
+- **But a drain at the whole cell's top breaks (A) on exactly these cells.**
+  - The pieces' mean bottom `E_p` is no longer the drain's elevation `E_c`, so `sum(a_r * z_r) = A_c * (h_c - E_p)`,
+    not `A_c * (h_c - E_c)`.
+  - On node 22208 the drain at 994.62 m gives water whenever the head is above it. Every piece's bottom is about
+    1,059 m, so no piece is wet.
+  - The split then falls back to ground, and that water goes into the bottom layers of soils some 60 m above the
+    table.
+- **As built:**
+  - `cell_land_surface` is taken for the top check, and for which cells keep their land surface (lakes, streams).
+  - The tables, the split and **each cell's drain** use the pieces: the drain sits at the pieces' mean profile
+    bottom, `E_p`.
+  - Where a cell is wholly under HRUs, `E_p` is the cell's top within the tolerance, as before.
+  - Where it is partly under them, the drain sits above or below the top. Nothing comes up until the head reaches
+    the pieces' soil. A start-up note counts these cells and gives the largest offset.
+  - Without `cell_land_surface`, the cells' land surface is their pieces' mean, as before.
+- MODFLOW 6's top stays the whole cell's (the study's choice, right for MODFLOW 6). On a divide cell the head reaches
+  the drain only above the top, where MODFLOW 6 stores by specific storage alone. That is the grid's limit there, not
+  a loss.
+
+**As built (Nov 27, 2026):**
+- `coupling/gwsoil.py`:
+  - each row's bottom, the HRUs' tables and the split from it;
+  - `profile_bottom_cells` taking the cells' land surface as their pieces' mean.
+- `driver.py`: a `land_surface` file with an `object` column is read per row (`is_per_row`, `read_row_land`).
+  - Each row's object and cell must be the recharge map's row's, in its order, and each needs a `land_m`.
+  - The study's 1,025,254 rows read in 1.3 s.
+  - `summary.json`'s `water_table` block says which land surface the run took (`"rows"`, `"cells"` or `"hru"`).
+- The ledger, the restart state and the refusals don't change. The land surface is read at the start, not saved.
+- Tests (`tests/test_water_table.py`, 7 more, 32 in all, passing against swatplus-bmi e7909b2):
+  - each piece's table and its HRU's;
+  - the split, and its fallback;
+  - the cells' land from their pieces, and the file per row (by cell or node, the map's own table too, and its
+    refusals);
+  - a hollow held while its cell is below its top, then taking all the drain's water with none to the rise, and
+    closing;
+  - pieces at their cells' land surface give the per-cell link bit for bit;
+  - the refusals and the config;
+  - on the column, a file per row through the driver gives the run without it, to round-off.
+
+### Drain water with nowhere to go, and recirculation counted once (asked by the Virginia study, approved by Andrew, Nov 27, 2026)
+
+**What the Rappahannock's run with the land surfaces showed** (per-row and cell land surfaces, swatplus-bmi e7909b2,
+WY2011-2014, iteration 2's best):
+- It closes. But of 1.574e9 m3 sent up, 0.866e9 m3 wasn't taken: about 52 mm a year over the basin.
+- The held layers of the valley-bottom pieces are full. The drain still gives `C (h - E)` every day, and that water
+  goes back as recharge the same day: a loop that moves nothing.
+- The recirculation share rose from 0.556 (the per-cell link) to 0.618, while the water that really entered the soil
+  fell from 86 to 61 mm a year. Returned water was counted once as water up and again as recharge.
+
+**1. The drain limited to the held layers' room: `cap = "room"` with `water_table`.** Before each solve, cell by
+cell:
+- `q_c = C_c x max(h0_c - E_c, 0)`: what the drain would give at the day's starting heads (its conductance times
+  its auxiliary multiplier, as MODFLOW 6 takes it).
+- Each piece's part of it, `w_r = q_c x s_r`, by the split as built at those heads.
+- What the piece can take, `t_r`:
+  - if its HRU has held layers, `min(w_r, a_r x R_h)`, where `R_h` is the room in the HRU's held layers (saturation
+    less water, m, summed over them) at SWAT+'s pause;
+  - else `w_r`. Under (A) an HRU with no held layers takes its inflow as set.
+- The drain's conductance for the day is `C_c x sum(t_r) / q_c` (unchanged where `q_c` is 0). After the solve its
+  water goes to the pieces by `t_r` (by the split as built where every `t_r` is 0).
+
+What it does:
+- A cell whose pieces are all full gets conductance 0, and nothing is drawn from MODFLOW 6.
+- It opens again by itself as soon as ET, plant uptake or a falling table make room. A cell with no held layers isn't
+  limited.
+- The room is read at the pause after day d. The solve's water goes in at Hook 1 of day d+1, after that day's ET, so
+  the room there is at least what was read.
+- On a fixed table the drain settles at the day before's ET, and the held layers stay about a day's ET below
+  saturation.
+
+Why this rule, and not the on/off rule or a threshold:
+- **On/off** (0 when full, open again on any room) flaps on a steady table with ET.
+  - One day's ET of room opens the whole drain.
+  - The held layers take that ET and return the rest, and the drain closes again.
+  - That is every other day: half the loop left, and half the table's water for ET lost.
+- **A threshold on not_taken / due** adds a parameter and flaps around it the same way.
+- **Scaling by the share of pieces with room** fixes the mixed cell, but not a full piece's ET.
+- **Scaling by the room** is the on/off rule with its threshold at the room itself:
+  - no parameter, and nothing to flap;
+  - 0 when full, and the full conductance when the room is more than the drain gives.
+
+How it fits:
+- It is the drain rule's `cap = "room"` (no cell gives more than its soils can take), applied to the held layers'
+  room and to the conductance, not by raising the drain.
+- The drain stays at the table's zero, the elevation the flags are measured from. It is set once a day, so MODFLOW
+  6 stays implicit within the day, and the lag is the usual one day.
+- **What isn't taken now** is only:
+  - the head's rise during the day;
+  - a held set that changes with the day's heads (a newly held layer's room counts from the next day);
+  - float32 room.
+  It still returns as recharge under (A).
+- **The conductance** is the package's input, taken again where MODFLOW 6 reads a new period's (an entry that differs
+  from what was set the day before).
+- **Restart.** Nothing new is carried: the room is SWAT+'s saved state, the flags are already carried, and the
+  conductance is the input.
+- The ledger and its identities don't change. The flows do.
+- **`cap` has no default for any rule.** `"room"` is the one recommended with `water_table`. `"none"` is the link as
+  built before, every day's excess returned. It is kept for comparison and for (A)'s return path.
+- **Reports:**
+  - `gw_soil:drains_limited`: the cells whose conductance was cut that day;
+  - `gw_soil:drains_closed`: the cells cut to 0.
+  - `summary.json`'s `water_table` block gives both, summed over the run as cell-days, and the cap.
+
+**2. Recirculation counted once.**
+- The returned water isn't recharge from the soil, and it never came up into the soil. The whole-basin balance and
+  `summary.json`'s `recirculation` block take it out of both and book it apart:
+  - `recharge_gross` = recharge received less `gw_soil:returned`;
+  - `groundwater_to_soil` = sent less `gw_soil:returned`, which is what went into the soil, up to what is in transit
+    at the start and the end;
+  - `recharge_net` is unchanged;
+  - the share is the two's;
+  - `recharge_returned` (balance) and `returned_not_taken` (summary) are the returned water.
+- **Per HRU** (`[outputs] recirculation`), SWAT+'s percolation and `gwsoilq` never held it:
+  - the returned water goes straight into MODFLOW 6's recharge;
+  - `gwsoilq` is what Hook 1 put in.
+  `recirculation_hru.csv` gets the not-taken water per HRU as a column of its own, `groundwater_not_taken`.
+  `balance.recirculation` reports it beside the others (m3 and mm a year), in none of them.
+- Without `water_table`, nothing is returned and every number is as before.
+- Bookkeeping only: no flow changes.
+
+**As built (Nov 27, 2026):**
+- **`coupling/gwsoil.py`:**
+  - `held_room` and `room_takes`;
+  - `GroundwaterToSoil._limit` before each solve: the conductance and the plan per row;
+  - after the solve, a cut cell's water goes to its pieces by the plan.
+  - `Models.entry_multipliers` serves several groundwater models.
+- **`config.py`** takes `cap = "room"` with `water_table`.
+- **`driver.py`:**
+  - books `gw_soil:drains_limited` and `gw_soil:drains_closed`;
+  - `summary.json`'s `water_table` block gives the cap and both counts as cell-days;
+  - the `recirculation` block takes the returned water out and gives it as `returned_not_taken`.
+- **`balance.py`:**
+  - `recharge_returned`, and gross recharge and groundwater to soil without it;
+  - `HruWater` sums swatplus-bmi's not-taken rate per HRU into `recirculation_hru.csv`'s `groundwater_not_taken`;
+  - `recirculation` reports it, reading 0 from a file without the column.
+- **On the column** (150 days, the stage raised above the surface and lowered again):
+  - not taken: 557,924 m3 with `cap = "none"`, 1,081 m3 with `"room"`;
+  - taken by the soil: 22,753 m3 and 22,324 m3;
+  - the stream within 1%.
+  - With the table held mid-profile, it was 658,560 m3 not taken against 14, with the same water taken and the same
+    stream to 1e-3. Once the held layers are full the drain stays shut every day: no flapping.
+- **On a rising table** the drain opens every other day. A layer newly held at the day's end counts its room from the
+  next day: it fills, then the drain is shut until the next layer is held. What the soil takes is within 2% of the
+  run without the cap.
+- **Tests** (`tests/test_water_table.py`, 8 more):
+  - without models:
+    - the held room and each piece's take;
+    - a full profile shuts the drain, ET's room opens it to that room, a new period's conductance is taken, and room
+      for more gives the input's conductance bit for bit;
+    - a mixed cell cut to its pieces' room, its water to the piece with room;
+  - on the column:
+    - a full profile draws nothing from MODFLOW 6 and draws again when ET makes room;
+    - the ledger closes;
+    - a steady full table stays shut without flapping, with the soil's water and the stream as without the cap;
+    - a restart is bit for bit;
+    - the recirculation without the returned water, in the balance, the summary and per HRU.
+
+## The routing fix passed through to swatplus-bmi (approved by Andrew Nov 27, 2026, for the Virginia study; built)
+
+**Why.** With `rte_cha` 1 on a daily step, SWAT+ 62.0.1's `ch_rtmusk.f90` resets the stability substeps that
+`sd_hydsed_init.f90` computed. Each day becomes one Muskingum step with a substep's coefficients, so every reach delays
+about 0.6 day whatever its K. swatplus-bmi 0.18.0 fixes it when a run asks (`routing_fix = "muskingum_daily"` in its
+start file; its `patches/62.0.1/0004`). The fix is swatplus-bmi's, as a wrapper's bug fix; Basin Ledger only passes the
+setting on.
+
+**The setting.** `[swatplus] routing_fix = "muskingum_daily"` (or `"none"`), checked on read, refused before
+swatplus-bmi 0.18.0.
+- Set, Basin Ledger writes it into swatplus-bmi's start file (`swatplus-bmi.toml` in the run folder): the project,
+  then `held_lateral` when the water-table link is on, then `routing_fix`.
+- Unset, nothing changes. A run without the water-table link starts SWAT+ from its project folder, as before, and the
+  link's start file is the same bytes. `summary.json` gives the setting when it is set.
+
+**Restarts.** swatplus-bmi's saved state carries the setting, and a load takes it whatever the start file says: a state
+saved with the fix goes on fixed, and one saved before 0.18.0 (or without the fix) goes on as stock. So Basin Ledger
+saves the setting in `basin.json` and refuses a restart whose config says otherwise. A `basin.json` without it was
+saved unset, which is `"none"`.
+
+**Tested** (`tests/test_routing_fix.py`): the setting and its refusals; the start file's lines and their order, and the
+water-table link's file as it was; on the synthetic example with Muskingum routing, the key reaching the start file and
+SWAT+ routing cha01 differently (a year's daily outflow, its centroid 5 days earlier), and no start file unset; refused
+before 0.18.0; a restart refused against another setting either way, and with the same one matching the unbroken run
+to the bit. How the fix routes is swatplus-bmi's to test (its `tests/test_routing_fix.py`).
 
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 

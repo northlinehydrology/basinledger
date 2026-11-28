@@ -601,6 +601,10 @@ class Models:
         """A per-entry variable of a package named alike in several models, their entries one after the other."""
         return np.concatenate([v.entry_values(var, package) for v, _ in self._parts(package)])
 
+    def entry_multipliers(self, package: str) -> np.ndarray:
+        """Each entry's multiplier, the models' entries one after the other."""
+        return np.concatenate([v.entry_multipliers(package) for v, _ in self._parts(package)])
+
     def set_entries(self, var: str, package: str, values: np.ndarray):
         """A per-entry variable of a package named alike in several models, split back to each."""
         values = np.asarray(values, float)
