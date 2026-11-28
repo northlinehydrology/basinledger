@@ -367,15 +367,6 @@ def takes_start_file() -> bool:
     return m is not None and (int(m.group(1)), int(m.group(2))) >= (0, 17)
 
 
-def write_start_file(path, project, held_lateral: str):
-    """swatplus-bmi's start file for ``rule = "water_table"``: the project and ``held_lateral`` (Basin Ledger's
-    "none" or "swatplus", swatplus-bmi's "none" or "swat"). Paths written POSIX-style, so Windows' backslashes aren't
-    read as TOML escapes."""
-    from pathlib import Path
-    path = Path(path)
-    path.write_text(f'project = "{Path(project).resolve().as_posix()}"\n'
-                    f'held_lateral = "{SWATPLUS_BMI_HELD_LATERAL[held_lateral]}"\n')
-    return path
 DAY = 86400.0
 
 

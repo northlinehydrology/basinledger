@@ -214,12 +214,26 @@ class Basin:
                 from . import weather as W
                 W.write_first_days(swat_dir, cfg.weather, S._period(swat_dir)[0])
             self.swat = SwatPlusBmi()
-            start = str(swat_dir)
+            start, options = str(swat_dir), {}
             gs = cfg.groundwater_to_soil
             if gs and gs["rule"] == "water_table" and G.takes_start_file():
                 # held_lateral is swatplus-bmi's own option, given at its start through a TOML file (0.17.0)
-                start = str(G.write_start_file(self.folder / "swatplus-bmi.toml", swat_dir,
-                                               gs.get("held_lateral", "none")))
+                options["held_lateral"] = G.SWATPLUS_BMI_HELD_LATERAL[gs.get("held_lateral", "none")]
+            if cfg.routing_fix is not None:  # swatplus-bmi's too (0.18.0); unset, the start is as before
+                if not S.has_routing_fix():
+                    self._problem(ValueError(f"[swatplus] routing_fix needs swatplus-bmi 0.18.0 or later (this is "
+                                             f"{'.'.join(map(str, S._swatplus_bmi_version()))})"))
+                else:
+                    options["routing_fix"] = cfg.routing_fix
+            if saved is not None and saved.get("routing_fix", "none") != (cfg.routing_fix or "none"):
+                # swatplus-bmi's saved state carries the setting and a load takes it (one saved before 0.18.0 routes
+                # as stock), whatever the start file says
+                self._problem(ValueError(
+                    f"[swatplus] routing_fix is {cfg.routing_fix or 'none'!r} but the saved state in {restart} was run "
+                    f"with {saved.get('routing_fix', 'none')!r}: swatplus-bmi keeps the setting a state was saved "
+                    f"with, so this restart would route as that. Restart from a state saved with the same setting"))
+            if options:
+                start = str(S.write_start_file(self.folder / "swatplus-bmi.toml", swat_dir, **options))
             try:
                 self.swat.initialize(start)
             except ExchangeError as e:
@@ -2526,6 +2540,7 @@ class Basin:
             "land_held": self._land_held,
             "utilities_held": {n: c.held for n, c in self.utilities.items()},
             "transfers_held": {n: tr.state() for n, tr in self.transfers.items()},
+            **({"routing_fix": self.cfg.routing_fix} if self.cfg.routing_fix is not None else {}),
             **({"hru_water": self.hru_water.state()} if getattr(self, "hru_water", None) is not None else {}),
         }))
 
@@ -2563,6 +2578,8 @@ class Basin:
             "totals": {k: v for k, v in self.ledger.totals().items() if not math.isnan(v)},
             "in_transit": self.due,
         }
+        if self.cfg.routing_fix is not None:
+            summary["routing_fix"] = self.cfg.routing_fix
         if self.weather:
             summary["weather"] = {k: {"from": w["from"].isoformat(), "to": w["to"].isoformat(), "gages": w["series"].gages}
                                   for k, w in self.weather.items()}

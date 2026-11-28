@@ -44,6 +44,26 @@ def places_of_use_fixed() -> bool:
     return _swatplus_bmi_version() >= (0, 14)
 
 
+ROUTING_FIXES = ("none", "muskingum_daily")  # swatplus-bmi 0.18.0's routing_fix, given to SWAT+ at its start
+
+
+def has_routing_fix() -> bool:
+    """Whether the installed swatplus-bmi takes ``routing_fix`` in its start file (0.18.0 and later):
+    ``"muskingum_daily"`` fixes SWAT+ 62.0.1's daily Muskingum routing (``rte_cha`` 1), which resets the stability
+    substeps so every reach delays about 0.6 day whatever its K. It touches daily Muskingum only."""
+    return _swatplus_bmi_version() >= (0, 18)
+
+
+def write_start_file(path: Path, project: Path, **options: str) -> Path:
+    """swatplus-bmi's start file (0.17.0 and later), a TOML file given to ``initialize`` in place of the project
+    folder: the project, then each option given, in order (``held_lateral``, ``routing_fix``). Paths written
+    POSIX-style, so Windows' backslashes aren't read as TOML escapes."""
+    path = Path(path)
+    path.write_text(f'project = "{Path(project).resolve().as_posix()}"\n'
+                    + "".join(f'{k} = "{v}"\n' for k, v in options.items()))
+    return path
+
+
 RESERVOIR = "res:"  # a place of use's source written "res:<reservoir>" draws from that reservoir, else a channel
 
 

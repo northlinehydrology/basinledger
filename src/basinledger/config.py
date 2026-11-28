@@ -16,6 +16,9 @@ Paths are relative to the config file. ``{swatplus_refdata}`` stands for the exa
                                         #   {name, reservoir = "res01"}; sharing a channel or reservoir, served in
                                         #   this order (the first is senior)
     point_sources = [{name = "wwtp", channel = "cha01"}]   # or {name, reservoir = "res01"}: into a reservoir
+    # routing_fix = "muskingum_daily"   # optional, swatplus-bmi 0.18.0: SWAT+ 62.0.1's daily Muskingum routing
+                                        #   (rte_cha 1) fixed; "none" or unset routes as stock. Given to swatplus-bmi
+                                        #   in its start file; a restart keeps the setting it was saved with
 
     # or [nextgen]                      # the surface model: a finished NGIAB run, replayed (coupling/nextgen.py)
     # run = "{nextgen_michigan}/runs/scenarios/baseline"
@@ -473,6 +476,7 @@ class ExampleConfig:
     recharge_add: bool = False          # a recharge package Basin Ledger adds, for a model without one
     weather: dict | None = None        # kind -> CSV path, and change (weather.py)
     groundwater_to_soil: dict | None = None  # rule, cap, package (coupling/gwsoil.py)
+    routing_fix: str | None = None     # [swatplus] routing_fix: swatplus-bmi's, into its start file; None unset
     soil_cover: object | None = None   # soilcover.Settings: the soil cover SWAT+'s soil evaporation sees
     mf6_length_units: str | None = None  # the model's, where its DIS leaves them undefined (coupling/modflow6.py)
     mf6_time_units: str | None = None
@@ -591,6 +595,10 @@ def load(path: str | Path) -> ExampleConfig:
     if ("swatplus" in c) == ("nextgen" in c):
         raise ValueError(f"{path}: needs one surface model, [swatplus] or [nextgen]")
     sw = c.get("swatplus", {})
+    if "routing_fix" in sw:
+        from .coupling.swatplus import ROUTING_FIXES
+        if sw["routing_fix"] not in ROUTING_FIXES:
+            raise ValueError(f"{path}: [swatplus] routing_fix is one of {ROUTING_FIXES}; got {sw['routing_fix']!r}")
     rch = c.get("recharge", {})
     if rch.get("source", "aquifer") not in ("aquifer", "hru"):
         raise ValueError(f"{path}: [recharge] source must be aquifer or hru")
@@ -795,6 +803,7 @@ def load(path: str | Path) -> ExampleConfig:
         recharge_source=rch.get("source", "aquifer"),
         weather=weather,
         groundwater_to_soil=dict(gs) if gs is not None else None,
+        routing_fix=sw.get("routing_fix"),
         soil_cover=soil_cover,
         irrigation=irrigation,
         lakes=lakes,
