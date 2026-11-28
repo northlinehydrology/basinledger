@@ -7,7 +7,7 @@ returns, from public data, as a calculator. Basin Ledger accounts for a whole ba
 quality day by day across the coupled models, so a study can say where a large user's water comes from, where it goes,
 and what changes in the streams and the aquifer.
 
-Status (Nov 27, 2026, release 0.19.0). Built and tested on synthetic examples:
+Status (Nov 28, 2026, release 0.20.0). Built and tested on synthetic examples:
 
 - the water-user interface, with a user's other outputs (power, time, heat not removed) booked each day;
 - routes through SWAT+ and MODFLOW 6, and the utility chain;
@@ -2236,7 +2236,7 @@ growing from the start, its paddy and management schedule taken away):
 - `"swat"`: the same run as off, to the bit, every day;
 - `"leaves"`: the forest's ET rises and the whole basin still closes.
 
-## A water-table link between MODFLOW 6 and SWAT+'s soils (proposed Nov 27, 2026; all eight decisions taken, Nov 27; being built)
+## A water-table link between MODFLOW 6 and SWAT+'s soils (proposed Nov 27, 2026; all eight decisions taken, Nov 27; built, released in 0.20.0)
 
 Requested by Andrew on Nov 27, 2026, from the Rappahannock's joint calibration. This is a design note only: no code
 until he agrees it. swatplus-bmi's side is being written in its own session, and this note will take it in when it
