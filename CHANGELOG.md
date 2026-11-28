@@ -23,6 +23,16 @@
     much (docs/design.md, The land surface per map row). `cell_land_surface` (per cell) beside it checks
     MODFLOW 6's top against the whole cell where a cell is only partly under HRU ground. The drain stays at the
     pieces' mean profile bottom, so (A) holds there too.
+  - `cap = "room"` with `water_table` (asked by the Virginia study, approved by Andrew, Nov 27). Each day, each
+    cell's drain conductance is cut to the room in its pieces' held layers at SWAT+'s pause: 0 where they are full,
+    the input's where nothing is short. This ends the loop where full held layers returned the drain's water as
+    recharge every day. `cap = "none"` keeps every day's excess returned. Reported as `gw_soil:drains_limited` and
+    `gw_soil:drains_closed` (docs/design.md, Drain water with nowhere to go).
+  - The recirculation counts only water that entered the soil. The returned water is taken out of gross recharge and
+    groundwater to soil and booked apart:
+    - `recharge_returned` in the balance;
+    - `returned_not_taken` in `summary.json`'s `recirculation` block;
+    - `groundwater_not_taken` per HRU in `recirculation_hru.csv` and `balance.recirculation`.
   - swatplus-bmi 0.17.0 moves the groundwater inflow before runoff for every run, so the `drain` and `gwflow` rules'
     numbers change with it.
   - Not yet with transport, salt or a replay record. Tested in `tests/test_water_table.py`, whose SWAT+ tests skip

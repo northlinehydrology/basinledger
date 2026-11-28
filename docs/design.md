@@ -2810,6 +2810,43 @@ How it fits:
 - Without `water_table`, nothing is returned and every number is as before.
 - Bookkeeping only: no flow changes.
 
+**As built (Nov 27, 2026):**
+- **`coupling/gwsoil.py`:**
+  - `held_room` and `room_takes`;
+  - `GroundwaterToSoil._limit` before each solve: the conductance and the plan per row;
+  - after the solve, a cut cell's water goes to its pieces by the plan.
+  - `Models.entry_multipliers` serves several groundwater models.
+- **`config.py`** takes `cap = "room"` with `water_table`.
+- **`driver.py`:**
+  - books `gw_soil:drains_limited` and `gw_soil:drains_closed`;
+  - `summary.json`'s `water_table` block gives the cap and both counts as cell-days;
+  - the `recirculation` block takes the returned water out and gives it as `returned_not_taken`.
+- **`balance.py`:**
+  - `recharge_returned`, and gross recharge and groundwater to soil without it;
+  - `HruWater` sums swatplus-bmi's not-taken rate per HRU into `recirculation_hru.csv`'s `groundwater_not_taken`;
+  - `recirculation` reports it, reading 0 from a file without the column.
+- **On the column** (150 days, the stage raised above the surface and lowered again):
+  - not taken: 557,924 m3 with `cap = "none"`, 1,081 m3 with `"room"`;
+  - taken by the soil: 22,753 m3 and 22,324 m3;
+  - the stream within 1%.
+  - With the table held mid-profile, it was 658,560 m3 not taken against 14, with the same water taken and the same
+    stream to 1e-3. Once the held layers are full the drain stays shut every day: no flapping.
+- **On a rising table** the drain opens every other day. A layer newly held at the day's end counts its room from the
+  next day: it fills, then the drain is shut until the next layer is held. What the soil takes is within 2% of the
+  run without the cap.
+- **Tests** (`tests/test_water_table.py`, 8 more):
+  - without models:
+    - the held room and each piece's take;
+    - a full profile shuts the drain, ET's room opens it to that room, a new period's conductance is taken, and room
+      for more gives the input's conductance bit for bit;
+    - a mixed cell cut to its pieces' room, its water to the piece with room;
+  - on the column:
+    - a full profile draws nothing from MODFLOW 6 and draws again when ET makes room;
+    - the ledger closes;
+    - a steady full table stays shut without flapping, with the soil's water and the stream as without the cap;
+    - a restart is bit for bit;
+    - the recirculation without the returned water, in the balance, the summary and per HRU.
+
 ## Extending an existing MODFLOW 6 model (decided Nov 14, 2026; first step built)
 
 **Decided (Andrew).** Basin Ledger gets a second way in: take a MODFLOW 6 model someone already has (a consultant's,

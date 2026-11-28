@@ -61,8 +61,9 @@ estimates one campus's water from public data. Basin Ledger follows that water t
 - a water-table link (`rule = "water_table"`, built Nov 27, 2026, waiting for swatplus-bmi 0.17.0's held soil
   layers): SWAT+'s layers below MODFLOW 6's water table held, filled from a drain at the profile's bottom (MODFLOW 6's
   top, checked per cell or per HRU), rain on a full profile spilling as saturation excess, and drain water the held
-  layers can't take returned as recharge; optionally each HRU's piece of a cell with its own land surface, its own
-  table (a `land_surface` file per map row);
+  layers can't take returned as recharge, or with `cap = "room"` the drain cut each day to the held layers' room;
+  optionally each HRU's piece of a cell with its own land surface, its own table (a `land_surface` file per map
+  row);
 - conservation across every link: recharge kept on each aquifer's own area, water from outside the models booked as
   its own account, a channel's loss limited to what it carries, and the coupling's settings checked at start-up;
 - a start consistent with the coupling (`Basin.spin_up`), and warnings for a start whose soils can drift;
@@ -305,7 +306,8 @@ change = {temperature = 2.0}   # a scenario's change, on the series or the proje
 
 [groundwater_to_soil]          # optional: MODFLOW 6's water up into SWAT+'s soil layers (needs [recharge] source =
 rule = "drain"                 #   "hru" and [exchange]); rule ("drain", "gwflow" or "water_table") and cap ("none"
-cap = "none"                   #   or "room") have no default
+cap = "none"                   #   or "room"; with water_table, "room" cuts the drain to the held layers' room) have
+                               #   no default
 package = "soil"               # a DRN package with one entry on each mapped cell
 # held_lateral = "none"        # water_table only: "none" or "swatplus" (lateral flow from held layers); how far
 # top_tolerance = 1.0          #   (m) MODFLOW 6's top may sit from the profile's bottom; each cell's land surface
