@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.0 (2026-11-28)
 
 - **A water-table link** (`[groundwater_to_soil] rule = "water_table"`; docs/design.md, A water-table link between
   MODFLOW 6 and SWAT+'s soils). Andrew's design of Nov 27. It needs swatplus-bmi 0.17.0's held soil layers and is

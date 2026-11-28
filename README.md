@@ -27,7 +27,7 @@ Every volume and mass that moves between models is entered in a ledger twice, as
 they differ stops the run. Basin Ledger is a sibling of [Water Ledger](https://waterledger.org). Water Ledger
 estimates one campus's water from public data. Basin Ledger follows that water through a basin's streams and aquifers.
 
-**Status: early (0.19.0).** Built and tested:
+**Status: early (0.20.0).** Built and tested:
 
 - the water-user interface, with controls a rule can set (a withdrawal limit, dry mode), and a user's other outputs
   (power, time, heat not removed) booked each day;
@@ -397,6 +397,8 @@ and returns that share the next day. See [docs/design.md](docs/design.md#water-u
 | Recirculation | net recharge is gross less what came up; the groups add up and the split follows the soil's water; each HRU's sums agree with the ledger; the ledger is the same to the bit with the table on; a restart carries the sums |
 | Stage floor | a floor that never binds gives the same run to the bit; a floor above the stage holds cell by cell as the ledger and the CSV say; the basin closes; bad settings refused |
 | Soil cover | SWAT+'s own cover set back gives the same run to the bit; leaves and residue on a forest raise soil evaporation and the water balance still closes; HRUs by name and land use; refused without swatplus-bmi 0.16.0 |
+| Water-table link | layers held below the table from the bottom up and released below their bottom; the drain fills them, rain on a full profile spills as saturation excess, and what the held layers can't take goes back as recharge, never above the table; with `cap = "room"` a full profile draws nothing from MODFLOW 6 and room opens the drain again, without flapping; each piece of a cell on its own land surface; recirculation counted once; the basin closes; a restart bit for bit |
+| Routing fix | the setting reaches swatplus-bmi's start file and SWAT+ routes a Muskingum channel differently; unset, no start file; refused before swatplus-bmi 0.18.0; a restart against another setting refused, with the same one bit for bit |
 | Restarts and scenarios | saved after a warm-up and carried on, runs match unbroken runs bit for bit; a case with no change matches the baseline |
 | Start-up warnings | soils that start empty, and a warm-up whose soils haven't settled, are warned of, not stopped |
 | Command line, calibration | outputs and status written; statistics on known values; the forward model writes simulated values at observations |
