@@ -191,7 +191,7 @@ pip install "basinledger[users,nextgen]"      # or: uv add "basinledger[users,ne
 On Windows x86-64, Linux x86-64 (glibc 2.34 or later: Ubuntu 22.04, RHEL 9 and newer) and macOS 15 or later on Apple
 silicon, that's all (0.10.0). Both models come with it, nothing to compile or fetch:
 
-- **SWAT+**, built with the exchange mode, inside swatplus-bmi's wheel (swatplus-bmi 0.14.0 or later);
+- **SWAT+**, built with the exchange mode, inside swatplus-bmi's wheel (swatplus-bmi 0.18.0 or later);
 - **MODFLOW 6's shared library** (`libmf6`), USGS's release unchanged (6.8.2), inside Basin Ledger's own wheel
   (`basinledger/_lib/`, with a note on its source and license).
 

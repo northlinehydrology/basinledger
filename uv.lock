@@ -107,7 +107,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyyaml", marker = "extra == 'users'", specifier = ">=6" },
     { name = "shapely", marker = "extra == 'gis'", specifier = ">=2" },
-    { name = "swatplus-bmi", specifier = ">=0.14.0" },
+    { name = "swatplus-bmi", specifier = ">=0.18.0" },
     { name = "waterledger-models", marker = "extra == 'users'", specifier = ">=3.11" },
 ]
 provides-extras = ["users", "nextgen", "gis"]

@@ -46,8 +46,9 @@
   - A restart keeps the setting it was saved with (swatplus-bmi's state carries it; a state saved before 0.18.0
     routes as stock), so a restart whose config says otherwise is refused. `summary.json` gives the setting.
   - Refused before swatplus-bmi 0.18.0. Tested in `tests/test_routing_fix.py`.
-- **swatplus-bmi 0.18.0 locked.** The water-table link needs 0.17.0 and the routing fix 0.18.0, each refused before
-  it; the minimum stays 0.14.0. Tested with swatplus-bmi 0.18.0.
+- **swatplus-bmi 0.18.0 required** (`>=0.18.0`, from 0.14.0) **and locked.** The routing fix needs it and the
+  water-table link 0.17.0, and CI only tests the locked version, so the floor is the version tested. Build SWAT+ again
+  with it (`uv run swatplus-bmi build`).
 
 ## 0.19.0 (2026-11-27)
 
